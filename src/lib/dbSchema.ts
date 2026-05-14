@@ -19,10 +19,13 @@ export const DATABASE_SCHEMA_SQL = `
     provider TEXT NOT NULL,
     provider_account_id TEXT NOT NULL,
     email TEXT,
+    access_token TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (provider, provider_account_id)
   );
+
+  ALTER TABLE oauth_accounts ADD COLUMN IF NOT EXISTS access_token TEXT;
 
   CREATE TABLE IF NOT EXISTS user_preferences (
     id TEXT PRIMARY KEY,

@@ -1,12 +1,14 @@
 import React from 'react';
+import { ArrowLeft, Save } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { QuizModule } from '../components/ModulePlaceholders';
-import { COMPANY_TYPE_LABELS, DOMAIN_LABELS, getStoredPrepWorkspace, INTERVIEW_TYPE_LABELS } from '../lib/prep';
+import { COMPANY_TYPE_LABELS, DOMAIN_LABELS, INTERVIEW_TYPE_LABELS } from '../lib/prep';
+import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 
 export default function WorkflowDetail() {
   const navigate = useNavigate();
   const { id } = useParams();
-  const workspace = getStoredPrepWorkspace();
+  const workspace = usePrepWorkspace();
   const plan = workspace.prepPlan;
   const focusAreas = plan?.focusAreas.slice(0, 2) ?? ['Component architecture', 'Async state handling'];
   const weakAreas = workspace.repoAnalysis?.weakPoints ?? workspace.manualAnalysis?.gapsThatMightExist ?? ['You slowed down when state and timing changed together.', 'Your project answers need sharper tradeoff language.'];
@@ -37,20 +39,23 @@ export default function WorkflowDetail() {
   ];
 
   return (
-    <div className="min-h-full bg-background px-4 py-8 sm:px-8 lg:px-16">
+    <div className="min-h-full bg-background px-4 py-6 sm:px-6 lg:px-10">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
-      <main className="relative z-10 mx-auto w-full max-w-360 space-y-8">
-        <header className="flex flex-col gap-6 border-b border-blueprint-line pb-8 md:flex-row md:items-end md:justify-between">
+      <main className="relative z-10 mx-auto w-full max-w-[1180px] space-y-6">
+        <header className="flex flex-col gap-5 border-b border-blueprint-line pb-6 md:flex-row md:items-end md:justify-between">
           <div>
             <p className="text-ui-label text-blueprint-muted">Session Feedback</p>
-            <h1 className="mt-2 text-display-xl text-primary">What Changed In This Round</h1>
+            <h1 className="mt-2 text-headline-lg text-primary">What Changed In This Round</h1>
             <p className="mt-3 text-body-md text-blueprint-muted">
-              {DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend'} • {INTERVIEW_TYPE_LABELS[workspace.selections.interviewType] ?? 'Interview'} • {COMPANY_TYPE_LABELS[workspace.selections.companyType] ?? 'Product Company'} • Session {id ?? 'PROMPTLY-SESSION'}
+              {DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend'} • {INTERVIEW_TYPE_LABELS[workspace.selections.interviewType] ?? 'Interview'} • {COMPANY_TYPE_LABELS[workspace.selections.companyType] ?? 'Product Company'} • Session {id ?? 'REPOID-SESSION'}
             </p>
           </div>
           <div className="flex flex-wrap gap-3">
-            <button className="rounded-full border border-blueprint-line bg-white px-6 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
-              Save Notes
+            <button type="button" onClick={() => navigate('/dashboard')} className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-white px-5 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
+              <ArrowLeft size={14} /> Back to Dashboard
+            </button>
+            <button className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-white px-5 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
+              <Save size={14} /> Save Notes
             </button>
             <button type="button" onClick={() => navigate('/pulse')} className="rounded-full bg-primary px-6 py-2 text-ui-label text-white transition-colors hover:bg-[#303031]">
               Open 3-Day Plan
@@ -59,9 +64,9 @@ export default function WorkflowDetail() {
         </header>
 
         <section className="grid gap-6 md:grid-cols-12">
-          <article className="rounded-xl border border-blueprint-line bg-white/85 p-8 shadow-[0_8px_30px_rgba(0,0,0,0.04)] md:col-span-4">
+          <article className="rounded-xl border border-blueprint-line bg-white/85 p-6 shadow-[0_8px_30px_rgba(0,0,0,0.04)] md:col-span-4">
             <h2 className="text-ui-label text-blueprint-muted">Round Summary</h2>
-            <div className="relative mx-auto mt-8 flex h-56 w-56 items-center justify-center">
+            <div className="relative mx-auto mt-6 flex h-48 w-48 items-center justify-center">
               <svg className="h-full w-full -rotate-90" viewBox="0 0 120 120">
                 <circle cx="60" cy="60" r="54" fill="none" stroke="#e4e2e2" strokeWidth="6" />
                 <circle cx="60" cy="60" r="54" fill="none" stroke="#000000" strokeDasharray="339.292" strokeDashoffset="84.823" strokeLinecap="round" strokeWidth="6" />
@@ -83,7 +88,7 @@ export default function WorkflowDetail() {
             </div>
           </article>
 
-          <article className="rounded-xl border border-blueprint-line bg-white/85 p-8 shadow-[0_8px_30px_rgba(0,0,0,0.04)] md:col-span-8">
+          <article className="rounded-xl border border-blueprint-line bg-white/85 p-6 shadow-[0_8px_30px_rgba(0,0,0,0.04)] md:col-span-8">
             <div className="mb-8 flex items-center justify-between gap-4">
               <h2 className="text-ui-label text-blueprint-muted">What Felt Strong vs Shaky</h2>
               <span className="material-symbols-outlined text-blueprint-muted">tune</span>
@@ -103,7 +108,7 @@ export default function WorkflowDetail() {
             </div>
           </article>
 
-          <article className="rounded-xl border border-blueprint-line bg-white/85 p-8 shadow-[0_8px_30px_rgba(0,0,0,0.04)] md:col-span-6">
+          <article className="rounded-xl border border-blueprint-line bg-white/85 p-6 shadow-[0_8px_30px_rgba(0,0,0,0.04)] md:col-span-6">
             <h2 className="mb-6 text-ui-label text-blueprint-muted">Targeted Feedback</h2>
             <div className="space-y-6">
               {feedback.map((item) => (
@@ -118,7 +123,7 @@ export default function WorkflowDetail() {
             </div>
           </article>
 
-          <article className="rounded-xl border border-blueprint-line bg-white/85 p-8 shadow-[0_8px_30px_rgba(0,0,0,0.04)] md:col-span-6">
+          <article className="rounded-xl border border-blueprint-line bg-white/85 p-6 shadow-[0_8px_30px_rgba(0,0,0,0.04)] md:col-span-6">
             <h2 className="mb-8 text-ui-label text-blueprint-muted">3-Day Follow-Up Plan</h2>
             <div className="relative ml-3 space-y-8 border-l border-blueprint-line">
               {threeDayPlan.map((body, index) => (

@@ -6,6 +6,14 @@ export type QuestionStatsItem = {
   total: number;
 };
 
+export type QuestionListResponse = {
+  questions: BankQuestion[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
 export type RoundAttemptAnswerInput = {
   questionId: string;
   selectedAnswer?: string | null;
@@ -79,20 +87,39 @@ export async function fetchQuestionStats() {
 
 export async function fetchQuestions(filters: {
   domain?: string;
+  types?: QuestionType[];
   type?: QuestionType | 'all';
   search?: string;
   faangOnly?: boolean;
+  topics?: string[];
+  roundTags?: string[];
+  page?: number;
+  pageSize?: number;
   limit?: number;
-}): Promise<ApiResult<BankQuestion[]>> {
+}): Promise<ApiResult<QuestionListResponse>> {
   const params = new URLSearchParams();
   if (filters.domain) params.set('domain', filters.domain);
-  if (filters.type) params.set('type', filters.type);
+  if (filters.types?.length) params.set('types', filters.types.join(','));
+  else if (filters.type) params.set('type', filters.type);
   if (filters.search) params.set('search', filters.search);
+  if (filters.topics?.length) params.set('topics', filters.topics.join(','));
+  if (filters.roundTags?.length) params.set('roundTags', filters.roundTags.join(','));
+  if (typeof filters.page === 'number') params.set('page', String(filters.page));
+  if (typeof filters.pageSize === 'number') params.set('pageSize', String(filters.pageSize));
   if (typeof filters.limit === 'number') params.set('limit', String(filters.limit));
   if (filters.faangOnly) params.set('faangOnly', 'true');
-  const result = await requestJson<{ questions: BankQuestion[]; totalReturned: number }>(`/api/questions?${params.toString()}`);
+  const result = await requestJson<QuestionListResponse & { totalReturned: number }>(`/api/questions?${params.toString()}`);
   if ('error' in result) return { ok: false, error: result.error };
-  return { ok: true, data: result.data.questions };
+  return {
+    ok: true,
+    data: {
+      questions: result.data.questions,
+      total: result.data.total,
+      page: result.data.page,
+      pageSize: result.data.pageSize,
+      totalPages: result.data.totalPages,
+    },
+  };
 }
 
 export async function startRoundAttempt(payload: {
@@ -130,4 +157,13 @@ export async function fetchLatestRoundAttempt(roundType: string, domain?: string
   const result = await requestJson<{ attempt: StoredRoundAttempt }>(`/api/round-attempts/latest/${encodeURIComponent(roundType)}${suffix}`);
   if ('error' in result) return { ok: false, error: result.error };
   return { ok: true, data: result.data.attempt };
+}
+
+export async function fetchLatestRoundAttemptSummary(domain?: string) {
+  const params = new URLSearchParams();
+  if (domain) params.set('domain', domain);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const result = await requestJson<{ attempts: StoredRoundAttempt[] }>(`/api/round-attempts/latest-summary${suffix}`);
+  if ('error' in result) return { ok: false, error: result.error };
+  return { ok: true, data: result.data.attempts };
 }

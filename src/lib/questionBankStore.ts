@@ -1,6 +1,12 @@
 import crypto from 'node:crypto';
 import db, { withClient } from './db.js';
 import { QUESTION_BANK, QUESTION_DOMAINS, type BankQuestion, type QuestionType } from './questionBank.js';
+import { loadAimlCuratedQuestions } from './aimlCuratedQuestionBank.js';
+import { loadBackendCuratedQuestions } from './backendCuratedQuestionBank.js';
+import { loadCyberCuratedQuestions } from './cyberCuratedQuestionBank.js';
+import { loadDataAnalyticsCuratedQuestions } from './dataAnalyticsCuratedQuestionBank.js';
+import { loadDataScienceCuratedQuestions } from './dataScienceCuratedQuestionBank.js';
+import { loadFrontendCuratedQuestions } from './frontendCuratedQuestionBank.js';
 
 type DbQuestionRow = {
   id: string;
@@ -41,6 +47,14 @@ export type QuestionStatsItem = {
   id: string;
   label: string;
   total: number;
+};
+
+export type QuestionListResult = {
+  questions: BankQuestion[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 };
 
 export type RoundAttemptAnswerInput = {
@@ -98,10 +112,14 @@ function matchesSeedFilters(question: BankQuestion, filters: {
   type?: QuestionType | 'all';
   search?: string;
   faangOnly?: boolean;
+  topics?: string[];
+  roundTags?: string[];
 }) {
   if (filters.domain && filters.domain !== 'all' && question.domain !== filters.domain) return false;
   if (filters.type && filters.type !== 'all' && question.type !== filters.type) return false;
   if (filters.faangOnly && !question.tags.includes('faang')) return false;
+  if (filters.topics?.length && !filters.topics.includes(question.topic)) return false;
+  if (filters.roundTags?.length && !filters.roundTags.some((roundTag) => question.tags.includes(`round:${roundTag}`))) return false;
 
   const search = String(filters.search ?? '').trim().toLowerCase();
   if (!search) return true;
@@ -205,9 +223,12 @@ async function ensureQuestionSliceSeeded(filters: {
   type?: QuestionType | 'all';
   search?: string;
   faangOnly?: boolean;
+  topics?: string[];
+  roundTags?: string[];
   limit?: number;
 }) {
   const seedQuestions = QUESTION_BANK
+    .filter((question) => !['frontend', 'backend', 'ai-ml', 'cybersecurity', 'data-science', 'data-analytics'].includes(question.domain))
     .filter((question) => matchesSeedFilters(question, filters))
     .sort(sortSeedQuestions)
     .slice(0, Math.max(1, Number(filters.limit ?? QUESTION_BANK.length)));
@@ -297,9 +318,12 @@ function questionSelectFields(alias = 'q') {
 function buildQuestionFilterClause(
   filters: {
     domain?: string;
+    types?: QuestionType[];
     type?: QuestionType | 'all';
     search?: string;
     faangOnly?: boolean;
+    topics?: string[];
+    roundTags?: string[];
   },
   params: unknown[],
   alias = 'q',
@@ -311,7 +335,10 @@ function buildQuestionFilterClause(
     conditions.push(`${alias}.domain = $${params.length}`);
   }
 
-  if (filters.type && filters.type !== 'all') {
+  if (filters.types?.length) {
+    params.push(filters.types);
+    conditions.push(`${alias}.type = ANY($${params.length}::text[])`);
+  } else if (filters.type && filters.type !== 'all') {
     params.push(filters.type);
     conditions.push(`${alias}.type = $${params.length}`);
   }
@@ -319,6 +346,16 @@ function buildQuestionFilterClause(
   if (filters.faangOnly) {
     params.push(JSON.stringify(['faang']));
     conditions.push(`${alias}.tags @> $${params.length}::jsonb`);
+  }
+
+  if (filters.topics?.length) {
+    params.push(filters.topics);
+    conditions.push(`${alias}.topic = ANY($${params.length}::text[])`);
+  }
+
+  if (filters.roundTags?.length) {
+    params.push(filters.roundTags.map((roundTag) => `round:${roundTag}`));
+    conditions.push(`${alias}.tags ?| $${params.length}::text[]`);
   }
 
   const normalizedSearch = String(filters.search ?? '').trim();
@@ -589,7 +626,56 @@ function buildAttemptRecord(row: DbRoundAttemptRow, questions: BankQuestion[]): 
 }
 
 export async function ensureQuestionBankSeeded() {
-  await upsertSeedQuestions(QUESTION_BANK);
+  const frontendCurated = loadFrontendCuratedQuestions();
+  const backendCurated = loadBackendCuratedQuestions();
+  const aimlCurated = loadAimlCuratedQuestions();
+  const cyberCurated = loadCyberCuratedQuestions();
+  const dataScienceCurated = loadDataScienceCuratedQuestions();
+  const dataAnalyticsCurated = loadDataAnalyticsCuratedQuestions();
+  const generatedWithoutCuratedDomains = QUESTION_BANK.filter((question) => !['frontend', 'backend', 'ai-ml', 'cybersecurity', 'data-science', 'data-analytics'].includes(question.domain));
+
+  await withClient(async (client) => {
+    await client.query(
+      `DELETE FROM questions
+        WHERE domain = 'frontend'
+          AND id NOT LIKE 'frontend-curated-%'`,
+    );
+    await client.query(
+      `DELETE FROM questions
+        WHERE domain = 'backend'
+          AND id NOT LIKE 'backend-curated-%'`,
+    );
+    await client.query(
+      `DELETE FROM questions
+        WHERE domain = 'ai-ml'
+          AND id NOT LIKE 'aiml-curated-%'`,
+    );
+    await client.query(
+      `DELETE FROM questions
+        WHERE domain = 'cybersecurity'
+          AND id NOT LIKE 'cyber-curated-%'`,
+    );
+    await client.query(
+      `DELETE FROM questions
+        WHERE domain = 'data-science'
+          AND id NOT LIKE 'data-science-curated-%'`,
+    );
+    await client.query(
+      `DELETE FROM questions
+        WHERE domain = 'data-analytics'
+          AND id NOT LIKE 'data-analytics-curated-%'`,
+    );
+  });
+
+  await upsertSeedQuestions([
+    ...generatedWithoutCuratedDomains,
+    ...frontendCurated.questions,
+    ...backendCurated.questions,
+    ...aimlCurated.questions,
+    ...cyberCurated.questions,
+    ...dataScienceCurated.questions,
+    ...dataAnalyticsCurated.questions,
+  ]);
 }
 
 export async function listQuestionStats(): Promise<QuestionStatsItem[]> {
@@ -612,26 +698,46 @@ export async function listQuestionStats(): Promise<QuestionStatsItem[]> {
 
 export async function listQuestions(filters: {
   domain?: string;
+  types?: QuestionType[];
   type?: QuestionType | 'all';
   search?: string;
   faangOnly?: boolean;
+  topics?: string[];
+  roundTags?: string[];
   limit?: number;
-}) {
-  const limit = Math.min(300, Math.max(1, Number(filters.limit ?? 50)));
+  offset?: number;
+}): Promise<QuestionListResult> {
+  const pageSize = Math.min(60, Math.max(1, Number(filters.limit ?? 12)));
+  const offset = Math.max(0, Number(filters.offset ?? 0));
   const params: unknown[] = [];
   const whereClause = buildQuestionFilterClause(filters, params);
-  params.push(limit);
 
+  const countRows = await db.query<{ total: number }>(
+    `SELECT COUNT(*)::int AS total
+       FROM questions q
+       ${whereClause}`,
+    params,
+  );
+  const total = Number(countRows[0]?.total ?? 0);
+
+  const queryParams = [...params, pageSize, offset];
   const rows = await db.query<DbQuestionRow>(
     `SELECT ${questionSelectFields('q')}
        FROM questions q
        ${whereClause}
       ORDER BY q.domain_label ASC, q.topic ASC, q.difficulty ASC, q.id ASC
-      LIMIT $${params.length}`,
-    params,
+      LIMIT $${queryParams.length - 1}
+      OFFSET $${queryParams.length}`,
+    queryParams,
   );
 
-  return rows.map(mapQuestionRow);
+  return {
+    questions: rows.map(mapQuestionRow),
+    total,
+    page: Math.floor(offset / pageSize) + 1,
+    pageSize,
+    totalPages: total ? Math.ceil(total / pageSize) : 0,
+  };
 }
 
 export async function createRoundAttempt(params: {

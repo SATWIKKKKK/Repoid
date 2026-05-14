@@ -1,10 +1,10 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getStoredPrepWorkspace } from '../lib/prep';
+import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 
 export default function Pulse() {
   const navigate = useNavigate();
-  const workspace = getStoredPrepWorkspace();
+  const workspace = usePrepWorkspace();
   const focusAreas = workspace.prepPlan?.focusAreas.slice(0, 3) ?? ['Component architecture', 'State flow', 'Project storytelling'];
   const weakPoints = workspace.repoAnalysis?.weakPoints ?? workspace.manualAnalysis?.gapsThatMightExist ?? ['You still lose time on async state changes.', 'Your project tradeoff story needs a cleaner opening.'];
   const threeDayPlan = workspace.prepPlan?.prepStrategy['3-day'].length

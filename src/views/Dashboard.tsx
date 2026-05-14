@@ -1,17 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Github, Heart, Search } from 'lucide-react';
+import { ArrowRight, Github, Heart } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { GithubScanOverlay } from '../components/GithubRepoScanner';
-import { PlaceholdersAndVanishInput } from '../components/ui/placeholders-and-vanish-input';
-import { getGithubScanJob, isValidGithubRepoUrl, listGithubRepos } from '../lib/githubRepos';
-import { fetchLatestRoundAttempt, type StoredRoundAttempt } from '../lib/questionBankApi';
+import { getGithubScanJob, listGithubRepos } from '../lib/githubRepos';
+import { fetchLatestRoundAttemptSummary, type StoredRoundAttempt } from '../lib/questionBankApi';
 import {
   COMPANY_TYPE_LABELS,
   DOMAIN_LABELS,
-  getStoredPrepWorkspace,
+  getDomainFamily,
   INTERVIEW_TYPE_LABELS,
   TIMELINE_LABELS,
 } from '../lib/prep';
+import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 
 type Recommendation = {
   initials: string;
@@ -52,6 +51,12 @@ function buildRecommendations(domain: string): Recommendation[] {
         { initials: 'DQ', title: 'Data Scenario Round', meta: 'Warehouse drift and recovery', route: '/scenario-round' },
         { initials: 'QB', title: 'Data Question Bank', meta: 'Data engineering prompts only', route: '/question-bank?type=all' },
       ];
+    case 'security':
+      return [
+        { initials: 'AT', title: 'Application Threat Review', meta: 'Auth, trust boundaries, and attack surfaces', route: '/scenario-round' },
+        { initials: 'SB', title: 'Secure Build Round', meta: 'Fix unsafe frontend and API behavior', route: '/coding-round' },
+        { initials: 'QB', title: 'Cybersecurity Question Bank', meta: 'Security-focused prompts for this track', route: '/question-bank?type=all' },
+      ];
     default:
       return [
         { initials: 'FE', title: 'Frontend Machine Coding', meta: 'State flow, async UI, and edge cases', route: '/coding-round' },
@@ -74,21 +79,18 @@ function insightFromAttempt(attempt: StoredRoundAttempt) {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const workspace = getStoredPrepWorkspace();
-  const [searchQuery, setSearchQuery] = useState('');
+  const workspace = usePrepWorkspace();
   const [repoCount, setRepoCount] = useState(0);
-  const [repoUrl, setRepoUrl] = useState('');
-  const [scannerError, setScannerError] = useState<string | null>(null);
-  const [scanRequest, setScanRequest] = useState<{ repoUrl: string; force: boolean; nonce: number } | null>(null);
   const [attempts, setAttempts] = useState<StoredRoundAttempt[]>([]);
   const plan = workspace.prepPlan;
   const domain = workspace.selections.domain;
+  const domainFamily = getDomainFamily(domain);
   const domainLabel = DOMAIN_LABELS[domain] ?? 'Frontend';
   const interviewTypeLabel = INTERVIEW_TYPE_LABELS[workspace.selections.interviewType] ?? 'Interview';
   const companyTypeLabel = COMPANY_TYPE_LABELS[workspace.selections.companyType] ?? 'Product Company';
   const timelineLabel = TIMELINE_LABELS[workspace.selections.timeline] ?? '1 week';
   const focusAreas = plan?.focusAreas.slice(0, 3) ?? [];
-  const recommendations = buildRecommendations(domain);
+  const recommendations = buildRecommendations(domainFamily);
   const latestScore = attempts[0]?.score;
   const prepScore = Math.min(96, Math.max(45, latestScore ?? (plan ? 72 : 58)));
   const insights = useMemo(() => attempts.map(insightFromAttempt).filter(Boolean) as Array<{ title: string; body: string; timestamp: string }>, [attempts]);
@@ -97,13 +99,6 @@ export default function Dashboard() {
     const fromResults = attempts.flatMap((attempt) => attempt.results.filter((result) => !result.isCorrect).map((result) => result.topic));
     return Array.from(new Set([...fromAttempts, ...fromResults])).slice(0, 4);
   }, [attempts]);
-
-  const searchPlaceholders = [
-    `Search ${domainLabel} questions`,
-    'Search a topic',
-    'Find scenario drills',
-    'Practice project follow-ups',
-  ];
 
   useEffect(() => {
     let ignore = false;
@@ -121,58 +116,30 @@ export default function Dashboard() {
 
   useEffect(() => {
     let ignore = false;
-    void Promise.all([
-      fetchLatestRoundAttempt('coding-round', domain),
-      fetchLatestRoundAttempt('scenario-round', domain),
-      fetchLatestRoundAttempt('mock-interview', domain),
-    ]).then((results) => {
+    void fetchLatestRoundAttemptSummary(domain).then((result) => {
       if (ignore) return;
-      setAttempts(results.filter((result) => result.ok).map((result) => result.data).filter((attempt) => attempt.domain === domain));
+      setAttempts(result.ok ? result.data.filter((attempt) => attempt.domain === domain) : []);
     }).catch(() => undefined);
     return () => {
       ignore = true;
     };
   }, [domain]);
 
-  const handleDashboardSearch = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const query = searchQuery.trim();
-    navigate(`/question-bank${query ? `?search=${encodeURIComponent(query)}` : ''}`);
-  };
-
-  const submitRepoScan = (event: React.FormEvent) => {
-    event.preventDefault();
-    setScannerError(null);
-    const trimmed = repoUrl.trim();
-    if (!isValidGithubRepoUrl(trimmed)) {
-      setScannerError('Paste a valid public GitHub repository URL.');
-      return;
-    }
-    setScanRequest({ repoUrl: trimmed, force: false, nonce: Date.now() });
-  };
-
   return (
     <div className="min-h-full bg-background">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
       <main className="relative z-10 mx-auto flex w-full max-w-[1320px] flex-col gap-6 px-4 pb-14 pt-6 sm:px-6 lg:px-10">
-        <section className="grid gap-4 border-b border-blueprint-line/80 pb-6 lg:grid-cols-[1fr_minmax(20rem,34rem)] lg:items-end">
+        <section className="border-b border-blueprint-line/80 pb-6">
           <div className="max-w-3xl">
             <h1 className="text-display-xl text-primary">Dashboard</h1>
             <p className="mt-3 text-body-lg text-blueprint-muted">
               Your {domainLabel.toLowerCase()} {interviewTypeLabel.toLowerCase()} workspace for {companyTypeLabel.toLowerCase()} interviews over {timelineLabel.toLowerCase()}.
             </p>
           </div>
-          <div>
-            <PlaceholdersAndVanishInput
-              placeholders={searchPlaceholders}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              onSubmit={handleDashboardSearch}
-            />
-          </div>
         </section>
 
-        <section className="surface-card">
-          <div className="grid gap-5 lg:grid-cols-[1fr_minmax(18rem,26rem)] lg:items-center">
+        <button type="button" onClick={() => navigate('/github-repos')} className="surface-card text-left transition-colors hover:bg-white/85">
+          <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-center">
             <div>
               <div className="flex items-center gap-3 text-ui-label text-blueprint-muted">
                 <Github size={18} />
@@ -180,29 +147,15 @@ export default function Dashboard() {
               </div>
               <h2 className="mt-3 text-headline-md text-primary not-italic">Generate repo-specific interview questions.</h2>
               <p className="mt-2 max-w-3xl text-body-md text-blueprint-muted">
-                Scan any public GitHub repository. This is intentionally not limited by your selected domain.
+                Open the scanner to analyze public repositories or connected private repositories.
               </p>
             </div>
-            <form onSubmit={submitRepoScan} className="rounded-xl border border-blueprint-line bg-[#fbf9f9] p-4">
-              <label className="text-ui-label text-blueprint-muted">Repository URL</label>
-              <div className="mt-3 flex flex-col gap-3 sm:flex-row">
-                <input
-                  value={repoUrl}
-                  onChange={(event) => setRepoUrl(event.target.value)}
-                  placeholder="https://github.com/owner/repo"
-                  className="min-w-0 flex-1 border-0 border-b border-blueprint-line bg-transparent py-2 text-body-md text-primary outline-none focus:border-primary"
-                />
-                <button type="submit" className="inline-flex items-center justify-center gap-2 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white transition-colors hover:bg-[#303031]">
-                  <Search size={15} /> Scan
-                </button>
-              </div>
-              {scannerError ? <p className="mt-3 text-sm text-red-600">{scannerError}</p> : null}
-              <button type="button" onClick={() => navigate('/github-repos')} className="mt-3 text-ui-label text-blueprint-muted underline underline-offset-4 hover:text-primary">
-                View {repoCount} scanned repos
-              </button>
-            </form>
+            <span className="inline-flex items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-ui-label text-white">
+              Open Scanner <ArrowRight size={15} />
+            </span>
           </div>
-        </section>
+          <p className="mt-4 text-ui-label text-blueprint-muted">View {repoCount} scanned repos</p>
+        </button>
 
         <section className="grid gap-5 lg:grid-cols-[minmax(16rem,0.85fr)_minmax(0,1.15fr)]">
           <article className="surface-card min-h-0">
@@ -312,19 +265,6 @@ export default function Dashboard() {
         </footer>
       </main>
 
-      {scanRequest ? (
-        <GithubScanOverlay
-          key={scanRequest.nonce}
-          repoUrl={scanRequest.repoUrl}
-          force={scanRequest.force}
-          onClose={() => setScanRequest(null)}
-          onError={setScannerError}
-          onComplete={() => {
-            setScanRequest(null);
-            void listGithubRepos().then((data) => setRepoCount(data.repos.length)).catch(() => undefined);
-          }}
-        />
-      ) : null}
     </div>
   );
 }

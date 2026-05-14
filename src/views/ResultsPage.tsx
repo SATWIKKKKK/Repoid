@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { DOMAIN_LABELS, getStoredPrepWorkspace } from '../lib/prep';
+import { DOMAIN_LABELS } from '../lib/prep';
+import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 import { fetchLatestRoundAttempt, type RoundAttemptDetail, type StoredRoundAttempt } from '../lib/questionBankApi';
 import { getRoundResult } from '../lib/roundResults';
 
@@ -15,7 +16,7 @@ const ROUND_LABELS: Record<string, string> = {
 export default function ResultsPage() {
   const navigate = useNavigate();
   const params = useParams<{ roundType?: string }>();
-  const workspace = getStoredPrepWorkspace();
+  const workspace = usePrepWorkspace();
   const roundType = params.roundType ?? 'practice-tracks';
   const [attempt, setAttempt] = useState<StoredRoundAttempt | null>(null);
   const [loadingAttempt, setLoadingAttempt] = useState(true);

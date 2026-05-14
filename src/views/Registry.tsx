@@ -1,7 +1,8 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import RoundGuard from '../components/RoundGuard';
-import { DOMAIN_LABELS, getStoredPrepWorkspace } from '../lib/prep';
+import { DOMAIN_LABELS, getDomainFamily } from '../lib/prep';
+import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 import { startRoundAttempt, submitRoundAttempt, type StoredRoundAttempt } from '../lib/questionBankApi';
 
 const SCENARIOS: Record<string, { track: string; topic: string; title: string; body: string; filename: string; snippet: string }> = {
@@ -64,7 +65,7 @@ return answer`,
 
 export default function Registry() {
   const navigate = useNavigate();
-  const workspace = getStoredPrepWorkspace();
+  const workspace = usePrepWorkspace();
   const [attempt, setAttempt] = useState<StoredRoundAttempt | null>(null);
   const [loadingAttempt, setLoadingAttempt] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -72,7 +73,7 @@ export default function Registry() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [draftAnswer, setDraftAnswer] = useState('');
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const scenario = SCENARIOS[workspace.selections.domain] ?? SCENARIOS.frontend;
+  const scenario = SCENARIOS[getDomainFamily(workspace.selections.domain)] ?? SCENARIOS.frontend;
   const questions = attempt?.questions ?? [];
   const currentQuestion = questions[currentIndex];
   const title = currentQuestion?.questionText ?? scenario.title;
@@ -159,7 +160,7 @@ export default function Registry() {
             <span className="text-blueprint-muted">{DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend'} Practice</span>
           </div>
           <div className="flex items-center gap-6">
-            <div className="flex items-center gap-2 rounded-full border border-blueprint-line bg-white px-3 py-1.5 text-ui-label text-primary">
+            <div className="flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-primary">
               <span className="material-symbols-outlined text-[16px] text-[#5d5f5d]">timer</span>
               {formattedTime}
             </div>
@@ -176,8 +177,8 @@ export default function Registry() {
             {loadingAttempt ? <p className="text-body-md text-blueprint-muted">Loading scenario set…</p> : null}
             {error ? <p className="text-body-md text-red-600">{error}</p> : null}
             <div className="flex items-center gap-2">
-              <span className="rounded-full bg-[#e4e2e2] px-3 py-1.5 text-ui-label text-blueprint-muted">Question {currentIndex + 1} of {questions.length}</span>
-              <span className="rounded-full border border-blueprint-line bg-[#efeded] px-3 py-1.5 text-ui-label text-blueprint-muted">{currentQuestion?.topic ?? scenario.topic}</span>
+              <span className="rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-blueprint-muted">Question {currentIndex + 1} of {questions.length}</span>
+              <span className="rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-blueprint-muted">{currentQuestion?.topic ?? scenario.topic}</span>
             </div>
             <div className="max-w-2xl space-y-4">
               <p className="text-ui-label text-blueprint-muted">{scenario.track}</p>
@@ -187,8 +188,8 @@ export default function Registry() {
               </p>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-blueprint-line bg-white/85 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.04)]">
-              <div className="flex items-center gap-2 border-b border-blueprint-line bg-white px-4 py-2">
+            <div className="overflow-hidden rounded-xl border border-blueprint-line bg-card shadow-[0_20px_40px_-15px_rgba(0,0,0,0.04)] dark:shadow-[0_20px_40px_-15px_rgba(0,0,0,0.22)]">
+              <div className="flex items-center gap-2 border-b border-blueprint-line bg-card px-4 py-2">
                 <div className="flex gap-1.5">
                   <div className="h-2.5 w-2.5 rounded-full bg-blueprint-line" />
                   <div className="h-2.5 w-2.5 rounded-full bg-blueprint-line" />
@@ -209,7 +210,7 @@ export default function Registry() {
                   type="button"
                   disabled={inputsLocked || submittedCurrent}
                   onClick={() => setDraftAnswer(option)}
-                  className={`w-full rounded-xl border p-4 text-left text-body-md transition-colors ${draftAnswer === option ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-[#fbf9f9] text-primary hover:bg-white'} ${inputsLocked || submittedCurrent ? 'cursor-not-allowed opacity-70' : ''}`}
+                  className={`w-full rounded-xl border p-4 text-left text-body-md transition-colors ${draftAnswer === option ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-primary hover:bg-[#f5f3f3] dark:hover:bg-white/5'} ${inputsLocked || submittedCurrent ? 'cursor-not-allowed opacity-70' : ''}`}
                 >
                   {option}
                 </button>
@@ -228,7 +229,7 @@ export default function Registry() {
         </section>
 
         <footer className="flex flex-col gap-4 border-t border-blueprint-line pt-6 sm:flex-row sm:items-center sm:justify-between">
-          <button type="button" onClick={handlePrevious} className="rounded-full border border-blueprint-line px-6 py-2.5 text-ui-label text-primary transition-colors hover:bg-white">
+          <button type="button" onClick={handlePrevious} className="rounded-full border border-blueprint-line px-6 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5">
             {currentIndex === 0 ? 'Exit Round' : 'Previous Question'}
           </button>
           {submittedCurrent ? (

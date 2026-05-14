@@ -22,7 +22,9 @@ import GithubRepos from './views/GithubRepos';
 import GithubProjectQuestions from './views/GithubProjectQuestions';
 import { Contact, Privacy, SecurityPage, Terms } from './views/Legal';
 import { fetchCurrentUser, getStoredUser, persistSessionUser, SessionUser } from './lib/session';
-import { getStoredPrepWorkspace, isOnboardingComplete, updatePrepWorkspace } from './lib/prep';
+import { getStoredPrepWorkspace, updatePrepWorkspace } from './lib/prep';
+import { applyThemePreference, normalizeThemePreference } from './lib/theme';
+import { fetchUserPreferences } from './lib/userPreferences';
 
 export type View =
   | 'landing' | 'dashboard' | 'builder' | 'terminal' | 'editor' | 'registry' | 'analytics'
@@ -31,12 +33,10 @@ export type View =
 
 function ProtectedRoute({
   children,
-  allowIncomplete = false,
   sessionChecked,
   user,
 }: {
   children: React.ReactNode;
-  allowIncomplete?: boolean;
   sessionChecked: boolean;
   user: SessionUser | null;
 }) {
@@ -44,7 +44,6 @@ function ProtectedRoute({
     return <div className="min-h-screen bg-background" />;
   }
   if (!user?.loggedIn) return <Navigate to="/signin" replace />;
-  if (!allowIncomplete && !isOnboardingComplete()) return <Navigate to="/onboarding" replace />;
   return <>{children}</>;
 }
 
@@ -60,14 +59,9 @@ function AppShell() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [user, setUser] = useState<SessionUser | null>(() => getStoredUser());
-  const [sessionChecked, setSessionChecked] = useState(Boolean(getStoredUser()));
+  const [sessionChecked, setSessionChecked] = useState(() => Boolean(getStoredUser()));
 
   useEffect(() => {
-    if (user?.loggedIn) {
-      setSessionChecked(true);
-      return;
-    }
-
     let ignore = false;
     void fetchCurrentUser()
       .then((sessionUser) => {
@@ -75,17 +69,22 @@ function AppShell() {
         if (sessionUser) {
           persistSessionUser(sessionUser);
           setUser(sessionUser);
+        } else {
+          setUser(null);
         }
         setSessionChecked(true);
       })
       .catch(() => {
-        if (!ignore) setSessionChecked(true);
+        if (!ignore) {
+          setUser(null);
+          setSessionChecked(true);
+        }
       });
 
     return () => {
       ignore = true;
     };
-  }, [user?.loggedIn]);
+  }, []);
 
   const isResultsPath = Boolean(matchPath('/results/:roundType', location.pathname));
   const isSettingsPath = location.pathname === '/settings' || location.pathname.startsWith('/settings/');
@@ -172,19 +171,12 @@ function AppShell() {
     if (!user?.loggedIn) return;
     let ignore = false;
 
-    void fetch('/api/users/preferences', { credentials: 'include' })
-      .then(async (response) => {
-        if (!response.ok) return null;
-        return response.json() as Promise<{ sidebarOpen?: boolean; theme?: string; domain?: string }>;
-      })
-      .then((data) => {
-        if (!data || ignore) return;
-        if (typeof data.sidebarOpen === 'boolean') setIsSidebarCollapsed(!data.sidebarOpen);
-        if (typeof data.domain === 'string') updatePrepWorkspace({ selections: { ...getStoredPrepWorkspace().selections, domain: data.domain } });
-        if (typeof data.theme === 'string') {
-          const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
-          document.documentElement.classList.toggle('dark', data.theme === 'dark' || (data.theme === 'system' && prefersDark));
-        }
+    void fetchUserPreferences()
+      .then((result) => {
+        if (!result.ok || ignore) return;
+        setIsSidebarCollapsed(!result.data.sidebarOpen);
+        updatePrepWorkspace({ selections: { ...getStoredPrepWorkspace().selections, domain: result.data.domain } });
+        applyThemePreference(normalizeThemePreference(result.data.theme));
       })
       .catch(() => undefined);
 
@@ -234,12 +226,12 @@ function AppShell() {
         <main className="flex-1 overflow-y-auto overflow-x-hidden">
           <Routes>
             <Route path="/" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Landing onStart={() => navigate('/signup')} onViewDocs={() => navigate('/dashboard')} onViewChange={handleViewChange} />} />
-            <Route path="/signin" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="login" onAuthSuccess={() => { setUser(getStoredUser()); navigate('/onboarding'); }} onBackToLanding={() => navigate('/')} />} />
+            <Route path="/signin" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="login" onAuthSuccess={() => { setUser(getStoredUser()); navigate('/dashboard'); }} onBackToLanding={() => navigate('/')} />} />
             <Route path="/login" element={<Navigate to="/signin" replace />} />
             <Route path="/signup" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="signup" onAuthSuccess={() => { setUser(getStoredUser()); navigate('/onboarding'); }} onBackToLanding={() => navigate('/')} />} />
 
             <Route path="/dashboard" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Dashboard /></ProtectedRoute>} />
-            <Route path="/onboarding" element={<ProtectedRoute user={user} sessionChecked={sessionChecked} allowIncomplete><Builder onViewChange={handleViewChange} /></ProtectedRoute>} />
+            <Route path="/onboarding" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Builder onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/builder" element={<Navigate to="/onboarding" replace />} />
             <Route path="/practice-tracks" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Workflows /></ProtectedRoute>} />
             <Route path="/workflows" element={<Navigate to="/practice-tracks" replace />} />

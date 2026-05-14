@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowRight, Github } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { authenticateLocalAccount, persistSessionUser, registerLocalAccount, requestEmailOtp } from '../lib/session';
+import { authenticateLocalAccount, persistSessionUser, registerLocalAccount } from '../lib/session';
 import { BackgroundRippleEffect } from '../components/ui/background-ripple-effect';
 import { getStoredPrepWorkspace } from '../lib/prep';
 
@@ -19,13 +19,9 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [fullName, setFullName] = useState('');
-  const [otp, setOtp] = useState('');
-  const [otpModalOpen, setOtpModalOpen] = useState(false);
-  const [debugOtp, setDebugOtp] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [otpSending, setOtpSending] = useState(false);
 
   useEffect(() => {
     setMode(initialMode);
@@ -47,25 +43,6 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
     window.location.assign(`/api/auth/oauth/${provider.toLowerCase()}`);
   };
 
-  const handleRequestOtp = async () => {
-    setAuthError(null);
-    setStatusMessage(null);
-    if (!email.trim()) {
-      setAuthError('Enter your email before requesting an OTP.');
-      return;
-    }
-    setOtpSending(true);
-    const result = await requestEmailOtp({ email, purpose: 'signup' });
-    setOtpSending(false);
-    if ('error' in result) {
-      setAuthError(result.error);
-      return;
-    }
-    setDebugOtp(result.debugOtp ?? null);
-    setStatusMessage(result.message);
-    setOtpModalOpen(true);
-  };
-
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setSubmitting(true);
@@ -79,14 +56,8 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
           return;
         }
 
-        if (!otp.trim()) {
-          setAuthError('Verify your email with the OTP before creating the account.');
-          setOtpModalOpen(true);
-          return;
-        }
-
         const domain = getStoredPrepWorkspace().selections.domain;
-        const result = await registerLocalAccount({ email, name: fullName, password, otp, domain });
+        const result = await registerLocalAccount({ email, name: fullName, password, domain });
         if (!('error' in result)) {
           persistSessionUser(result.user);
           onAuthSuccess();
@@ -175,13 +146,8 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
             <div>
               <div className="mb-2 flex items-center justify-between gap-3">
                 <label className="block text-ui-label text-blueprint-muted">Work Email</label>
-                {mode === 'signup' ? (
-                  <button type="button" onClick={handleRequestOtp} disabled={otpSending} className="text-ui-label text-primary underline underline-offset-4 disabled:opacity-60">
-                    {otpSending ? 'Sending' : otp ? 'Verified' : 'Verify'}
-                  </button>
-                ) : null}
               </div>
-              <input type="email" value={email} onChange={(event) => { setEmail(event.target.value); setOtp(''); setDebugOtp(null); }} required className="w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none transition-colors focus:border-primary" placeholder="you@company.com" />
+              <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required className="w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none transition-colors focus:border-primary" placeholder="you@company.com" />
             </div>
 
             <div>
@@ -225,33 +191,6 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
         </div>
       </main>
 
-      {otpModalOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-blueprint-line bg-white p-6 shadow-2xl">
-            <p className="text-ui-label text-blueprint-muted">Email Verification</p>
-            <h2 className="mt-2 text-headline-md text-primary not-italic">Enter the OTP</h2>
-            <p className="mt-2 text-body-md text-blueprint-muted">
-              We generated a one-time code for {email}. In local development, the code is shown below.
-            </p>
-            {debugOtp ? <p className="mt-4 rounded-lg border border-blueprint-line bg-[#f5f3f3] px-4 py-3 font-mono text-body-md text-primary">{debugOtp}</p> : null}
-            <input
-              value={otp}
-              onChange={(event) => setOtp(event.target.value.replace(/\D/g, '').slice(0, 6))}
-              inputMode="numeric"
-              className="mt-5 w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none focus:border-primary"
-              placeholder="6-digit OTP"
-            />
-            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
-              <button type="button" onClick={() => setOtpModalOpen(false)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
-                Close
-              </button>
-              <button type="button" onClick={() => setOtpModalOpen(false)} disabled={otp.length !== 6} className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white transition-colors hover:bg-[#303031] disabled:opacity-60">
-                Use OTP
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

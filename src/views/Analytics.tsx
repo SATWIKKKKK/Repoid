@@ -1,9 +1,10 @@
 import React from 'react';
 import { GapAnalysisDashboard } from '../components/ModulePlaceholders';
-import { DOMAIN_LABELS, getStoredPrepWorkspace } from '../lib/prep';
+import { DOMAIN_LABELS } from '../lib/prep';
+import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 
 export default function Analytics() {
-  const workspace = getStoredPrepWorkspace();
+  const workspace = usePrepWorkspace();
   const domainLabel = DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend';
   const focusAreas = workspace.prepPlan?.focusAreas.slice(0, 4) ?? ['Async state handling', 'Project storytelling', 'Edge-case coverage'];
   const weakPoints = workspace.repoAnalysis?.weakPoints ?? workspace.manualAnalysis?.gapsThatMightExist ?? ['You slow down when requirements change mid-round.', 'Your project explanation needs cleaner tradeoff language.', 'You need a tighter answer for edge cases.'];

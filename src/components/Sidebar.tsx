@@ -52,7 +52,7 @@ function NavButton({
       onClick={() => onViewChange(id)}
       className={cn(
         'flex items-center gap-3 rounded-lg px-4 py-3 text-ui-label transition-all duration-200',
-        isActive ? 'border-l-2 border-primary bg-blueprint-line/30 text-primary font-semibold' : 'text-blueprint-muted hover:bg-blueprint-line/20',
+        isActive ? 'border-l-2 border-primary bg-white/10 text-primary font-semibold' : 'text-blueprint-muted hover:bg-white/5 hover:text-primary',
         isCollapsed && 'justify-center px-0',
       )}
       title={label}
@@ -67,7 +67,7 @@ export default function Sidebar({ currentView, onViewChange, isCollapsed, onTogg
   return (
     <motion.nav
       animate={{ width: isCollapsed ? '84px' : '280px' }}
-      className="flex h-full flex-col overflow-hidden border-r border-blueprint-line bg-white/90 px-4 py-8 backdrop-blur-sm"
+      className="flex h-full flex-col overflow-hidden border-r border-blueprint-line bg-background px-4 py-8"
     >
       <div className={cn('mb-8 flex items-center', isCollapsed ? 'justify-center' : 'justify-between')}>
         {!isCollapsed ? (

@@ -29,8 +29,32 @@ pool.on('error', (error) => {
   console.error('Postgres pool error:', error);
 });
 
+const TRANSIENT_CONNECTION_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT']);
+
+function errorCode(error: unknown) {
+  return error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : '';
+}
+
+function wait(delayMs: number) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function connectWithRetry(attempt = 1): Promise<PoolClient> {
+  try {
+    return await pool.connect();
+  } catch (error) {
+    const code = errorCode(error);
+    if (!TRANSIENT_CONNECTION_CODES.has(code) || attempt >= 3) throw error;
+    console.warn('Transient Postgres connection failure; retrying.', { code, attempt });
+    await wait(attempt * 600);
+    return connectWithRetry(attempt + 1);
+  }
+}
+
 export async function withClient<T>(callback: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
+  const client = await connectWithRetry();
   try {
     return await callback(client);
   } finally {

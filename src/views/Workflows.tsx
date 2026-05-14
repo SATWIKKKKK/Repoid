@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { COMPANY_TYPE_LABELS, DOMAIN_LABELS, getStoredPrepWorkspace } from '../lib/prep';
+import { COMPANY_TYPE_LABELS, DOMAIN_LABELS, getDomainFamily } from '../lib/prep';
+import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 
 type PracticeTrack = {
   id: string;
@@ -142,46 +143,94 @@ const TRACKS_BY_DOMAIN: Record<string, PracticeTrack[]> = {
       insight: 'Be precise about the dataset, evaluation loop, and what changed between versions.',
     },
   ],
+  security: [
+    {
+      id: 'secure-review',
+      name: 'Security Review Round',
+      route: '/scenario-round',
+      duration: '35 Min',
+      icon: 'security',
+      pattern: 'Trace auth flaws, input risks, and trust boundary breaks before proposing a fix.',
+      focus: ['Threat modeling', 'Authorization', 'Incident response'],
+      insight: 'Security answers land better when you name the boundary, the exploit path, and the mitigation in that order.',
+    },
+    {
+      id: 'secure-coding',
+      name: 'Secure Coding Round',
+      route: '/coding-round',
+      duration: '45 Min',
+      icon: 'verified_user',
+      pattern: 'Patch unsafe client or API behavior while keeping the user flow intact.',
+      focus: ['Validation', 'Session safety', 'XSS and CSRF'],
+      insight: 'Interviewers want to see you reduce risk without turning every patch into a rewrite.',
+    },
+    {
+      id: 'security-mock',
+      name: 'Security Project Walkthrough',
+      route: '/mock-interview',
+      duration: '25 Min',
+      icon: 'account_tree',
+      pattern: 'Explain one security-sensitive project decision and the tradeoff behind it.',
+      focus: ['Tradeoffs', 'Defense in depth', 'Ownership'],
+      insight: 'The strongest answers connect threat assumptions to a concrete implementation choice.',
+    },
+  ],
+  data: [
+    {
+      id: 'analytics-round',
+      name: 'Analytics Reasoning Round',
+      route: '/scenario-round',
+      duration: '35 Min',
+      icon: 'query_stats',
+      pattern: 'Interpret a metric shift, isolate likely causes, and define the next slice to inspect.',
+      focus: ['Metrics', 'Experimentation', 'Data quality'],
+      insight: 'Be precise about what the metric proves and what it cannot prove yet.',
+    },
+    {
+      id: 'data-build',
+      name: 'Data Workflow Build Round',
+      route: '/coding-round',
+      duration: '45 Min',
+      icon: 'table_chart',
+      pattern: 'Design a small transformation or analysis flow with reliable intermediate states.',
+      focus: ['Transformations', 'Edge cases', 'Validation'],
+      insight: 'Interviewers care about correctness and interpretability as much as implementation speed.',
+    },
+    {
+      id: 'data-mock',
+      name: 'Data Project Walkthrough',
+      route: '/mock-interview',
+      duration: '25 Min',
+      icon: 'account_tree',
+      pattern: 'Tell the story of a dashboard, model, or analysis that changed a decision.',
+      focus: ['Narrative', 'Tradeoffs', 'Stakeholder clarity'],
+      insight: 'A useful data story ties the analysis to a decision, not just to a chart.',
+    },
+  ],
 };
 
 export default function Workflows() {
   const navigate = useNavigate();
-  const workspace = getStoredPrepWorkspace();
-  const [query, setQuery] = useState('');
+  const workspace = usePrepWorkspace();
   const domainLabel = DOMAIN_LABELS[workspace.selections.domain] ?? 'Frontend';
   const companyTypeLabel = COMPANY_TYPE_LABELS[workspace.selections.companyType] ?? 'Product Company';
+  const domainFamily = getDomainFamily(workspace.selections.domain);
 
   const tracks = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    const source = TRACKS_BY_DOMAIN[workspace.selections.domain] ?? TRACKS_BY_DOMAIN.frontend;
-    if (!normalized) return source;
-    return source.filter((track) => (
-      track.name.toLowerCase().includes(normalized)
-      || track.pattern.toLowerCase().includes(normalized)
-      || track.focus.some((item) => item.toLowerCase().includes(normalized))
-    ));
-  }, [query, workspace.selections.domain]);
+    const source = TRACKS_BY_DOMAIN[domainFamily] ?? TRACKS_BY_DOMAIN.frontend;
+    return source;
+  }, [domainFamily]);
 
   return (
     <div className="min-h-full bg-background px-4 py-8 sm:px-6 lg:px-10 xl:px-14">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
       <main className="relative z-10 mx-auto w-full max-w-360 space-y-8 lg:space-y-10">
-        <section className="grid gap-5 border-b border-blueprint-line pb-6 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] lg:items-end">
+        <section className="border-b border-blueprint-line pb-6">
           <div className="max-w-3xl lg:pr-6">
             <h1 className="text-display-xl text-primary">Practice Tracks</h1>
             <p className="mt-3 text-body-lg text-blueprint-muted">
               Pick the round you want to sharpen next. These tracks stay aligned with your {domainLabel.toLowerCase()} target and {companyTypeLabel.toLowerCase()} interview style.
             </p>
-          </div>
-          <div className="relative w-full">
-            <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-blueprint-muted">search</span>
-            <input
-              type="text"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search a round or focus area"
-              className="w-full border-0 border-b border-blueprint-line bg-transparent py-3 pl-10 pr-4 text-body-md text-primary outline-none transition-colors placeholder:text-[#747878] focus:border-primary"
-            />
           </div>
         </section>
 

@@ -1,11 +1,47 @@
-export const DOMAIN_LABELS: Record<string, string> = {
-  frontend: 'Frontend',
-  backend: 'Backend',
-  'full-stack': 'Full Stack',
-  'ai-ml': 'AI / ML',
-  devops: 'DevOps',
-  data: 'Data Engineering',
+export type DomainFamily = 'frontend' | 'backend' | 'full-stack' | 'ai-ml' | 'devops' | 'data' | 'security' | 'system-design' | 'mobile' | 'cloud' | 'blockchain' | 'cs-fundamentals';
+
+export type DomainOption = {
+  id: string;
+  label: string;
+  description: string;
+  family: DomainFamily;
+  hidden?: boolean;
 };
+
+export const DOMAIN_OPTIONS: DomainOption[] = [
+  { id: 'frontend', label: 'Frontend', description: 'Components, state, browser APIs, accessibility, and rendering performance.', family: 'frontend' },
+  { id: 'backend', label: 'Backend', description: 'APIs, services, data access, queues, reliability, and production debugging.', family: 'backend' },
+  { id: 'ai-ml', label: 'AI / ML', description: 'Pipelines, RAG, evaluation, model choice, and production ML failure modes.', family: 'ai-ml' },
+  { id: 'cybersecurity', label: 'Cybersecurity', description: 'AppSec, auth, threat modeling, secure architecture, and incident response.', family: 'security' },
+  { id: 'data-analytics', label: 'Data Analytics', description: 'Metrics, dashboards, business analysis, experimentation, and insight quality.', family: 'data' },
+  { id: 'data-science', label: 'Data Science', description: 'Statistics, feature work, modeling choices, evaluation, and interpretation.', family: 'data' },
+  { id: 'react', label: 'React', description: 'Legacy React selection retained for existing saved workspaces.', family: 'frontend', hidden: true },
+  { id: 'next-js', label: 'Next.js', description: 'Legacy Next.js selection retained for existing saved workspaces.', family: 'frontend', hidden: true },
+  { id: 'typescript', label: 'TypeScript', description: 'Legacy TypeScript selection retained for existing saved workspaces.', family: 'frontend', hidden: true },
+  { id: 'backend-nodejs', label: 'Backend Node.js', description: 'Legacy Node.js selection retained for existing saved workspaces.', family: 'backend', hidden: true },
+  { id: 'backend-python', label: 'Backend Python', description: 'Legacy Python selection retained for existing saved workspaces.', family: 'backend', hidden: true },
+  { id: 'full-stack', label: 'Full Stack', description: 'Legacy full-stack selection retained for existing saved workspaces.', family: 'full-stack', hidden: true },
+  { id: 'system-design', label: 'System Design', description: 'Legacy system design selection retained for existing saved workspaces.', family: 'system-design', hidden: true },
+  { id: 'sql-databases', label: 'SQL and Databases', description: 'Legacy database selection retained for existing saved workspaces.', family: 'data', hidden: true },
+  { id: 'devops', label: 'DevOps', description: 'Legacy DevOps selection retained for existing saved workspaces.', family: 'devops', hidden: true },
+  { id: 'cloud-aws', label: 'Cloud AWS', description: 'Legacy AWS selection retained for existing saved workspaces.', family: 'cloud', hidden: true },
+  { id: 'cloud-gcp', label: 'Cloud GCP', description: 'Legacy GCP selection retained for existing saved workspaces.', family: 'cloud', hidden: true },
+  { id: 'data-engineering', label: 'Data Engineering', description: 'Legacy data engineering selection retained for existing saved workspaces.', family: 'data', hidden: true },
+  { id: 'blockchain', label: 'Blockchain', description: 'Legacy blockchain selection retained for existing saved workspaces.', family: 'blockchain', hidden: true },
+  { id: 'mobile-react-native', label: 'Mobile React Native', description: 'Legacy React Native selection retained for existing saved workspaces.', family: 'mobile', hidden: true },
+  { id: 'mobile-flutter', label: 'Mobile Flutter', description: 'Legacy Flutter selection retained for existing saved workspaces.', family: 'mobile', hidden: true },
+  { id: 'dsa', label: 'DSA', description: 'Legacy DSA selection retained for existing saved workspaces.', family: 'cs-fundamentals', hidden: true },
+  { id: 'cs-fundamentals', label: 'Computer Science Fundamentals', description: 'Legacy CS selection retained for existing saved workspaces.', family: 'cs-fundamentals', hidden: true },
+  { id: 'data', label: 'Data Engineering', description: 'Legacy data selection retained for existing saved workspaces.', family: 'data', hidden: true },
+  { id: 'security', label: 'Cybersecurity', description: 'Legacy security selection retained for existing saved workspaces.', family: 'security', hidden: true },
+  { id: 'mobile', label: 'Mobile', description: 'Legacy mobile selection retained for existing saved workspaces.', family: 'mobile', hidden: true },
+  { id: 'cloud-platform', label: 'Cloud Native and Platform Engineering', description: 'Legacy cloud selection retained for existing saved workspaces.', family: 'cloud', hidden: true },
+  { id: 'web3', label: 'Blockchain', description: 'Legacy web3 selection retained for existing saved workspaces.', family: 'blockchain', hidden: true },
+  { id: 'languages', label: 'Languages', description: 'Legacy languages selection retained for existing saved workspaces.', family: 'frontend', hidden: true },
+];
+
+export const DOMAIN_LABELS: Record<string, string> = Object.fromEntries(DOMAIN_OPTIONS.map((option) => [option.id, option.label]));
+export const DOMAIN_FAMILIES: Record<string, DomainFamily> = Object.fromEntries(DOMAIN_OPTIONS.map((option) => [option.id, option.family]));
 
 export const INTERVIEW_TYPE_LABELS: Record<string, string> = {
   internship: 'Internship',
@@ -119,6 +155,7 @@ type ApiResult<T> =
 
 const STORAGE_KEY = 'promptly_prep_workspace';
 const ONBOARDING_COMPLETE_KEY = 'promptly_onboarding_complete';
+const PREP_WORKSPACE_EVENT = 'promptly-prep-workspace-change';
 
 export const DEFAULT_PREP_SELECTIONS: PrepSelections = {
   domain: 'frontend',
@@ -190,6 +227,9 @@ export function getStoredPrepWorkspace(): PrepWorkspaceState {
 
 export function persistPrepWorkspace(state: PrepWorkspaceState) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }));
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(PREP_WORKSPACE_EVENT));
+  }
 }
 
 export function updatePrepWorkspace(update: Partial<PrepWorkspaceState> & { selections?: Partial<PrepSelections> }) {
@@ -209,6 +249,30 @@ export function updatePrepWorkspace(update: Partial<PrepWorkspaceState> & { sele
   };
   persistPrepWorkspace(next);
   return next;
+}
+
+export function subscribePrepWorkspace(listener: () => void) {
+  if (typeof window === 'undefined') return () => undefined;
+
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === STORAGE_KEY) listener();
+  };
+
+  window.addEventListener(PREP_WORKSPACE_EVENT, listener);
+  window.addEventListener('storage', handleStorage);
+
+  return () => {
+    window.removeEventListener(PREP_WORKSPACE_EVENT, listener);
+    window.removeEventListener('storage', handleStorage);
+  };
+}
+
+export function getVisibleDomainOptions() {
+  return DOMAIN_OPTIONS.filter((option) => !option.hidden);
+}
+
+export function getDomainFamily(domain: string) {
+  return DOMAIN_FAMILIES[domain] ?? 'frontend';
 }
 
 export async function generatePrepPlan(payload: Pick<PrepSelections, 'domain' | 'interviewType' | 'companyType' | 'timeline'>) {

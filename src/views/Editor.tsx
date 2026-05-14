@@ -1,7 +1,8 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import RoundGuard from '../components/RoundGuard';
-import { DOMAIN_LABELS, getStoredPrepWorkspace } from '../lib/prep';
+import { DOMAIN_LABELS } from '../lib/prep';
+import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 import { startRoundAttempt, submitRoundAttempt, type StoredRoundAttempt } from '../lib/questionBankApi';
 
 type WorkflowDAG = unknown;
@@ -13,7 +14,7 @@ interface EditorProps {
 
 export default function Editor(_props: EditorProps) {
   const navigate = useNavigate();
-  const workspace = getStoredPrepWorkspace();
+  const workspace = usePrepWorkspace();
   const [attempt, setAttempt] = useState<StoredRoundAttempt | null>(null);
   const [codeAnswer, setCodeAnswer] = useState('');
   const [notes, setNotes] = useState('');
@@ -171,7 +172,7 @@ export default function Editor(_props: EditorProps) {
                 <button type="button" onClick={() => navigate('/practice-tracks')} className="rounded-full border border-[#555555] px-4 py-2 text-ui-label text-[#d4d4d4] transition-colors hover:bg-[#333333]">
                   Exit Round
                 </button>
-                <button type="button" disabled={inputsLocked || submitting || !question} onClick={() => { void finishRound(false); }} className="rounded-full bg-white px-6 py-2 text-ui-label text-black transition-colors hover:bg-[#efeded] disabled:cursor-not-allowed disabled:opacity-60">
+                <button type="button" disabled={inputsLocked || submitting || !question} onClick={() => { void finishRound(false); }} className="rounded-full bg-primary px-6 py-2 text-ui-label text-white transition-colors hover:bg-[#303031] disabled:cursor-not-allowed disabled:opacity-60">
                   {submitting ? 'Submitting…' : 'Submit Coding Round'}
                 </button>
               </div>

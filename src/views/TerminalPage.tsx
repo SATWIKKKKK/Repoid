@@ -1,7 +1,8 @@
 import React, { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import RoundGuard from '../components/RoundGuard';
-import { DOMAIN_LABELS, getStoredPrepWorkspace } from '../lib/prep';
+import { DOMAIN_LABELS } from '../lib/prep';
+import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 import { startRoundAttempt, submitRoundAttempt, type StoredRoundAttempt } from '../lib/questionBankApi';
 import { View } from '../App';
 
@@ -11,7 +12,7 @@ interface TerminalPageProps {
 
 export default function TerminalPage(_props: TerminalPageProps) {
   const navigate = useNavigate();
-  const workspace = getStoredPrepWorkspace();
+  const workspace = usePrepWorkspace();
   const [attempt, setAttempt] = useState<StoredRoundAttempt | null>(null);
   const [answer, setAnswer] = useState('');
   const [loadingAttempt, setLoadingAttempt] = useState(false);
@@ -98,7 +99,7 @@ export default function TerminalPage(_props: TerminalPageProps) {
                     placeholder="Write what you said. Include the tradeoff, failure mode, and how you would verify it."
                   />
                   <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:justify-end">
-                    <button type="button" onClick={() => navigate('/practice-tracks')} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
+                    <button type="button" onClick={() => navigate('/practice-tracks')} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5">
                       Exit
                     </button>
                     <button type="button" disabled={inputsLocked || submitting || !question} onClick={() => setConfirmOpen(true)} className="rounded-full bg-primary px-6 py-2.5 text-ui-label text-white transition-colors hover:bg-[#303031] disabled:cursor-not-allowed disabled:opacity-60">
@@ -111,14 +112,14 @@ export default function TerminalPage(_props: TerminalPageProps) {
 
             {confirmOpen ? (
               <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm">
-                <div className="w-full max-w-md rounded-2xl border border-blueprint-line bg-white p-6 shadow-2xl">
+                <div className="w-full max-w-md rounded-2xl border border-blueprint-line bg-card p-6 shadow-2xl">
                   <p className="text-ui-label text-blueprint-muted">End Round</p>
                   <h2 className="mt-2 text-headline-md text-primary not-italic">Submit this mock interview?</h2>
                   <p className="mt-2 text-body-md text-blueprint-muted">
                     Your answer will be locked and evaluated from the saved response.
                   </p>
                   <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
-                    <button type="button" onClick={() => setConfirmOpen(false)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">Keep Working</button>
+                    <button type="button" onClick={() => setConfirmOpen(false)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5">Keep Working</button>
                     <button type="button" onClick={() => { setConfirmOpen(false); void finishRound(false); }} className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white transition-colors hover:bg-[#303031]">Submit Round</button>
                   </div>
                 </div>

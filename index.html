@@ -3,7 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Promptly</title>
+    <title>Repoid</title>
+    <script>
+      (() => {
+        const themeStorageKey = 'promptly_theme_preference';
+        const savedTheme = localStorage.getItem(themeStorageKey);
+        const theme = savedTheme === 'dark' || savedTheme === 'light' || savedTheme === 'system' ? savedTheme : 'light';
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const useDarkTheme = theme === 'dark' || (theme === 'system' && prefersDark);
+        document.documentElement.classList.toggle('dark', useDarkTheme);
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = useDarkTheme ? 'dark' : 'light';
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

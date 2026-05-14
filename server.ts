@@ -3,6 +3,8 @@ import crypto from 'node:crypto';
 import dotenv from 'dotenv';
 import express from 'express';
 import fs from 'node:fs';
+import net from 'node:net';
+import nodemailer from 'nodemailer';
 import path from 'node:path';
 import { createServer as createViteServer } from 'vite';
 import db from './src/lib/db.js';
@@ -25,12 +27,19 @@ const AUTH_WINDOW_MS = 60_000;
 const AUTH_MAX_REQUESTS = 20;
 const GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS = Number(process.env.GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS ?? 15000);
 const GITHUB_SCAN_INPUT_CHAR_BUDGET = Number(process.env.GITHUB_SCAN_INPUT_CHAR_BUDGET ?? 240000);
-const GITHUB_SCAN_MAX_TOKENS = Number(process.env.GITHUB_SCAN_MAX_TOKENS ?? 20000);
-const GITHUB_SCAN_MODEL = process.env.GITHUB_SCAN_MODEL?.trim() || 'deepseek/deepseek-chat';
-const GITHUB_SCAN_TIMEOUT_MS = Number(process.env.GITHUB_SCAN_TIMEOUT_MS ?? 300000);
+const GITHUB_SCAN_MAX_TOKENS = Number(process.env.GITHUB_SCAN_MAX_TOKENS ?? 64000);
+const GITHUB_SCAN_MODEL = process.env.GITHUB_SCAN_MODEL?.trim() || 'deepseek/deepseek-v4-pro';
+const GITHUB_SCAN_FALLBACK_MODELS = String(process.env.GITHUB_SCAN_FALLBACK_MODELS ?? 'openai/gpt-4o')
+  .split(',')
+  .map((model) => model.trim())
+  .filter(Boolean);
+const GITHUB_SCAN_TIMEOUT_MS = Number(process.env.GITHUB_SCAN_TIMEOUT_MS ?? 900000);
 const GITHUB_SCAN_TEMPERATURE = Number(process.env.GITHUB_SCAN_TEMPERATURE ?? 0.1);
 const GITHUB_SCAN_TOP_P = Number(process.env.GITHUB_SCAN_TOP_P ?? 0.95);
-const oauthStates = new Map<string, { provider: 'google' | 'github'; createdAt: number }>();
+const GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET = Number(process.env.GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET ?? 120000);
+const GITHUB_SCAN_ENGINE_VERSION = 'deepseek-chat-single-flight-2026-05-13';
+const oauthStates = new Map<string, { provider: 'google' | 'github'; createdAt: number; nextPath?: string }>();
+const activeGithubScanRequests = new Map<string, string>();
 
 type DbUserRow = {
   id: string;
@@ -53,9 +62,13 @@ type UserPreferencesRow = {
   domain: string | null;
 };
 
-type EmailOtpPurpose = 'signup' | 'email_change';
+type EmailOtpPurpose = 'email_change';
 
 const emailOtpCodes = new Map<string, { codeHash: string; expiresAt: number; purpose: EmailOtpPurpose }>();
+
+const QUESTION_TYPE_VALUES = ['fundamentals', 'mcq', 'fill_blank', 'scenario', 'system_design', 'coding', 'mock'] as const;
+type QuestionTypeParam = (typeof QUESTION_TYPE_VALUES)[number];
+const QUESTION_TYPE_SET = new Set<string>(QUESTION_TYPE_VALUES);
 
 type PrepPlanRequestBody = {
   domain?: string;
@@ -159,11 +172,98 @@ function readPort(name: string, fallback: number) {
   return fallback;
 }
 
-const ALLOWED_DOMAINS = new Set(['frontend', 'backend', 'full-stack', 'ai-ml', 'devops', 'data', 'database', 'mobile', 'security', 'system-design', 'cloud-platform', 'web3', 'testing', 'languages', 'cs-fundamentals']);
+async function findAvailablePort(startPort: number, maxAttempts = 20) {
+  for (let offset = 0; offset < maxAttempts; offset += 1) {
+    const candidatePort = startPort + offset;
+    const available = await new Promise<boolean>((resolve) => {
+      const probe = net.createServer();
+
+      probe.once('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'EADDRINUSE' || error.code === 'EACCES') {
+          resolve(false);
+          return;
+        }
+
+        resolve(false);
+      });
+
+      probe.once('listening', () => {
+        probe.close(() => resolve(true));
+      });
+
+      probe.listen(candidatePort, '0.0.0.0');
+    });
+
+    if (available) {
+      return candidatePort;
+    }
+  }
+
+  throw new Error(`Unable to find an open port starting at ${startPort}.`);
+}
+
+const ALLOWED_DOMAINS = new Set([
+  'frontend',
+  'react',
+  'next-js',
+  'typescript',
+  'backend-nodejs',
+  'backend-python',
+  'backend',
+  'full-stack',
+  'system-design',
+  'sql-databases',
+  'devops',
+  'cloud-aws',
+  'cloud-gcp',
+  'cloud-platform',
+  'ai-ml',
+  'data-analytics',
+  'data-science',
+  'data-engineering',
+  'data',
+  'cybersecurity',
+  'security',
+  'blockchain',
+  'web3',
+  'mobile-react-native',
+  'mobile-flutter',
+  'mobile',
+  'dsa',
+  'cs-fundamentals',
+  'languages',
+  'database',
+  'testing',
+]);
+
+const DOMAIN_ALIASES = new Map<string, string>([
+  ['database', 'sql-databases'],
+  ['testing', 'frontend'],
+]);
 
 function normalizeDomain(value: unknown, fallback = 'frontend') {
-  const domain = String(value ?? '').trim();
+  const requested = String(value ?? '').trim();
+  const domain = DOMAIN_ALIASES.get(requested) ?? requested;
   return ALLOWED_DOMAINS.has(domain) ? domain : fallback;
+}
+
+function normalizeQuestionType(value: unknown): QuestionTypeParam | null {
+  const type = String(value ?? '').trim();
+  return QUESTION_TYPE_SET.has(type) ? (type as QuestionTypeParam) : null;
+}
+
+function parseQuestionTypes(value: unknown): QuestionTypeParam[] {
+  const rawValues = Array.isArray(value)
+    ? value.flatMap((item) => String(item ?? '').split(','))
+    : String(value ?? '').split(',');
+
+  const seen = new Set<QuestionTypeParam>();
+  for (const rawValue of rawValues) {
+    const normalized = normalizeQuestionType(rawValue);
+    if (normalized) seen.add(normalized);
+  }
+
+  return [...seen];
 }
 
 function toStringArray(value: unknown, fallback: string[] = []): string[] {
@@ -190,7 +290,7 @@ function extractJsonPayload(text: string): string {
     throw new Error('The model returned an empty response.');
   }
 
-  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```\s*$/i);
   if (fencedMatch?.[1]) {
     return fencedMatch[1].trim();
   }
@@ -209,6 +309,22 @@ function extractJsonPayload(text: string): string {
   }
 
   return trimmed;
+}
+
+function githubScanModelCandidates() {
+  return Array.from(new Set([GITHUB_SCAN_MODEL, ...GITHUB_SCAN_FALLBACK_MODELS].filter(Boolean)));
+}
+
+function isRetryableGithubModelError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return (
+    message === 'model_json_parse_failed'
+    || message === 'model_empty_response'
+    || message === 'model_invalid_repo_question_json'
+    || message === 'model_missing_repo_references'
+    || message === 'analysis_timeout'
+    || /model_http_(400|402|404|408|409|429|5\d\d)/i.test(message)
+  );
 }
 
 function readMessageText(content: unknown): string {
@@ -296,37 +412,191 @@ function normalizeDiagnosticQuestions(payload: unknown): DiagnosticQuestion[] {
     .filter((question) => question.question && question.correctAnswer && question.topicTag);
 }
 
+const GITHUB_SECTION_ID_ALIASES = new Map<string, string>([
+  ['project-overview', 'project-overview'],
+  ['overview', 'project-overview'],
+  ['project-summary', 'project-overview'],
+  ['repo-overview', 'project-overview'],
+  ['frontend-deep-dive', 'frontend-deep-dive'],
+  ['frontend-deepdive', 'frontend-deep-dive'],
+  ['frontend', 'frontend-deep-dive'],
+  ['ui-deep-dive', 'frontend-deep-dive'],
+  ['backend-deep-dive', 'backend-deep-dive'],
+  ['backend-deepdive', 'backend-deep-dive'],
+  ['backend', 'backend-deep-dive'],
+  ['api-deep-dive', 'backend-deep-dive'],
+  ['service-deep-dive', 'backend-deep-dive'],
+  ['most-probable', 'most-probable'],
+  ['most-probable-interview-questions', 'most-probable'],
+  ['likely-interview-questions', 'most-probable'],
+  ['common-questions', 'most-probable'],
+  ['scenario-based', 'scenario-based'],
+  ['scenario-based-questions', 'scenario-based'],
+  ['scenarios', 'scenario-based'],
+  ['technical-deep-dive', 'technical-deep-dive'],
+  ['technical-deepdive', 'technical-deep-dive'],
+  ['technical-questions', 'technical-deep-dive'],
+  ['deep-dive', 'technical-deep-dive'],
+  ['red-flags-improvements', 'red-flags-improvements'],
+  ['red-flags-and-improvements', 'red-flags-improvements'],
+  ['red-flags', 'red-flags-improvements'],
+  ['improvements', 'red-flags-improvements'],
+]);
+
+const DEFAULT_GITHUB_SECTION_TITLES: Record<string, string> = {
+  'project-overview': 'Project Overview',
+  'frontend-deep-dive': 'Frontend Deep Dive',
+  'backend-deep-dive': 'Backend Deep Dive',
+  'most-probable': 'Most Probable Interview Questions',
+  'scenario-based': 'Scenario Based Questions',
+  'technical-deep-dive': 'Technical Deep Dive',
+  'red-flags-improvements': 'Red Flags and Improvements',
+};
+
+function normalizeGithubSectionKey(value: unknown) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function canonicalizeGithubSectionId(sectionId: unknown, sectionTitle: unknown) {
+  const candidates = [sectionId, sectionTitle]
+    .map((value) => normalizeGithubSectionKey(value))
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    const alias = GITHUB_SECTION_ID_ALIASES.get(candidate);
+    if (alias) return alias;
+  }
+
+  return candidates[0] ?? '';
+}
+
+function normalizeGithubQuestionType(value: unknown): GithubQuestion['type'] {
+  const normalized = normalizeGithubSectionKey(value);
+  if (['mcq', 'multiple-choice', 'multiple-choice-question', 'multiplechoice'].includes(normalized)) return 'mcq';
+  if (['coding', 'code', 'implementation'].includes(normalized)) return 'coding';
+  if (['scenario', 'scenario-based'].includes(normalized)) return 'scenario';
+  return 'open';
+}
+
+function normalizeGithubQuestionDifficulty(value: unknown): GithubQuestion['difficulty'] {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'easy' || normalized === 'medium' || normalized === 'hard') return normalized;
+  if (normalized === 'difficult' || normalized === 'senior') return 'hard';
+  return 'medium';
+}
+
+function normalizeGithubDetectedDomain(value: unknown) {
+  const normalized = String(value ?? '').trim();
+  const key = normalized.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (['ai', 'ai ml', 'aiml', 'ai and ml', 'machine learning', 'ml', 'ai integration'].includes(key)) return 'AI and ML';
+  if (['fullstack', 'full stack'].includes(key)) return 'Full Stack';
+  if (['front end', 'frontend', 'react'].includes(key)) return 'Frontend';
+  if (['back end', 'backend', 'api'].includes(key)) return 'Backend';
+  if (['security', 'cyber security', 'cybersecurity'].includes(key)) return 'Cybersecurity';
+  if (['devops', 'infrastructure', 'devops and infrastructure'].includes(key)) return 'DevOps and Infrastructure';
+  if (['data', 'data science', 'data engineering', 'analytics'].includes(key)) return 'Data Engineering';
+  return normalized || 'General Software';
+}
+
+function deriveGithubConceptTag(value: unknown, fileReference: string, sectionTitle: string) {
+  const explicit = String(value ?? '').trim();
+  if (explicit) return explicit;
+
+  const fileStem = fileReference
+    .split('/')
+    .pop()
+    ?.replace(/\.[^.]+$/, '')
+    .replace(/[-_]+/g, ' ')
+    .trim();
+
+  return fileStem || sectionTitle || 'repo question';
+}
+
 function normalizeGithubQuestionSet(payload: unknown): GithubQuestionSet {
   const source = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
   const sections = Array.isArray(source.sections) ? source.sections : [];
+  const normalizedSections = sections.map((section, sectionIndex) => {
+    const sectionSource = section && typeof section === 'object' ? section as Record<string, unknown> : {};
+    const sectionId = canonicalizeGithubSectionId(sectionSource.sectionId, sectionSource.sectionTitle) || `section-${sectionIndex + 1}`;
+    const sectionTitle = String(sectionSource.sectionTitle ?? '').trim() || DEFAULT_GITHUB_SECTION_TITLES[sectionId] || `Section ${sectionIndex + 1}`;
+    const sectionDescription = String(sectionSource.sectionDescription ?? '').trim() || 'Repo-grounded interview questions derived from the provided files.';
+    const questions = Array.isArray(sectionSource.questions) ? sectionSource.questions : [];
+
+    return {
+      sectionId,
+      sectionTitle,
+      sectionDescription,
+      questions: questions.map((question) => {
+        const questionSource = question && typeof question === 'object' ? question as Record<string, unknown> : {};
+        const type = normalizeGithubQuestionType(questionSource.type);
+        const fileReference = String(
+          questionSource.fileReference
+            ?? questionSource.file
+            ?? questionSource.filePath
+            ?? questionSource.path
+            ?? questionSource.sourceFile
+            ?? '',
+        ).trim();
+
+        return {
+          id: String(questionSource.id ?? '').trim(),
+          questionText: String(questionSource.questionText ?? questionSource.question ?? '').trim(),
+          type,
+          difficulty: normalizeGithubQuestionDifficulty(questionSource.difficulty),
+          fileReference,
+          conceptTag: deriveGithubConceptTag(
+            questionSource.conceptTag ?? questionSource.concept ?? questionSource.tag ?? questionSource.topic,
+            fileReference,
+            sectionTitle,
+          ),
+          options: type === 'mcq' ? toStringArray(questionSource.options).slice(0, 4) : undefined,
+          correctAnswer: String(questionSource.correctAnswer ?? questionSource.answer ?? questionSource.expectedAnswer ?? '').trim(),
+        };
+      }).filter((question) => question.questionText && question.fileReference && question.correctAnswer),
+    };
+  }).filter((section) => section.sectionId && section.sectionTitle && section.questions.length);
+
+  const mergedSections = new Map<string, GithubQuestionSection>();
+  for (const section of normalizedSections) {
+    const existing = mergedSections.get(section.sectionId);
+    if (existing) {
+      existing.questions.push(...section.questions);
+      continue;
+    }
+
+    mergedSections.set(section.sectionId, {
+      sectionId: section.sectionId,
+      sectionTitle: section.sectionTitle,
+      sectionDescription: section.sectionDescription,
+      questions: [...section.questions],
+    });
+  }
+
+  let nextQuestionId = 1;
+  const finalizedSections = Array.from(mergedSections.values()).map((section) => ({
+    ...section,
+    questions: section.questions.map((question) => ({
+      ...question,
+      id: `q${nextQuestionId++}`,
+    })),
+  }));
+
+  const warnings = new Set(toStringArray(source.warnings));
+  const totalQuestions = finalizedSections.reduce((sum, section) => sum + section.questions.length, 0);
+  if (finalizedSections.length < 7) warnings.add('reduced_section_count');
+  if (totalQuestions < 56) warnings.add('reduced_question_count');
+
   return {
-    projectName: String(source.projectName ?? '').trim(),
-    detectedDomains: toStringArray(source.detectedDomains).slice(0, 2),
-    projectSummary: String(source.projectSummary ?? '').trim(),
-    warnings: toStringArray(source.warnings),
-    sections: sections.map((section) => {
-      const sectionSource = section && typeof section === 'object' ? section as Record<string, unknown> : {};
-      const questions = Array.isArray(sectionSource.questions) ? sectionSource.questions : [];
-      return {
-        sectionId: String(sectionSource.sectionId ?? '').trim(),
-        sectionTitle: String(sectionSource.sectionTitle ?? '').trim(),
-        sectionDescription: String(sectionSource.sectionDescription ?? '').trim(),
-        questions: questions.map((question) => {
-          const questionSource = question && typeof question === 'object' ? question as Record<string, unknown> : {};
-          const type = String(questionSource.type ?? 'open') as GithubQuestion['type'];
-          return {
-            id: String(questionSource.id ?? '').trim(),
-            questionText: String(questionSource.questionText ?? '').trim(),
-            type,
-            difficulty: String(questionSource.difficulty ?? 'medium') as GithubQuestion['difficulty'],
-            fileReference: String(questionSource.fileReference ?? '').trim(),
-            conceptTag: String(questionSource.conceptTag ?? '').trim(),
-            options: type === 'mcq' ? toStringArray(questionSource.options).slice(0, 4) : undefined,
-            correctAnswer: String(questionSource.correctAnswer ?? questionSource.answer ?? questionSource.expectedAnswer ?? '').trim(),
-          };
-        }).filter((question) => question.id && question.questionText && question.fileReference && question.conceptTag && question.correctAnswer),
-      };
-    }).filter((section) => section.sectionId && section.sectionTitle),
+    projectName: String(source.projectName ?? source.repoName ?? '').trim(),
+    detectedDomains: toStringArray(source.detectedDomains ?? source.domains).map(normalizeGithubDetectedDomain).slice(0, 2),
+    projectSummary: String(source.projectSummary ?? source.summary ?? '').trim(),
+    warnings: Array.from(warnings),
+    sections: finalizedSections,
   };
 }
 
@@ -390,6 +660,7 @@ async function callStructuredModel<T>(
         temperature: options.temperature ?? 0.2,
         top_p: options.topP ?? undefined,
         max_tokens: options.maxTokens ?? 4000,
+        response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -453,6 +724,12 @@ async function callStructuredModel<T>(
     rawText = String(data.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim();
   }
 
+    if (!rawText.trim()) {
+      const error = new Error('model_empty_response') as Error & { rawResponse?: string };
+      error.rawResponse = rawText;
+      throw error;
+    }
+
     let parsed: unknown;
     try {
       parsed = JSON.parse(extractJsonPayload(rawText));
@@ -474,6 +751,41 @@ async function callStructuredModel<T>(
   } finally {
     if (timeout) clearTimeout(timeout);
   }
+}
+
+async function callGithubStructuredModel<T>(
+  systemPrompt: string,
+  userPrompt: string,
+  normalize: (payload: unknown) => T,
+  options: { maxTokens?: number; timeoutMs?: number; temperature?: number; topP?: number; jobId?: string; repoName?: string; stage?: string } = {},
+): Promise<{ result: T; provider: string; model: string }> {
+  let lastError: unknown = null;
+  for (const model of githubScanModelCandidates()) {
+    try {
+      return await callStructuredModel<T>(systemPrompt, userPrompt, normalize, {
+        model,
+        maxTokens: options.maxTokens,
+        timeoutMs: options.timeoutMs,
+        temperature: options.temperature,
+        topP: options.topP,
+      });
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error ?? '');
+      console.warn('GitHub repo scan model attempt failed', {
+        jobId: options.jobId,
+        repoName: options.repoName,
+        stage: options.stage,
+        model,
+        error: message,
+      });
+      if (!isRetryableGithubModelError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('model_generation_failed');
 }
 
 function parseGitHubRepository(input: string): { owner: string; repo: string } | null {
@@ -509,12 +821,12 @@ function categorizeRepoPath(filePath: string): string | null {
   return null;
 }
 
-async function fetchGitHubRepositoryContext(projectInput: string): Promise<string> {
+async function fetchGitHubRepositoryContext(projectInput: string, accessToken?: string | null): Promise<string> {
   const parsed = parseGitHubRepository(projectInput);
   if (!parsed) return projectInput;
 
   const repoUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}`;
-  const token = process.env.GITHUB_TOKEN?.trim();
+  const token = accessToken?.trim() || process.env.GITHUB_TOKEN?.trim();
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -599,11 +911,11 @@ type GithubRepoContext = {
 
 type RepoFileCategory = 'auth' | 'schema' | 'routes' | 'stack' | 'readme' | 'env' | 'components' | 'other';
 
-async function fetchGithubRepoForQuestionSet(repoUrlInput: string): Promise<GithubRepoContext> {
+export async function fetchGithubRepoForQuestionSet(repoUrlInput: string, accessToken?: string | null): Promise<GithubRepoContext> {
   const parsed = parseGitHubRepository(repoUrlInput);
   if (!parsed) throw new Error('invalid_github_url');
   const repoUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}`;
-  const token = process.env.GITHUB_TOKEN?.trim();
+  const token = accessToken?.trim() || process.env.GITHUB_TOKEN?.trim();
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
@@ -769,19 +1081,486 @@ Section seven: sectionId "red-flags-improvements", sectionTitle "Red Flags and I
 
 Additional rules you must never violate: Do not generate any question that could appear in a generic domain interview without referencing this specific repo. Every question must be answerable by someone who has thoroughly read this codebase. The fileReference field is not optional on any question — if you cannot cite a specific file, drop the question and replace it with one you can cite. The correctAnswer field is not optional on any question — if you cannot provide a specific, repo-grounded answer, drop the question and replace it with one you can answer properly. Questions about database must reference actual schema or model files found in the content. Questions about auth must reference the actual auth implementation files found. Questions about components must reference actual component files found. If the repo has no auth layer, generate zero auth questions. If the repo has no database files, generate zero database questions. Only generate questions about what actually exists in the provided files. The coding-based questions must embed actual code from the provided files inside the questionText — do not write fictional code. If a section genuinely cannot be filled with repo-specific questions due to limited file content, reduce its count and add a warnings array at the root of the JSON listing which sections were reduced and why.`;
 
-function buildGithubQuestionUserPrompt(context: GithubRepoContext) {
+const GITHUB_REPO_SCAN_PROFILE_PROMPT = `REPO NAME: {repoName}
+
+DETECTED FILES AND CONTENTS:
+{fileContents}
+
+README:
+{readmeContent}
+
+Return only a valid JSON object with:
+- projectName: string
+- detectedDomains: array of one or two strings chosen only from Frontend, Backend, Full Stack, AI and ML, Cybersecurity, Blockchain and Web3, DevOps and Infrastructure, Data Engineering, Mobile, or General Software
+- projectSummary: one concise paragraph of 3 to 4 sentences that names concrete libraries, files, or implementation choices from this repository
+
+Do not return markdown, prose, or text outside JSON.`;
+
+type GithubSectionSpec = {
+  sectionId: string;
+  sectionTitle: string;
+  sectionDescription: string;
+  questionCount: number;
+  instructions: string;
+  sectionKind?: 'overview' | 'primary-domain' | 'secondary-domain' | 'standard';
+};
+
+const BASE_GITHUB_SECTION_SPECS: GithubSectionSpec[] = [
+  {
+    sectionId: 'project-overview',
+    sectionTitle: 'Project Overview',
+    sectionDescription: 'Repository-grounded overview questions about architecture, stack, folder structure, and data flow.',
+    questionCount: 6,
+    instructions: 'Create exactly 6 open questions at easy or medium difficulty.',
+    sectionKind: 'overview',
+  },
+  {
+    sectionId: 'most-probable',
+    sectionTitle: 'Most Probable Interview Questions',
+    sectionDescription: 'The highest-probability repository-specific questions an interviewer would ask.',
+    questionCount: 9,
+    instructions: 'Create exactly 9 medium-difficulty questions mixing open and mcq.',
+    sectionKind: 'standard',
+  },
+  {
+    sectionId: 'scenario-based',
+    sectionTitle: 'Scenario Based Questions',
+    sectionDescription: 'Production scenarios grounded in files and decisions from this repository.',
+    questionCount: 8,
+    instructions: 'Create exactly 8 scenario questions at medium or hard difficulty.',
+    sectionKind: 'standard',
+  },
+  {
+    sectionId: 'technical-deep-dive',
+    sectionTitle: 'Technical Deep Dive',
+    sectionDescription: 'Hard implementation and design questions for a code-reading interviewer.',
+    questionCount: 8,
+    instructions: 'Create exactly 8 open questions at hard difficulty.',
+    sectionKind: 'standard',
+  },
+  {
+    sectionId: 'red-flags-improvements',
+    sectionTitle: 'Red Flags and Improvements',
+    sectionDescription: 'Repo-specific weaknesses, risks, and realistic improvement opportunities.',
+    questionCount: 5,
+    instructions: 'Create exactly 5 open hard questions about genuine weaknesses present in the repo. Do not invent problems.',
+    sectionKind: 'standard',
+  },
+];
+
+type DomainDeepDiveProfile = {
+  title: string;
+  description: string;
+};
+
+function normalizeDetectedDomain(value: string | undefined) {
+  const normalized = String(value ?? '').trim();
+  return normalized || 'General Software';
+}
+
+function domainDeepDiveProfile(domain: string, layer: 'primary' | 'secondary'): DomainDeepDiveProfile {
+  const normalized = normalizeDetectedDomain(domain);
+  const suffix = layer === 'primary' ? 'Deep Dive' : 'Systems Deep Dive';
+  const descriptions: Record<string, DomainDeepDiveProfile> = {
+    Frontend: {
+      title: layer === 'primary' ? 'Frontend Deep Dive' : 'Client Architecture Deep Dive',
+      description: layer === 'primary'
+        ? 'Repo-grounded client rendering, state, data flow, and interaction questions.'
+        : 'Deeper questions about browser behavior, client orchestration, and frontend architecture choices in this repo.',
+    },
+    Backend: {
+      title: layer === 'primary' ? 'Backend Deep Dive' : 'Service Architecture Deep Dive',
+      description: layer === 'primary'
+        ? 'Repo-grounded APIs, persistence, auth, and service-layer questions.'
+        : 'Deeper questions about backend orchestration, reliability, and data flow across service boundaries.',
+    },
+    'Full Stack': {
+      title: layer === 'primary' ? 'Frontend Application Deep Dive' : 'Backend Service Deep Dive',
+      description: layer === 'primary'
+        ? 'Repo-grounded browser, UI-state, and client-to-server interaction questions.'
+        : 'Repo-grounded APIs, persistence, auth, and backend orchestration questions.',
+    },
+    'AI and ML': {
+      title: layer === 'primary' ? 'AI and ML Deep Dive' : 'Model and Data Pipeline Deep Dive',
+      description: layer === 'primary'
+        ? 'Repo-grounded model, inference, feature, and ML application questions.'
+        : 'Deeper questions about preprocessing, evaluation, data flow, and model-serving architecture.',
+    },
+    Cybersecurity: {
+      title: layer === 'primary' ? 'Security Deep Dive' : 'Threat Modeling and Hardening Deep Dive',
+      description: layer === 'primary'
+        ? 'Repo-grounded security controls, auth boundaries, and exploit-resistance questions.'
+        : 'Deeper questions about abuse paths, trust boundaries, and hardening tradeoffs in the codebase.',
+    },
+    'Blockchain and Web3': {
+      title: layer === 'primary' ? 'Smart Contract Deep Dive' : 'Protocol and On-Chain Security Deep Dive',
+      description: layer === 'primary'
+        ? 'Repo-grounded contract logic, state transitions, and integration questions.'
+        : 'Deeper questions about protocol safety, transaction flows, and on-chain risk handling.',
+    },
+    'DevOps and Infrastructure': {
+      title: layer === 'primary' ? 'Infrastructure Deep Dive' : 'Deployment and Reliability Deep Dive',
+      description: layer === 'primary'
+        ? 'Repo-grounded build, deployment, provisioning, and runtime infrastructure questions.'
+        : 'Deeper questions about rollout safety, observability, resilience, and environment management.',
+    },
+    'Data Engineering': {
+      title: layer === 'primary' ? 'Data Pipeline Deep Dive' : 'Storage and Processing Deep Dive',
+      description: layer === 'primary'
+        ? 'Repo-grounded ingestion, transformation, and pipeline control-flow questions.'
+        : 'Deeper questions about storage layout, scheduling, consistency, and backfill behavior.',
+    },
+    Mobile: {
+      title: layer === 'primary' ? 'Mobile Deep Dive' : 'Device Integration and Runtime Deep Dive',
+      description: layer === 'primary'
+        ? 'Repo-grounded mobile state, navigation, data sync, and screen architecture questions.'
+        : 'Deeper questions about device APIs, offline behavior, performance, and platform constraints.',
+    },
+    'General Software': {
+      title: layer === 'primary' ? 'Core Implementation Deep Dive' : 'Architecture and Tradeoffs Deep Dive',
+      description: layer === 'primary'
+        ? 'Repo-grounded questions about the project’s primary implementation layer.'
+        : 'Deeper questions about architecture, reliability, and tradeoffs visible in the codebase.',
+    },
+  };
+  return descriptions[normalized] ?? {
+    title: `${normalized} ${suffix}`,
+    description: `Repo-grounded ${normalized.toLowerCase()} implementation and architecture questions.`,
+  };
+}
+
+function buildStagedSectionSpecs(profile: GithubProjectProfile): GithubSectionSpec[] {
+  const primaryDomain = normalizeDetectedDomain(profile.detectedDomains[0]);
+  const secondaryDomain = normalizeDetectedDomain(
+    profile.detectedDomains[1]
+      ?? (primaryDomain === 'Full Stack' ? 'Backend' : primaryDomain),
+  );
+  const primary = domainDeepDiveProfile(primaryDomain, 'primary');
+  const secondary = domainDeepDiveProfile(secondaryDomain, 'secondary');
+
+  const deepDiveSpecs: GithubSectionSpec[] = [
+    {
+      sectionId: 'primary-domain-deep-dive',
+      sectionTitle: primary.title,
+      sectionDescription: primary.description,
+      questionCount: 10,
+      instructions: `Create exactly 10 ${primaryDomain}-specific questions total: 3 open medium, 3 coding medium or hard, 2 scenario medium, and 2 mcq medium. Focus on this repository's ${primaryDomain.toLowerCase()} implementation only.`,
+      sectionKind: 'primary-domain',
+    },
+    {
+      sectionId: 'secondary-domain-deep-dive',
+      sectionTitle: secondary.title,
+      sectionDescription: secondary.description,
+      questionCount: 10,
+      instructions: `Create exactly 10 repo-grounded ${secondaryDomain}-focused questions total: 3 open medium or hard, 3 coding hard, 2 scenario hard, and 2 mcq medium. Focus on the strongest complementary system layer present in this codebase.`,
+      sectionKind: 'secondary-domain',
+    },
+  ];
+
+  return [
+    BASE_GITHUB_SECTION_SPECS[0],
+    ...deepDiveSpecs,
+    ...BASE_GITHUB_SECTION_SPECS.slice(1),
+  ];
+}
+
+function extractRepoFilesFromContext(context: GithubRepoContext) {
+  const matches = Array.from(context.fileContents.matchAll(/(?:^|\n)FILE:\s+([^\n]+)\n/g));
+  const files = matches.map((match) => match[1].trim()).filter(Boolean);
+  return files.length ? Array.from(new Set(files)) : ['README.md'];
+}
+
+function inferGithubFallbackDomains(context: GithubRepoContext) {
+  const haystack = `${context.detectedStack.join(' ')}\n${context.fileContents.slice(0, 40000)}\n${context.readmeContent}`.toLowerCase();
+  const domains: string[] = [];
+  if (/(sklearn|tensorflow|torch|keras|pandas|numpy|model|classifier|training|inference|notebook|\.ipynb|streamlit|gradio)/i.test(haystack)) {
+    domains.push('AI and ML');
+  }
+  if (/(react|vite|next|tsx|jsx|component|tailwind|css|frontend)/i.test(haystack)) domains.push('Frontend');
+  if (/(express|fastify|django|flask|api|route|controller|server|postgres|prisma|mongoose|sql)/i.test(haystack)) domains.push('Backend');
+  if (/(dockerfile|kubernetes|helm|terraform|github actions|workflow|vercel|deploy)/i.test(haystack)) domains.push('DevOps and Infrastructure');
+  if (/(auth|jwt|oauth|csrf|xss|encrypt|hash|security|permission)/i.test(haystack)) domains.push('Cybersecurity');
+  if (!domains.length) domains.push('General Software');
+  return Array.from(new Set(domains)).slice(0, 2);
+}
+
+function fileConceptTag(filePath: string) {
+  const lower = filePath.toLowerCase();
+  if (/(readme|package|requirements|pyproject|vite|config|toml|yaml|yml|json)$/.test(lower)) return 'project configuration';
+  if (/(model|classifier|train|predict|inference|pipeline|notebook|feature|data)/.test(lower)) return 'model pipeline';
+  if (/(route|api|server|controller|handler)/.test(lower)) return 'request handling';
+  if (/(auth|middleware|guard|session|token)/.test(lower)) return 'auth flow';
+  if (/(schema|migration|prisma|sql|db|database)/.test(lower)) return 'data model';
+  if (/(component|page|view|hook|tsx|jsx|css)/.test(lower)) return 'UI implementation';
+  if (/(docker|k8s|deploy|workflow|ci|cd)/.test(lower)) return 'deployment';
+  return 'implementation detail';
+}
+
+function fallbackQuestionFor(
+  index: number,
+  section: GithubSectionSpec,
+  filePath: string,
+  context: GithubRepoContext,
+): GithubQuestion {
+  const conceptTag = fileConceptTag(filePath);
+  const ordinal = index + 1;
+  const type: GithubQuestion['type'] = section.sectionKind === 'overview'
+    ? 'open'
+    : section.sectionId === 'scenario-based'
+      ? 'scenario'
+      : ordinal % 7 === 0
+        ? 'mcq'
+        : ordinal % 5 === 0
+          ? 'coding'
+          : 'open';
+  const difficulty: GithubQuestion['difficulty'] = section.sectionId === 'red-flags-improvements' || section.sectionId === 'technical-deep-dive'
+    ? 'hard'
+    : type === 'coding' || type === 'scenario'
+      ? 'medium'
+      : 'easy';
+
+  const stack = context.detectedStack.slice(0, 5).join(', ') || 'the detected project stack';
+  const baseQuestion = `In ${filePath}, explain the ${conceptTag} decision this repository appears to make and how it affects ${context.repoName}'s behavior.`;
+  const questionText = type === 'coding'
+    ? `In ${filePath}, identify one small refactor or guard you would add around the ${conceptTag} logic. Describe the exact code area you would change and the expected safer behavior.`
+    : type === 'scenario'
+      ? `A production issue is traced to behavior connected to ${filePath}. How would you inspect the ${conceptTag} logic, verify the root cause, and ship a safe fix for ${context.repoName}?`
+      : type === 'mcq'
+        ? `Which area should an interviewer inspect first to understand the ${conceptTag} behavior in ${context.repoName}?`
+        : baseQuestion;
+
+  const options = type === 'mcq'
+    ? [
+        filePath,
+        'A generic framework tutorial',
+        'Only the deployment provider dashboard',
+        'Browser cache settings without checking code',
+      ]
+    : undefined;
+
+  const correctAnswer = type === 'mcq'
+    ? filePath
+    : type === 'coding'
+      ? `Start in ${filePath} and isolate the ${conceptTag} branch into a named helper or add validation at the boundary where the file receives input. Keep the change small, preserve the existing data flow, and add a focused test or manual check for the path that currently lacks protection. The expected result is that ${context.repoName} handles this path predictably without changing unrelated behavior.`
+      : type === 'scenario'
+        ? `First reproduce the issue and inspect ${filePath}, because this scan found it as a relevant ${conceptTag} file. Add logging or a narrow test around the failing path, then patch the smallest boundary where invalid state or unexpected input enters. The tradeoff is speed versus certainty: ship the minimal safe fix first, then follow with broader cleanup if the same pattern appears elsewhere.`
+        : `${filePath} is one of the concrete files read from the repository, and it should be used to explain the ${conceptTag} part of ${context.repoName}. A strong answer should name the code path in that file, connect it to the detected stack (${stack}), and describe how data or control flows through it. Avoid generic framework talk; the answer should stay grounded in the implementation visible in this repository.`;
+
+  return {
+    id: `q${ordinal}`,
+    questionText,
+    type,
+    difficulty,
+    fileReference: filePath,
+    conceptTag,
+    options,
+    correctAnswer,
+  };
+}
+
+function buildFallbackGithubQuestionSet(context: GithubRepoContext, cause: unknown): GithubQuestionSet {
+  const detectedDomains = inferGithubFallbackDomains(context);
+  const profile: GithubProjectProfile = {
+    projectName: context.repoName,
+    detectedDomains,
+    projectSummary: `${context.repoName} was scanned successfully from GitHub, including concrete files such as ${extractRepoFilesFromContext(context).slice(0, 3).join(', ')}. The model provider did not return a usable structured response, so Repoid generated a fallback question set from the fetched repository files. The questions still cite actual file paths and focus on stack signals such as ${context.detectedStack.slice(0, 6).join(', ') || 'the repository contents'}.`,
+  };
+  const specs = buildStagedSectionSpecs(profile);
+  const files = extractRepoFilesFromContext(context);
+  let nextFile = 0;
+  let nextQuestionId = 1;
+  const sections = specs.map((spec) => {
+    const questions = Array.from({ length: spec.questionCount }, (_, index) => {
+      const question = fallbackQuestionFor(index, spec, files[nextFile++ % files.length], context);
+      return { ...question, id: `q${nextQuestionId++}` };
+    });
+    return {
+      sectionId: spec.sectionId,
+      sectionTitle: spec.sectionTitle,
+      sectionDescription: spec.sectionDescription,
+      questions,
+    };
+  });
+  const causeMessage = cause instanceof Error ? cause.message : String(cause ?? 'unknown');
+  return {
+    projectName: context.repoName,
+    detectedDomains,
+    projectSummary: profile.projectSummary,
+    warnings: Array.from(new Set([
+      'model_generation_failed_fallback_used',
+      causeMessage,
+      ...(context.limited ? ['limited_code_files'] : []),
+    ])).slice(0, 5),
+    sections,
+  };
+}
+
+function ensureGithubQuestionTargetCount(result: GithubQuestionSet, context: GithubRepoContext, targetCount = 56) {
+  const currentCount = result.sections.reduce((sum, section) => sum + section.questions.length, 0);
+  if (currentCount >= targetCount) return result;
+
+  const warnings = new Set(result.warnings ?? []);
+  warnings.add('repo_file_top_up_questions_added');
+  warnings.delete('reduced_question_count');
+
+  const files = extractRepoFilesFromContext(context);
+  const fallbackSpec: GithubSectionSpec = {
+    sectionId: 'red-flags-improvements',
+    sectionTitle: 'Red Flags and Improvements',
+    sectionDescription: 'Repo-specific weaknesses, risks, and realistic improvement opportunities.',
+    questionCount: targetCount - currentCount,
+    instructions: 'Top up missing repo-grounded questions from fetched files.',
+    sectionKind: 'standard',
+  };
+  let nextQuestionId = currentCount + 1;
+  const topUps = Array.from({ length: targetCount - currentCount }, (_, index) => ({
+    ...fallbackQuestionFor(index, fallbackSpec, files[index % files.length], context),
+    id: `q${nextQuestionId++}`,
+  }));
+  const targetSection = result.sections[result.sections.length - 1];
+  if (targetSection) {
+    targetSection.questions.push(...topUps);
+  } else {
+    result.sections.push({
+      sectionId: fallbackSpec.sectionId,
+      sectionTitle: fallbackSpec.sectionTitle,
+      sectionDescription: fallbackSpec.sectionDescription,
+      questions: topUps,
+    });
+  }
+  result.warnings = Array.from(warnings);
+  return result;
+}
+
+function buildGithubQuestionUserPrompt(context: GithubRepoContext, options: { compact?: boolean } = {}) {
+  const fileContents = options.compact
+    ? context.fileContents.slice(0, 120000)
+    : context.fileContents;
+  const readmeContent = options.compact
+    ? context.readmeContent.slice(0, 16000)
+    : context.readmeContent;
+
   return GITHUB_REPO_SCAN_USER_PROMPT
     .replace('{repoName}', context.repoName)
-    .replace('{fileContents}', context.fileContents || 'No meaningful code files found.')
-    .replace('{readmeContent}', context.readmeContent || 'No README found.');
+    .replace('{fileContents}', fileContents || 'No meaningful code files found.')
+    .replace('{readmeContent}', readmeContent || 'No README found.');
+}
+
+function buildGithubQuestionProfilePrompt(context: GithubRepoContext) {
+  return GITHUB_REPO_SCAN_PROFILE_PROMPT
+    .replace('{repoName}', context.repoName)
+    .replace('{fileContents}', context.fileContents.slice(0, GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET) || 'No meaningful code files found.')
+    .replace('{readmeContent}', context.readmeContent.slice(0, 12000) || 'No README found.');
+}
+
+function buildGithubSectionPrompt(
+  context: GithubRepoContext,
+  spec: GithubSectionSpec,
+  options: { compact?: boolean; instructions?: string } = {},
+) {
+  const fileContents = context.fileContents.slice(0, options.compact ? Math.min(GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET, 80000) : GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET);
+  const readmeContent = context.readmeContent.slice(0, options.compact ? 8000 : 12000);
+  return `REPO NAME: ${context.repoName}
+
+DETECTED FILES AND CONTENTS:
+${fileContents || 'No meaningful code files found.'}
+
+README:
+${readmeContent || 'No README found.'}
+
+Return only a valid JSON object with this structure:
+{
+  "sections": [
+    {
+      "sectionId": "${spec.sectionId}",
+      "sectionTitle": "${spec.sectionTitle}",
+      "sectionDescription": "${spec.sectionDescription}",
+      "questions": []
+    }
+  ]
+}
+
+${options.instructions ?? spec.instructions}
+
+Every question object must include:
+- id
+- questionText
+- type: one of mcq, open, coding, scenario
+- difficulty: one of easy, medium, hard
+- fileReference: an exact file path from the provided repository context
+- conceptTag
+- correctAnswer
+- options: required only for mcq, exactly 4 strings, with correctAnswer matching one option exactly
+
+Rules:
+- Every question must be strictly repo-grounded.
+- Every answer must mention the concrete file, route, component, schema, algorithm, or code decision involved.
+- If a coding question is used, embed actual code from the supplied files inside questionText.
+- Do not return markdown, commentary, or text outside JSON.`;
+}
+
+type GithubProjectProfile = Pick<GithubQuestionSet, 'projectName' | 'detectedDomains' | 'projectSummary'>;
+
+function normalizeGithubProjectProfile(payload: unknown): GithubProjectProfile {
+  const source = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+  return {
+    projectName: String(source.projectName ?? source.repoName ?? '').trim(),
+    detectedDomains: toStringArray(source.detectedDomains ?? source.domains).map(normalizeGithubDetectedDomain).slice(0, 2),
+    projectSummary: String(source.projectSummary ?? source.summary ?? '').trim(),
+  };
+}
+
+function stagedSectionOutputBudget(spec: GithubSectionSpec) {
+  if (spec.sectionKind === 'primary-domain' || spec.sectionKind === 'secondary-domain') return Math.min(GITHUB_SCAN_MAX_TOKENS, 32000);
+  if (spec.sectionId === 'scenario-based' || spec.sectionId === 'technical-deep-dive') return Math.min(GITHUB_SCAN_MAX_TOKENS, 24000);
+  if (spec.sectionId === 'most-probable') return Math.min(GITHUB_SCAN_MAX_TOKENS, 20000);
+  return Math.min(GITHUB_SCAN_MAX_TOKENS, 16000);
+}
+
+type GithubSectionBatchSpec = {
+  label: string;
+  questionCount: number;
+  instructions: string;
+};
+
+function stagedSectionBatches(spec: GithubSectionSpec): GithubSectionBatchSpec[] {
+  if (spec.sectionKind === 'primary-domain') {
+    return [
+      { label: 'open-and-mcq', questionCount: 5, instructions: 'Create exactly 5 questions total: 3 open medium and 2 mcq medium.' },
+      { label: 'coding', questionCount: 3, instructions: 'Create exactly 3 coding questions at medium or hard difficulty.' },
+      { label: 'scenario', questionCount: 2, instructions: 'Create exactly 2 scenario questions at medium difficulty.' },
+    ];
+  }
+  if (spec.sectionKind === 'secondary-domain') {
+    return [
+      { label: 'open-and-mcq', questionCount: 5, instructions: 'Create exactly 5 questions total: 3 open medium or hard and 2 mcq medium.' },
+      { label: 'coding-1', questionCount: 1, instructions: 'Create exactly 1 coding question at hard difficulty.' },
+      { label: 'coding-2', questionCount: 1, instructions: 'Create exactly 1 different coding question at hard difficulty.' },
+      { label: 'coding-3', questionCount: 1, instructions: 'Create exactly 1 additional coding question at hard difficulty.' },
+      { label: 'scenario', questionCount: 2, instructions: 'Create exactly 2 scenario questions at hard difficulty.' },
+    ];
+  }
+  return [{ label: 'full', questionCount: spec.questionCount, instructions: spec.instructions }];
 }
 
 function assertUsableGithubQuestionSet(result: GithubQuestionSet) {
   const totalQuestions = result.sections.reduce((sum, section) => sum + section.questions.length, 0);
-  const requiredSectionIds = new Set(['project-overview', 'most-probable', 'scenario-based', 'technical-deep-dive', 'red-flags-improvements']);
+  const requiredSectionIds = new Set([
+    'project-overview',
+    'frontend-deep-dive',
+    'backend-deep-dive',
+    'primary-domain-deep-dive',
+    'secondary-domain-deep-dive',
+    'most-probable',
+    'scenario-based',
+    'technical-deep-dive',
+    'red-flags-improvements',
+  ]);
   const returnedSections = new Set(result.sections.map((section) => section.sectionId));
-  const missingSection = [...requiredSectionIds].find((sectionId) => !returnedSections.has(sectionId));
-  if (!result.projectName || !result.projectSummary || result.sections.length !== 7 || missingSection || totalQuestions !== 56) {
+  const matchedRequiredSections = [...requiredSectionIds].filter((sectionId) => returnedSections.has(sectionId));
+  const hasLegacyDeepDives = returnedSections.has('frontend-deep-dive') || returnedSections.has('backend-deep-dive');
+  const hasDomainDeepDives = returnedSections.has('primary-domain-deep-dive') && returnedSections.has('secondary-domain-deep-dive');
+  if (!result.projectName || !result.projectSummary || result.sections.length < 4 || (!hasLegacyDeepDives && !hasDomainDeepDives) || totalQuestions < 24) {
     throw new Error('model_invalid_repo_question_json');
   }
   const hasMissingReferences = result.sections.some((section) => (
@@ -790,38 +1569,196 @@ function assertUsableGithubQuestionSet(result: GithubQuestionSet) {
   if (hasMissingReferences) {
     throw new Error('model_missing_repo_references');
   }
+
+  const warnings = new Set(result.warnings ?? []);
+  if (matchedRequiredSections.length < 5) warnings.add('partial_section_coverage');
+  if (result.sections.length < 7) warnings.add('reduced_section_count');
+  if (totalQuestions < 56) warnings.add('reduced_question_count');
+  result.warnings = Array.from(warnings);
 }
 
-async function generateGithubQuestionSet(context: GithubRepoContext, jobId: string): Promise<GithubQuestionSet> {
+export async function generateGithubQuestionSet(context: GithubRepoContext, jobId: string, userId?: string): Promise<GithubQuestionSet> {
   let lastError: unknown = null;
-  for (let attempt = 1; attempt <= 2; attempt += 1) {
-    try {
-      const analysis = await callStructuredModel<GithubQuestionSet>(
-        GITHUB_REPO_SCAN_SYSTEM_PROMPT,
-        buildGithubQuestionUserPrompt(context),
-        normalizeGithubQuestionSet,
-        {
-          model: GITHUB_SCAN_MODEL,
-          maxTokens: GITHUB_SCAN_MAX_TOKENS,
-          timeoutMs: GITHUB_SCAN_TIMEOUT_MS,
-          temperature: GITHUB_SCAN_TEMPERATURE,
-          topP: GITHUB_SCAN_TOP_P,
-        },
-      );
-      const result = analysis.result;
-      if (context.limited) {
-        result.warnings = Array.from(new Set([...(result.warnings ?? []), 'limited_code_files']));
-      }
-      assertUsableGithubQuestionSet(result);
-      return result;
-    } catch (error) {
-      lastError = error;
-      if (attempt === 1) {
-        await db.prepare('UPDATE repo_scan_jobs SET retry_count = retry_count + 1 WHERE id = ?').run(jobId);
-        await wait(3000);
+  const stagedFullOnly = process.env.GITHUB_SCAN_STAGED_FULL === 'true' || GITHUB_SCAN_MODEL === 'deepseek/deepseek-v4-pro';
+  if (stagedFullOnly) {
+    lastError = new Error('model_empty_response');
+  } else {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        const compactRetry = attempt > 1;
+        if (userId) await assertGithubScanJobActive(jobId, userId);
+        const analysis = await callGithubStructuredModel<GithubQuestionSet>(
+          GITHUB_REPO_SCAN_SYSTEM_PROMPT,
+          buildGithubQuestionUserPrompt(context, { compact: compactRetry }),
+          normalizeGithubQuestionSet,
+          {
+            maxTokens: GITHUB_SCAN_MAX_TOKENS,
+            timeoutMs: GITHUB_SCAN_TIMEOUT_MS,
+            temperature: GITHUB_SCAN_TEMPERATURE,
+            topP: GITHUB_SCAN_TOP_P,
+            jobId,
+            repoName: context.repoName,
+            stage: compactRetry ? 'full-compact' : 'full',
+          },
+        );
+        const result = analysis.result;
+        if (context.limited) {
+          result.warnings = Array.from(new Set([...(result.warnings ?? []), 'limited_code_files']));
+        }
+        ensureGithubQuestionTargetCount(result, context);
+        assertUsableGithubQuestionSet(result);
+        return result;
+      } catch (error) {
+        lastError = error;
+        if (attempt === 1) {
+          console.error('GitHub repo scan generation attempt failed; retrying with compact context', {
+            jobId,
+            repoName: context.repoName,
+            error: error instanceof Error ? error.message : error,
+          });
+          await db.prepare('UPDATE repo_scan_jobs SET retry_count = retry_count + 1 WHERE id = ?').run(jobId);
+          await wait(3000);
+        }
       }
     }
   }
+
+  const lastMessage = lastError instanceof Error ? lastError.message : '';
+  if (['model_json_parse_failed', 'model_empty_response', 'model_invalid_repo_question_json', 'model_missing_repo_references', 'analysis_timeout'].includes(lastMessage)) {
+    console.warn('GitHub repo scan switching to staged full question-set generation', {
+      jobId,
+      repoName: context.repoName,
+      previousError: lastMessage,
+    });
+    if (userId) await assertGithubScanJobActive(jobId, userId);
+    const profileAnalysis = await callGithubStructuredModel<GithubProjectProfile>(
+      GITHUB_REPO_SCAN_SYSTEM_PROMPT,
+      buildGithubQuestionProfilePrompt(context),
+      normalizeGithubProjectProfile,
+      {
+        maxTokens: Math.min(GITHUB_SCAN_MAX_TOKENS, 6000),
+        timeoutMs: GITHUB_SCAN_TIMEOUT_MS,
+        temperature: GITHUB_SCAN_TEMPERATURE,
+        topP: GITHUB_SCAN_TOP_P,
+        jobId,
+        repoName: context.repoName,
+        stage: 'profile',
+      },
+    );
+    const stagedSectionSpecs = buildStagedSectionSpecs(profileAnalysis.result);
+    const stagedSections: GithubQuestionSection[] = [];
+    for (const spec of stagedSectionSpecs) {
+      console.info('GitHub repo scan staged section started', {
+        jobId,
+        repoName: context.repoName,
+        sectionId: spec.sectionId,
+      });
+      const batchQuestions: GithubQuestion[] = [];
+      let sectionDescription = spec.sectionDescription;
+      for (const batch of stagedSectionBatches(spec)) {
+        if (userId) await assertGithubScanJobActive(jobId, userId);
+        console.info('GitHub repo scan staged section batch started', {
+          jobId,
+          repoName: context.repoName,
+          sectionId: spec.sectionId,
+          batch: batch.label,
+        });
+        let sectionAnalysis: { result: GithubQuestionSet } | null = null;
+        let sectionError: unknown = null;
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+          try {
+            sectionAnalysis = await callGithubStructuredModel<GithubQuestionSet>(
+              GITHUB_REPO_SCAN_SYSTEM_PROMPT,
+              buildGithubSectionPrompt(context, spec, { compact: attempt > 1, instructions: batch.instructions }),
+              normalizeGithubQuestionSet,
+              {
+                maxTokens: stagedSectionOutputBudget(spec),
+                timeoutMs: GITHUB_SCAN_TIMEOUT_MS,
+                temperature: GITHUB_SCAN_TEMPERATURE,
+                topP: GITHUB_SCAN_TOP_P,
+                jobId,
+                repoName: context.repoName,
+                stage: `${spec.sectionId}:${batch.label}${attempt > 1 ? ':compact' : ''}`,
+              },
+            );
+            break;
+          } catch (error) {
+            sectionError = error;
+            const errorMessage = error instanceof Error ? error.message : '';
+            if (attempt === 1 && ['model_json_parse_failed', 'model_empty_response', 'analysis_timeout'].includes(errorMessage)) {
+              console.warn('GitHub repo scan staged section batch retrying with compact context', {
+                jobId,
+                repoName: context.repoName,
+                sectionId: spec.sectionId,
+                batch: batch.label,
+                error: errorMessage,
+              });
+              continue;
+            }
+            throw error;
+          }
+        }
+        if (!sectionAnalysis) {
+          throw sectionError instanceof Error ? sectionError : new Error('model_generation_failed');
+        }
+        const section = sectionAnalysis.result.sections.find((item) => item.sectionId === spec.sectionId)
+          ?? sectionAnalysis.result.sections[0];
+        if (!section || section.questions.length !== batch.questionCount) {
+          throw new Error('model_invalid_repo_question_json');
+        }
+        sectionDescription = section.sectionDescription || sectionDescription;
+        batchQuestions.push(...section.questions);
+        console.info('GitHub repo scan staged section batch complete', {
+          jobId,
+          repoName: context.repoName,
+          sectionId: spec.sectionId,
+          batch: batch.label,
+          questionCount: section.questions.length,
+        });
+      }
+      if (batchQuestions.length !== spec.questionCount) {
+        throw new Error('model_invalid_repo_question_json');
+      }
+      stagedSections.push({
+        sectionId: spec.sectionId,
+        sectionTitle: spec.sectionTitle,
+        sectionDescription,
+        questions: batchQuestions,
+      });
+      console.info('GitHub repo scan staged section complete', {
+        jobId,
+        repoName: context.repoName,
+        sectionId: spec.sectionId,
+        questionCount: batchQuestions.length,
+      });
+    }
+    let nextStagedQuestionId = 1;
+    const normalizedStagedSections = stagedSections.map((section) => ({
+      ...section,
+      questions: section.questions.map((question) => ({
+        ...question,
+        id: `q${nextStagedQuestionId++}`,
+      })),
+    }));
+    const stagedResult: GithubQuestionSet = {
+      projectName: profileAnalysis.result.projectName || context.repoName,
+      detectedDomains: profileAnalysis.result.detectedDomains,
+      projectSummary: profileAnalysis.result.projectSummary,
+      warnings: Array.from(new Set([
+        'staged_full_generation',
+        ...(context.limited ? ['limited_code_files'] : []),
+      ])),
+      sections: normalizedStagedSections,
+    };
+    ensureGithubQuestionTargetCount(stagedResult, context);
+    const stagedQuestionCount = stagedResult.sections.reduce((sum, section) => sum + section.questions.length, 0);
+    if (!stagedResult.projectSummary || stagedResult.sections.length !== stagedSectionSpecs.length || stagedQuestionCount !== 56) {
+      throw new Error('model_invalid_repo_question_json');
+    }
+    assertUsableGithubQuestionSet(stagedResult);
+    return stagedResult;
+  }
+
   throw lastError instanceof Error ? lastError : new Error('model_generation_failed');
 }
 
@@ -850,13 +1787,13 @@ function githubScanErrorDetails(error: unknown, userId: string, repoUrl: string)
     };
   }
 
-  if (message === 'model_json_parse_failed') {
+  if (message === 'model_json_parse_failed' || message === 'model_empty_response') {
     console.error('GitHub repo scan returned invalid JSON after retry', { userId, repoUrl, rawResponse });
     return {
       status: 'failed',
       jobStatus: 'failed',
       httpStatus: 502,
-      message: 'We had trouble analyzing this repository. Please try again.',
+      message: 'The AI provider returned an unreadable repository analysis. Please retry the scan.',
     };
   }
 
@@ -865,7 +1802,7 @@ function githubScanErrorDetails(error: unknown, userId: string, repoUrl: string)
       status: 'failed',
       jobStatus: 'failed',
       httpStatus: 502,
-      message: 'We had trouble analyzing this repository. Please try again.',
+      message: 'The AI provider returned an incomplete repository analysis without enough repo-grounded questions. Please retry the scan.',
     };
   }
 
@@ -879,6 +1816,11 @@ function githubScanErrorDetails(error: unknown, userId: string, repoUrl: string)
   }
 
   if (/model_http_4\d\d|model_http_5\d\d/i.test(message)) {
+    console.error('GitHub repo scan provider request failed', {
+      userId,
+      repoUrl,
+      providerError: message,
+    });
     return {
       status: 'failed',
       jobStatus: 'failed',
@@ -904,21 +1846,89 @@ function githubScanErrorDetails(error: unknown, userId: string, repoUrl: string)
   };
 }
 
-async function completeGithubScanJob(params: {
+const GITHUB_SCAN_STALE_AFTER_MINUTES = Math.max(5, Number(process.env.GITHUB_SCAN_STALE_AFTER_MINUTES ?? 15));
+
+async function expireStaleGithubScanJobs(userId?: string) {
+  const params: unknown[] = [
+    'failed',
+    'Repository scan timed out before completion. Please start a fresh scan.',
+    GITHUB_SCAN_STALE_AFTER_MINUTES,
+  ];
+  const userClause = userId ? ' AND user_id = ?' : '';
+  if (userId) params.push(userId);
+
+  await db.prepare(`
+    UPDATE repo_scan_jobs
+       SET status = ?,
+           completed_at = NOW(),
+           error_message = ?
+     WHERE status = 'pending'
+       AND created_at < NOW() - (?::text || ' minutes')::interval
+       ${userClause}
+  `).run(...params);
+}
+
+async function assertGithubScanJobActive(jobId: string, userId: string) {
+  const activeJob = await db.prepare('SELECT status FROM repo_scan_jobs WHERE id = ? AND user_id = ?')
+    .get<{ status: string }>(jobId, userId);
+  if (activeJob?.status !== 'pending') {
+    throw new Error('scan_job_replaced');
+  }
+}
+
+export async function completeGithubScanJob(params: {
   jobId: string;
   userId: string;
   repoUrl: string;
   existingRepoId?: string;
+  accessToken?: string | null;
 }) {
   try {
-    const context = await fetchGithubRepoForQuestionSet(params.repoUrl);
+    console.info('GitHub repo scan stage started', {
+      jobId: params.jobId,
+      repoUrl: params.repoUrl,
+      stage: 'fetch-context',
+    });
+    const context = await fetchGithubRepoForQuestionSet(params.repoUrl, params.accessToken);
+    console.info('GitHub repo scan stage complete', {
+      jobId: params.jobId,
+      repoUrl: params.repoUrl,
+      stage: 'fetch-context',
+      detectedStackCount: context.detectedStack.length,
+      fileContextCharacters: context.fileContents.length,
+      readmeCharacters: context.readmeContent.length,
+      limited: context.limited,
+    });
+    await assertGithubScanJobActive(params.jobId, params.userId);
     const repoId = params.existingRepoId ?? crypto.randomUUID();
-    const result = await generateGithubQuestionSet(context, params.jobId);
-    const activeJob = await db.prepare('SELECT status FROM repo_scan_jobs WHERE id = ? AND user_id = ?')
-      .get<{ status: string }>(params.jobId, params.userId);
-    if (activeJob?.status !== 'pending') {
-      throw new Error('scan_job_replaced');
+    console.info('GitHub repo scan stage started', {
+      jobId: params.jobId,
+      repoUrl: params.repoUrl,
+      stage: 'generate-question-set',
+    });
+    let result: GithubQuestionSet;
+    try {
+      result = await generateGithubQuestionSet(context, params.jobId, params.userId);
+    } catch (generationError) {
+      if (generationError instanceof Error && generationError.message === 'scan_job_replaced') {
+        throw generationError;
+      }
+      console.warn('GitHub repo scan model generation failed; using repo-grounded fallback question set', {
+        jobId: params.jobId,
+        repoUrl: params.repoUrl,
+        error: generationError instanceof Error ? generationError.message : generationError,
+      });
+      result = buildFallbackGithubQuestionSet(context, generationError);
     }
+    console.info('GitHub repo scan stage complete', {
+      jobId: params.jobId,
+      repoUrl: params.repoUrl,
+      stage: 'generate-question-set',
+      sectionCount: result.sections.length,
+      questionCount: result.sections.reduce((sum, section) => sum + section.questions.length, 0),
+      warnings: result.warnings ?? [],
+    });
+    await assertGithubScanJobActive(params.jobId, params.userId);
     const totalQuestions = result.sections.reduce((sum, section) => sum + section.questions.length, 0);
 
     if (params.existingRepoId) {
@@ -933,11 +1943,28 @@ async function completeGithubScanJob(params: {
     await db.prepare('INSERT INTO repo_question_sets (id, repo_id, generated_at, project_summary, total_questions, sections_json) VALUES (?, ?, NOW(), ?, ?, ?::jsonb)')
       .run(crypto.randomUUID(), repoId, result.projectSummary, totalQuestions, JSON.stringify(result.sections));
     await db.prepare('UPDATE repo_scan_jobs SET status = ?, completed_at = NOW(), error_message = NULL WHERE id = ?').run('complete', params.jobId);
+    console.info('GitHub repo scan stage complete', {
+      jobId: params.jobId,
+      repoUrl: params.repoUrl,
+      stage: 'persist-question-set',
+      repoId,
+      totalQuestions,
+    });
     return { repoId };
   } catch (error) {
     const details = githubScanErrorDetails(error, params.userId, params.repoUrl);
-    await db.prepare('UPDATE repo_scan_jobs SET status = ?, completed_at = NOW(), error_message = ? WHERE id = ?')
-      .run(details.jobStatus, details.message, params.jobId);
+    try {
+      await db.prepare('UPDATE repo_scan_jobs SET status = ?, completed_at = NOW(), error_message = ? WHERE id = ?')
+        .run(details.jobStatus, details.message, params.jobId);
+    } catch (failurePersistenceError) {
+      console.error('Unable to persist GitHub repo scan failure status', {
+        userId: params.userId,
+        repoUrl: params.repoUrl,
+        jobId: params.jobId,
+        scanError: error instanceof Error ? error.message : error,
+        persistenceError: failurePersistenceError instanceof Error ? failurePersistenceError.message : failurePersistenceError,
+      });
+    }
     const scanError = new Error(details.message) as Error & { status?: string; httpStatus?: number };
     scanError.status = details.status;
     scanError.httpStatus = details.httpStatus;
@@ -1016,6 +2043,48 @@ function createEmailOtp(email: string, purpose: EmailOtpPurpose) {
   });
   console.info(`Email OTP for ${purpose} ${email}: ${code}`);
   return code;
+}
+
+async function sendEmailOtp(email: string, purpose: EmailOtpPurpose, code: string) {
+  const smtpUser = process.env.SMTP_USER?.trim() || process.env.GMAIL_USER?.trim();
+  const smtpPass = process.env.SMTP_PASS?.trim() || process.env.GMAIL_APP_PASSWORD?.trim();
+  const smtpFrom = process.env.SMTP_FROM?.trim() || process.env.EMAIL_FROM?.trim() || (smtpUser ? `Repoid <${smtpUser}>` : '');
+  const subject = 'Verify your new Repoid email';
+  const html = `
+    <div style="font-family:Inter,Arial,sans-serif;background:#050505;color:#f4f4f4;padding:28px">
+      <div style="max-width:520px;margin:0 auto;border:1px solid #2f2f2f;border-radius:16px;padding:24px;background:#101010">
+        <p style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#b8b8b8;margin:0 0 12px">Repoid verification</p>
+        <h1 style="font-size:28px;line-height:1.2;margin:0 0 16px">Your OTP is ${code}</h1>
+        <p style="color:#cfcfcf;line-height:1.6;margin:0">Use this code within 10 minutes to change your email address.</p>
+      </div>
+    </div>
+  `;
+
+  if (!smtpUser || !smtpPass) {
+    return { sent: false, reason: 'Email delivery is not configured. Add SMTP_USER and SMTP_PASS with a Gmail App Password.' };
+  }
+
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: smtpUser,
+      pass: smtpPass,
+    },
+  });
+
+  try {
+    await transporter.sendMail({
+      from: smtpFrom,
+      to: email,
+      subject,
+      html,
+      text: `Your Repoid OTP is ${code}. It expires in 10 minutes.`,
+    });
+  } catch (error) {
+    throw new Error(error instanceof Error ? `Gmail SMTP error: ${error.message}` : 'Gmail SMTP error.');
+  }
+
+  return { sent: true };
 }
 
 function consumeEmailOtp(email: string, purpose: EmailOtpPurpose, code: unknown) {
@@ -1098,11 +2167,29 @@ async function findOrCreateOAuthUser(provider: 'google' | 'github', providerAcco
   return user;
 }
 
+async function saveGithubAccessToken(userId: string, accessToken: string) {
+  await db.prepare('UPDATE oauth_accounts SET access_token = ?, updated_at = NOW() WHERE user_id = ? AND provider = ?')
+    .run(accessToken, userId, 'github');
+}
+
+async function getGithubAccessToken(userId: string) {
+  const row = await db.prepare('SELECT access_token FROM oauth_accounts WHERE user_id = ? AND provider = ? ORDER BY updated_at DESC LIMIT 1')
+    .get<{ access_token: string | null }>(userId, 'github');
+  return row?.access_token ?? null;
+}
+
 function consumeOAuthState(provider: 'google' | 'github', state: unknown) {
   const stateValue = String(state ?? '');
   const stored = oauthStates.get(stateValue);
   oauthStates.delete(stateValue);
-  return Boolean(stored && stored.provider === provider && Date.now() - stored.createdAt < 10 * 60_000);
+  if (!stored || stored.provider !== provider || Date.now() - stored.createdAt >= 10 * 60_000) return null;
+  return stored;
+}
+
+function safeOAuthNextPath(value: unknown) {
+  const nextPath = String(value ?? '').trim();
+  if (!nextPath || !nextPath.startsWith('/') || nextPath.startsWith('//') || nextPath.includes('\\')) return '';
+  return nextPath;
 }
 
 function toSessionUser(user: DbUserRow) {
@@ -1157,7 +2244,16 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
   app.get('/api/health', async (_request, response) => {
     await db.query('SELECT 1');
-    response.json({ status: 'ok' });
+    response.json({
+      status: 'ok',
+      githubScanner: {
+        version: GITHUB_SCAN_ENGINE_VERSION,
+        model: GITHUB_SCAN_MODEL,
+        fallbackModels: GITHUB_SCAN_FALLBACK_MODELS,
+        stagedFull: process.env.GITHUB_SCAN_STAGED_FULL === 'true' || GITHUB_SCAN_MODEL === 'deepseek/deepseek-v4-pro',
+        contextCharBudget: GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET,
+      },
+    });
   });
 
   app.get('/api/questions/stats', requireUser, async (_request, response) => {
@@ -1174,12 +2270,26 @@ export async function createApp(options: { listen?: boolean } = {}) {
       const user = (request as AuthedRequest).user!;
       const requestedDomain = String(request.query.domain ?? '');
       const domain = !requestedDomain || requestedDomain === 'all' ? await getUserSelectedDomain(user.id) : normalizeDomain(requestedDomain);
-      const type = String(request.query.type ?? 'all') as 'all' | 'mcq' | 'fill_blank' | 'scenario' | 'system_design' | 'coding' | 'mock';
+      const types = parseQuestionTypes(request.query.types);
+      const type = normalizeQuestionType(request.query.type) ?? 'all';
       const search = String(request.query.search ?? '');
-      const limit = Math.min(300, Math.max(1, Number(request.query.limit ?? 50)));
+      const topics = toStringArray(request.query.topics);
+      const roundTags = toStringArray(request.query.roundTags);
+      const pageSize = Math.min(60, Math.max(1, Number(request.query.pageSize ?? request.query.limit ?? 12)));
+      const page = Math.max(1, Number(request.query.page ?? 1));
       const faangOnly = String(request.query.faangOnly ?? 'false') === 'true';
-      const questions = await listQuestions({ domain, type, search, faangOnly, limit });
-      response.json({ questions, totalReturned: questions.length });
+      const result = await listQuestions({
+        domain,
+        types: types.length ? types : undefined,
+        type: types.length ? undefined : type,
+        search,
+        faangOnly,
+        topics,
+        roundTags,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
+      });
+      response.json({ ...result, totalReturned: result.questions.length });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load questions.' });
     }
@@ -1259,30 +2369,58 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
-  app.post('/api/auth/request-email-otp', applyAuthRateLimit, async (request, response) => {
+  app.get('/api/round-attempts/latest-summary', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const domain = request.query.domain ? normalizeDomain(request.query.domain) : undefined;
+      const roundTypes = ['coding-round', 'scenario-round', 'mock-interview'];
+      const attempts = await Promise.all(roundTypes.map((roundType) => getLatestRoundAttempt(user.id, roundType, domain)));
+      response.json({ attempts: attempts.filter(Boolean) });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load round attempt summary.' });
+    }
+  });
+
+  app.post('/api/auth/request-email-otp', applyAuthRateLimit, requireUser, async (request, response) => {
     const email = normalizeEmail(request.body?.email);
-    const purpose = String(request.body?.purpose ?? 'signup') === 'email_change' ? 'email_change' : 'signup';
+    const purpose = String(request.body?.purpose ?? '');
 
     if (!email || !email.includes('@')) {
       response.status(400).json({ error: 'A valid email address is required.' });
       return;
     }
-
-    const existingUser = await db.prepare('SELECT id, email_verified FROM users WHERE email = ?').get<{ id: string; email_verified: boolean | null }>(email);
-    if (purpose === 'signup' && existingUser?.email_verified) {
-      response.status(409).json({ error: 'An account with this email already exists.' });
+    if (purpose !== 'email_change') {
+      response.status(400).json({ error: 'OTP verification is only required for changing account email.' });
       return;
     }
-    if (purpose === 'email_change' && existingUser) {
+
+    const existingUser = await db.prepare('SELECT id, email_verified FROM users WHERE email = ?').get<{ id: string; email_verified: boolean | null }>(email);
+    if (existingUser) {
       response.status(409).json({ error: 'An account with this email already exists.' });
       return;
     }
 
     const code = createEmailOtp(email, purpose);
-    const includeDebugCode = process.env.NODE_ENV !== 'production' || process.env.EMAIL_DEBUG_OTP === 'true';
+    let delivery: { sent: boolean; reason?: string };
+    try {
+      delivery = await sendEmailOtp(email, purpose, code);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to send OTP email.';
+      if (process.env.NODE_ENV === 'production' && process.env.EMAIL_DEBUG_OTP !== 'true') {
+        response.status(502).json({ error: message });
+        return;
+      }
+      delivery = {
+        sent: false,
+        reason: `Email delivery failed, so local OTP fallback is enabled for development. ${message}`,
+      };
+    }
+
+    const includeDebugCode = process.env.NODE_ENV !== 'production' || process.env.EMAIL_DEBUG_OTP === 'true' || !delivery.sent;
     response.json({
       success: true,
-      message: 'OTP generated. Check your email and enter the code to continue.',
+      message: delivery.sent ? 'OTP sent. Check your email and enter the code to continue.' : delivery.reason,
+      emailSent: delivery.sent,
       ...(includeDebugCode ? { debugOtp: code } : {}),
     });
   });
@@ -1291,7 +2429,6 @@ export async function createApp(options: { listen?: boolean } = {}) {
     const email = normalizeEmail(request.body?.email);
     const name = String(request.body?.name ?? '').trim();
     const password = String(request.body?.password ?? '');
-    const otp = String(request.body?.otp ?? '').trim();
     const domain = normalizeDomain(request.body?.domain);
 
     if (!email || !email.includes('@')) {
@@ -1306,11 +2443,6 @@ export async function createApp(options: { listen?: boolean } = {}) {
       response.status(400).json({ error: 'Password must be at least 8 characters.' });
       return;
     }
-    if (!consumeEmailOtp(email, 'signup', otp)) {
-      response.status(400).json({ error: 'Verify your email with the OTP before creating the account.' });
-      return;
-    }
-
     const existingUser = await db.prepare('SELECT id FROM users WHERE email = ?').get<{ id: string }>(email);
     if (existingUser) {
       response.status(409).json({ error: 'An account with this email already exists.' });
@@ -1351,11 +2483,6 @@ export async function createApp(options: { listen?: boolean } = {}) {
       response.status(401).json({ error: 'Invalid credentials.' });
       return;
     }
-    if (!user.email_verified) {
-      response.status(403).json({ error: 'Verify your email before signing in.' });
-      return;
-    }
-
     setSessionCookie(response, user.id);
     response.json({ user: toSessionUser(user) });
   });
@@ -1427,23 +2554,25 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
   app.get('/api/auth/oauth/github', (request, response) => {
     const clientId = process.env.GITHUB_CLIENT_ID?.trim();
+    const nextPath = safeOAuthNextPath(request.query.next);
     if (!clientId) {
-      response.redirect('/signin?error=oauth_github_not_configured');
+      response.redirect(`${nextPath || '/signin'}?error=oauth_github_not_configured`);
       return;
     }
     const state = crypto.randomUUID();
-    oauthStates.set(state, { provider: 'github', createdAt: Date.now() });
+    oauthStates.set(state, { provider: 'github', createdAt: Date.now(), nextPath });
     const params = new URLSearchParams({
       client_id: clientId,
       redirect_uri: `${getPublicBaseUrl(request)}/api/auth/oauth/github/callback`,
-      scope: 'read:user user:email',
+      scope: 'read:user user:email repo',
       state,
     });
     response.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
   });
 
   app.get('/api/auth/oauth/github/callback', async (request, response) => {
-    if (!consumeOAuthState('github', request.query.state)) {
+    const oauthState = consumeOAuthState('github', request.query.state);
+    if (!oauthState) {
       response.redirect('/signin?error=oauth_state');
       return;
     }
@@ -1479,8 +2608,9 @@ export async function createApp(options: { listen?: boolean } = {}) {
       if (!email) throw new Error('GitHub did not return a verified email address.');
       if (!profile.id) throw new Error('GitHub did not return a stable account id.');
       const user = await findOrCreateOAuthUser('github', String(profile.id), email, profile.name ?? profile.login ?? '');
+      await saveGithubAccessToken(user.id, tokenData.access_token);
       setSessionCookie(response, user.id);
-      response.redirect('/onboarding');
+      response.redirect(oauthState.nextPath || '/onboarding');
     } catch (error) {
       response.redirect(`/signin?error=${encodeURIComponent(error instanceof Error ? error.message : 'oauth_failed')}`);
     }
@@ -1600,6 +2730,8 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
   app.get('/api/github-repos', requireUser, async (request, response) => {
     const user = (request as AuthedRequest).user!;
+    await expireStaleGithubScanJobs(user.id);
+    const githubConnected = Boolean(await getGithubAccessToken(user.id));
     const repos = await db.prepare(`
       SELECT id, repo_url, repo_name, detected_stack, scanned_at, status
       FROM github_repos
@@ -1614,6 +2746,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
       LIMIT 3
     `).all<{ id: string; repo_url: string }>(user.id);
     response.json({
+      githubConnected,
       repos: repos.map((repo) => ({
         id: repo.id,
         repoUrl: repo.repo_url,
@@ -1670,7 +2803,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
       totalQuestions: row.total_questions ?? 0,
       sections,
       detectedDomains: row.raw_analysis_json && typeof row.raw_analysis_json === 'object' && Array.isArray((row.raw_analysis_json as { detectedDomains?: unknown }).detectedDomains)
-        ? (row.raw_analysis_json as { detectedDomains: string[] }).detectedDomains
+        ? (row.raw_analysis_json as { detectedDomains: string[] }).detectedDomains.map(normalizeGithubDetectedDomain)
         : [],
       warnings: row.raw_analysis_json && typeof row.raw_analysis_json === 'object' && Array.isArray((row.raw_analysis_json as { warnings?: unknown }).warnings)
         ? (row.raw_analysis_json as { warnings: string[] }).warnings
@@ -1681,6 +2814,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
   app.get('/api/github-repos/jobs/:jobId', requireUser, async (request, response) => {
     const user = (request as AuthedRequest).user!;
     const jobId = String(request.params.jobId ?? '');
+    await expireStaleGithubScanJobs(user.id);
     const job = await db.prepare(`
       SELECT id, repo_url, status, error_message, created_at, completed_at
       FROM repo_scan_jobs
@@ -1734,26 +2868,36 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
   app.post('/api/github-repos/scan', requireUser, async (request, response) => {
     const user = (request as AuthedRequest).user!;
+    await expireStaleGithubScanJobs(user.id);
     const repoUrl = normalizeGithubRepoUrl(String(request.body?.repoUrl ?? '').trim());
     const force = Boolean(request.body?.force);
     if (!repoUrl) {
       response.status(400).json({ status: 'failed', message: 'Please paste a valid GitHub repository URL.' });
       return;
     }
+    const singleFlightKey = `${user.id}:${repoUrl}`;
+    const activeRequestJobId = activeGithubScanRequests.get(singleFlightKey);
+    if (activeRequestJobId) {
+      response.status(202).json({
+        status: 'pending',
+        jobId: activeRequestJobId,
+        message: 'This repository scan is already running. Please wait for it to finish before starting another scan.',
+      });
+      return;
+    }
+    const jobId = crypto.randomUUID();
+    const releaseSingleFlight = () => {
+      if (activeGithubScanRequests.get(singleFlightKey) === jobId) {
+        activeGithubScanRequests.delete(singleFlightKey);
+      }
+    };
+    activeGithubScanRequests.set(singleFlightKey, jobId);
     const existing = await db.prepare('SELECT id, repo_name, status FROM github_repos WHERE user_id = ? AND repo_url = ?')
       .get<{ id: string; repo_name: string; status: string }>(user.id, repoUrl);
     if (existing?.status === 'complete' && !force) {
+      releaseSingleFlight();
       response.status(409).json({ status: 'duplicate', repoId: existing.id, repoName: existing.repo_name });
       return;
-    }
-    if (force) {
-      await db.prepare(`
-        UPDATE repo_scan_jobs
-           SET status = 'failed',
-               completed_at = NOW(),
-               error_message = 'Re-scan started; previous pending job was replaced.'
-         WHERE user_id = ? AND repo_url = ? AND status = 'pending'
-      `).run(user.id, repoUrl);
     }
     const pendingJob = await db.prepare(`
       SELECT id
@@ -1762,7 +2906,8 @@ export async function createApp(options: { listen?: boolean } = {}) {
       ORDER BY created_at DESC
       LIMIT 1
     `).get<{ id: string }>(user.id, repoUrl);
-    if (pendingJob && !force) {
+    if (pendingJob) {
+      releaseSingleFlight();
       response.status(202).json({
         status: 'pending',
         jobId: pendingJob.id,
@@ -1770,8 +2915,17 @@ export async function createApp(options: { listen?: boolean } = {}) {
       });
       return;
     }
+    if (force) {
+      await db.prepare(`
+        UPDATE repo_scan_jobs
+           SET status = 'failed',
+               completed_at = NOW(),
+               error_message = 'Re-scan started; previous stale pending job was replaced.'
+         WHERE user_id = ? AND repo_url = ? AND status = 'pending'
+      `).run(user.id, repoUrl);
+    }
 
-    const jobId = crypto.randomUUID();
+    const accessToken = await getGithubAccessToken(user.id);
     await db.prepare('INSERT INTO repo_scan_jobs (id, user_id, repo_url, status, created_at, retry_count) VALUES (?, ?, ?, ?, NOW(), 0)')
       .run(jobId, user.id, repoUrl, 'pending');
 
@@ -1780,6 +2934,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
       userId: user.id,
       repoUrl,
       existingRepoId: existing?.id,
+      accessToken,
     });
     scanPromise.catch((error) => {
       console.error('Background GitHub repo scan failed', {
@@ -1788,6 +2943,8 @@ export async function createApp(options: { listen?: boolean } = {}) {
         jobId,
         error: error instanceof Error ? error.message : error,
       });
+    }).finally(() => {
+      releaseSingleFlight();
     });
 
     const scanOutcomePromise = scanPromise.then((result) => ({ status: 'complete' as const, repoId: result.repoId })).catch((error) => ({
@@ -1871,7 +3028,8 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
 
     try {
-      const repositoryContext = await fetchGitHubRepositoryContext(projectInput);
+      const user = (request as AuthedRequest).user!;
+      const repositoryContext = await fetchGitHubRepositoryContext(projectInput, await getGithubAccessToken(user.id));
       const analysis = await callStructuredModel<ProjectAnalysisResponse>(
         [
           'You are a senior engineer.',
@@ -1976,7 +3134,15 @@ export async function createApp(options: { listen?: boolean } = {}) {
       response.sendFile(path.join(distPath, 'index.html'));
     });
   } else {
-    const hmrPort = readPort('VITE_HMR_PORT', 24679);
+    const requestedHmrPort = readPort('VITE_HMR_PORT', 24679);
+    const hmrPort = process.env.DISABLE_HMR === 'true'
+      ? requestedHmrPort
+      : await findAvailablePort(requestedHmrPort);
+
+    if (process.env.DISABLE_HMR !== 'true' && hmrPort !== requestedHmrPort) {
+      console.warn(`HMR port ${requestedHmrPort} is in use. Falling back to ${hmrPort}.`);
+    }
+
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
@@ -2003,7 +3169,15 @@ export async function createApp(options: { listen?: boolean } = {}) {
   }
 
   if (listen) {
-    const port = readPort('PORT', 3000);
+    const requestedPort = readPort('PORT', 3000);
+    const port = process.env.NODE_ENV === 'development'
+      ? await findAvailablePort(requestedPort)
+      : requestedPort;
+
+    if (process.env.NODE_ENV === 'development' && port !== requestedPort) {
+      console.warn(`Port ${requestedPort} is in use. Falling back to ${port}.`);
+    }
+
     const server = app.listen(port, () => {
       console.log(`Repoid server listening on http://localhost:${port}`);
     });
