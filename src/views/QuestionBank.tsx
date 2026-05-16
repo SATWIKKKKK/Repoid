@@ -9,6 +9,39 @@ import { updateUserPreferences } from '../lib/userPreferences';
 
 const ALL_QUESTION_TYPES = QUESTION_TYPES.map((item) => item.id);
 const PAGE_SIZE = 12;
+const FRONTEND_TOPICS = [
+  'HTML Fundamentals',
+  'CSS Fundamentals',
+  'CSS Layouts - Flexbox And Grid',
+  'Responsive Design',
+  'JavaScript Fundamentals',
+  'DOM Manipulation',
+  'JavaScript Advanced',
+  'Browser APIs and Web Platform',
+  'TypeScript',
+  'React',
+  'State Management',
+  'Routing',
+  'Performance Optimization',
+  'Build Tools and Module Bundlers',
+  'Testing',
+  'Accessibility (A11y)',
+  'Security in Frontend',
+  'Next.js and Modern Frameworks',
+  'Progressive Web Apps and Web APIs',
+  'Advanced Frontend Topics',
+  'Interview Scenarios - Advanced Frontend',
+  'Fill in the Blank - Mixed Advanced',
+  'Scenario Questions - Intermediate',
+  'More Fill in the Blank',
+  'Additional Scenarios',
+  'More Advanced MCQ',
+  'Final Scenarios',
+  'More Fill in the Blank - Final',
+  'Additional Advanced MCQ',
+  'Final Scenarios and Concepts',
+  'Rapid Fire Fill in the Blank - Final 75',
+];
 const BACKEND_TOPICS = ['Node.js', 'Databases', 'Security', 'Authentication', 'Caching', 'Microservices', 'Docker & Kubernetes', 'System Design', 'APIs', 'Testing'];
 const AIML_TOPICS = [
   'Mathematics and Statistics Fundamentals',
@@ -237,8 +270,10 @@ export default function QuestionBank() {
   const [savingDomain, setSavingDomain] = useState(false);
 
   const allTypesSelected = selectedTypes.length === ALL_QUESTION_TYPES.length;
-  const hasCuratedFilters = ['backend', 'ai-ml', 'cybersecurity', 'data-science', 'data-analytics'].includes(domain);
-  const curatedTopics = domain === 'ai-ml'
+  const hasCuratedFilters = ['frontend', 'backend', 'ai-ml', 'cybersecurity', 'data-science', 'data-analytics'].includes(domain);
+  const curatedTopics = domain === 'frontend'
+    ? FRONTEND_TOPICS
+    : domain === 'ai-ml'
     ? AIML_TOPICS
     : domain === 'cybersecurity'
       ? CYBER_TOPICS
@@ -247,7 +282,9 @@ export default function QuestionBank() {
         : domain === 'data-analytics'
           ? DATA_ANALYTICS_TOPICS
           : BACKEND_TOPICS;
-  const curatedDomainLabel = domain === 'ai-ml'
+  const curatedDomainLabel = domain === 'frontend'
+    ? 'frontend'
+    : domain === 'ai-ml'
     ? 'AI/ML'
     : domain === 'cybersecurity'
       ? 'cybersecurity'

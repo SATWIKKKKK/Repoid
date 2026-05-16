@@ -167,21 +167,6 @@ export const DATABASE_SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_ai_retry_jobs_status ON ai_retry_jobs(status, created_at);
 
-  CREATE TABLE IF NOT EXISTS practice_gap_reports (
-    id TEXT PRIMARY KEY,
-    track_id TEXT NOT NULL,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    module_attempt_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
-    report_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    status TEXT NOT NULL DEFAULT 'ready',
-    version INTEGER NOT NULL DEFAULT 1,
-    generated_at TIMESTAMPTZ DEFAULT NOW(),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_practice_gap_reports_track ON practice_gap_reports(track_id, generated_at DESC);
-
   CREATE TABLE IF NOT EXISTS scenarios (
     id TEXT PRIMARY KEY,
     domain TEXT NOT NULL,
@@ -282,39 +267,40 @@ export const DATABASE_SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_mock_interviews_user ON mock_interviews(user_id, started_at DESC);
 
-  CREATE TABLE IF NOT EXISTS practice_tracks (
+  DROP TABLE IF EXISTS track_modules;
+  DROP TABLE IF EXISTS practice_tracks;
+  DROP TABLE IF EXISTS practice_gap_reports;
+
+  CREATE TABLE IF NOT EXISTS open_practice_sessions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     domain TEXT NOT NULL,
-    current_module_index INTEGER NOT NULL DEFAULT 0,
-    completed_module_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
-    started_at TIMESTAMPTZ DEFAULT NOW(),
-    last_active_at TIMESTAMPTZ DEFAULT NOW(),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (user_id, domain)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_practice_tracks_user_active ON practice_tracks(user_id, last_active_at DESC);
-
-  CREATE TABLE IF NOT EXISTS track_modules (
-    id TEXT PRIMARY KEY,
-    track_id TEXT NOT NULL REFERENCES practice_tracks(id) ON DELETE CASCADE,
-    module_key TEXT NOT NULL,
-    module_title TEXT NOT NULL,
-    module_index INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'locked',
+    topic TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'in-progress',
+    questions JSONB NOT NULL DEFAULT '[]'::jsonb,
+    answers JSONB NOT NULL DEFAULT '[]'::jsonb,
     score INTEGER,
-    question_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    correct_answers INTEGER NOT NULL DEFAULT 0,
+    time_spent_seconds INTEGER,
+    result_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    generated_at TIMESTAMPTZ DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    saved_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (track_id, module_key)
+    updated_at TIMESTAMPTZ DEFAULT NOW()
   );
 
-  ALTER TABLE track_modules ADD COLUMN IF NOT EXISTS module_title TEXT DEFAULT '';
-  ALTER TABLE track_modules ADD COLUMN IF NOT EXISTS module_index INTEGER NOT NULL DEFAULT 0;
-  ALTER TABLE track_modules ADD COLUMN IF NOT EXISTS question_ids JSONB NOT NULL DEFAULT '[]'::jsonb;
-  CREATE INDEX IF NOT EXISTS idx_track_modules_track_index ON track_modules(track_id, module_index);
+  ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS answers JSONB NOT NULL DEFAULT '[]'::jsonb;
+  ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS score INTEGER;
+  ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS correct_answers INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS time_spent_seconds INTEGER;
+  ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS result_payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+  ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS generated_at TIMESTAMPTZ DEFAULT NOW();
+  ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+  ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS saved_at TIMESTAMPTZ;
+
+  CREATE INDEX IF NOT EXISTS idx_open_practice_sessions_user_generated ON open_practice_sessions(user_id, generated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_open_practice_sessions_user_domain ON open_practice_sessions(user_id, domain, generated_at DESC);
 
   CREATE TABLE IF NOT EXISTS question_assignments (
     id TEXT PRIMARY KEY,

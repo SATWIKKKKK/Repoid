@@ -17,6 +17,15 @@ import {
   listQuestionStats,
   submitRoundAttempt,
 } from './src/lib/questionBankStore.js';
+import {
+  PRACTICE_DOMAIN_LABELS,
+  formatPracticeDomainList,
+  getPracticeTagCloud,
+  getPracticeTopicDomains,
+  normalizePracticeTopic,
+  toPracticeDomain,
+  type PracticeDomainId,
+} from './src/lib/practiceSessionConfig.js';
 
 const envPath = path.resolve(process.cwd(), '.env');
 if (fs.existsSync(envPath)) {
@@ -277,7 +286,7 @@ const PLAN_PRICING: Record<Exclude<BillingPlan, 'free'>, Record<BillingInterval,
 const PLAN_LIMITS: Record<BillingPlan, {
   activeDomains: number | 'all';
   questionsPerDay: number | 'unlimited';
-  practiceTrackModules: number | 'all';
+  practiceSessions: number | 'unlimited';
   mockInterviewsPerMonth: number | 'unlimited';
   codingRoundsPerMonth: number | 'unlimited';
   scenarioRounds: boolean | 'unlimited';
@@ -288,7 +297,7 @@ const PLAN_LIMITS: Record<BillingPlan, {
   free: {
     activeDomains: 1,
     questionsPerDay: 20,
-    practiceTrackModules: 2,
+    practiceSessions: 'unlimited',
     mockInterviewsPerMonth: 0,
     codingRoundsPerMonth: 0,
     scenarioRounds: false,
@@ -299,7 +308,7 @@ const PLAN_LIMITS: Record<BillingPlan, {
   pro: {
     activeDomains: 'all',
     questionsPerDay: 'unlimited',
-    practiceTrackModules: 'all',
+    practiceSessions: 'unlimited',
     mockInterviewsPerMonth: 5,
     codingRoundsPerMonth: 10,
     scenarioRounds: 'unlimited',
@@ -310,7 +319,7 @@ const PLAN_LIMITS: Record<BillingPlan, {
   team: {
     activeDomains: 'all',
     questionsPerDay: 'unlimited',
-    practiceTrackModules: 'all',
+    practiceSessions: 'unlimited',
     mockInterviewsPerMonth: 'unlimited',
     codingRoundsPerMonth: 'unlimited',
     scenarioRounds: 'unlimited',
@@ -743,10 +752,6 @@ function parseJsonRecord(value: unknown): Record<string, unknown> {
   return {};
 }
 
-function slugForKey(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'module';
-}
-
 function clampScore(value: unknown, fallback = 5) {
   const score = Number(value);
   if (!Number.isFinite(score)) return fallback;
@@ -874,127 +879,489 @@ type TrackQuestionRow = {
   time_limit_minutes: number;
 };
 
-function mapTrackQuestion(row: TrackQuestionRow) {
+type PracticeQuestionType = 'fill-blank' | 'mcq';
+type PracticeQuestionDifficulty = 'easy' | 'medium' | 'hard';
+
+type PracticeSessionQuestion = {
+  id: string;
+  type: PracticeQuestionType;
+  question: string;
+  blank: string | null;
+  options: string[] | null;
+  correctAnswer: string;
+  explanation: string;
+  difficulty: PracticeQuestionDifficulty;
+  tags: string[];
+};
+
+type PracticeSessionAnswer = {
+  questionId: string;
+  answer: string;
+  confirmedAt: string;
+};
+
+type PracticeSessionResult = {
+  questionId: string;
+  type: PracticeQuestionType;
+  question: string;
+  userAnswer: string;
+  correctAnswer: string;
+  explanation: string;
+  isCorrect: boolean;
+  tags: string[];
+};
+
+type PracticeSessionPayload = {
+  id: string;
+  domain: PracticeDomainId;
+  domainLabel: string;
+  topic: string;
+  status: string;
+  questions: PracticeSessionQuestion[];
+  answers: PracticeSessionAnswer[];
+  score: number | null;
+  correctAnswers: number;
+  totalQuestions: number;
+  timeSpentSeconds: number | null;
+  generatedAt: string;
+  completedAt: string | null;
+  savedAt: string | null;
+  performanceLabel: string | null;
+  coveredTags: string[];
+  weakTags: string[];
+  results: PracticeSessionResult[];
+};
+
+type PracticeSessionSummary = Pick<
+  PracticeSessionPayload,
+  'id' | 'domain' | 'domainLabel' | 'topic' | 'status' | 'score' | 'correctAnswers' | 'totalQuestions' | 'generatedAt' | 'completedAt' | 'savedAt' | 'weakTags'
+>;
+
+function hashText(value: string) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function normalizePracticeAnswerText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[`'"“”‘’]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function cleanPracticeTag(value: string) {
+  return value
+    .trim()
+    .replace(/^#+\s*/, '')
+    .replace(/\s+/g, ' ')
+    .slice(0, 48);
+}
+
+function parsePracticeQuestionType(value: unknown): PracticeQuestionType {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === 'fill blank' || normalized === 'fill_blank' || normalized === 'fill-blank'
+    ? 'fill-blank'
+    : 'mcq';
+}
+
+function parsePracticeDifficulty(value: unknown): PracticeQuestionDifficulty {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'hard' || normalized === 'medium') return normalized;
+  return 'easy';
+}
+
+function normalizePracticeQuestionPayload(value: unknown, index: number, topic: string): PracticeSessionQuestion | null {
+  const source = parseJsonRecord(value);
+  const type = parsePracticeQuestionType(source.type);
+  const explicitId = String(source.id ?? '').trim();
+  const question = String(source.question ?? '').trim().replace(/^Q\d+[.:]\s*/, '');
+  const correctAnswer = String(source.correctAnswer ?? source.answer ?? source.blank ?? '').trim();
+  const explanation = String(source.explanation ?? '').trim();
+  const tags = parseJsonArray(source.tags)
+    .map((tag) => cleanPracticeTag(String(tag)))
+    .filter(Boolean)
+    .slice(0, 6);
+
+  if (!question || !correctAnswer) return null;
+
+  if (type === 'mcq') {
+    const options = parseJsonArray(source.options).map((option) => String(option).trim()).filter(Boolean).slice(0, 4);
+    if (options.length !== 4) return null;
+    return {
+      id: explicitId || `${hashText(`${topic}:${question}:${correctAnswer}`).slice(0, 12)}-${index + 1}`,
+      type,
+      question,
+      blank: null,
+      options,
+      correctAnswer,
+      explanation,
+      difficulty: parsePracticeDifficulty(source.difficulty),
+      tags,
+    };
+  }
+
   return {
-    id: row.id,
-    domain: row.domain,
-    domainLabel: row.domain_label,
-    topic: row.topic,
-    type: row.type,
-    difficulty: Math.min(3, Math.max(1, Number(row.difficulty))),
-    questionText: row.question_text,
-    options: parseJsonArray(row.options),
-    correctAnswer: row.correct_answer,
-    explanation: row.explanation,
-    codeSnippet: row.code_snippet ?? undefined,
-    tags: parseJsonArray(row.tags),
-    timeLimitMinutes: Number(row.time_limit_minutes),
+    id: explicitId || `${hashText(`${topic}:${question}:${correctAnswer}`).slice(0, 12)}-${index + 1}`,
+    type,
+    question,
+    blank: String(source.blank ?? correctAnswer).trim() || correctAnswer,
+    options: null,
+    correctAnswer,
+    explanation,
+    difficulty: parsePracticeDifficulty(source.difficulty),
+    tags,
   };
 }
 
-async function loadTrack(trackId: string, userId: string) {
-  const track = await db.prepare(`
-    SELECT id, user_id, domain, current_module_index, completed_module_ids, started_at, last_active_at
-      FROM practice_tracks
+function parsePracticeQuestions(value: unknown): PracticeSessionQuestion[] {
+  const items = Array.isArray(value) ? value : [];
+  return items
+    .map((item, index) => normalizePracticeQuestionPayload(item, index, 'practice-session'))
+    .filter((item): item is PracticeSessionQuestion => Boolean(item));
+}
+
+function parsePracticeAnswers(value: unknown): PracticeSessionAnswer[] {
+  const items = Array.isArray(value) ? value : [];
+  return items
+    .map((item) => {
+      const source = parseJsonRecord(item);
+      const questionId = String(source.questionId ?? '').trim();
+      const answer = String(source.answer ?? '').trim();
+      const confirmedAt = String(source.confirmedAt ?? '').trim() || new Date().toISOString();
+      if (!questionId || !answer) return null;
+      return { questionId, answer, confirmedAt } satisfies PracticeSessionAnswer;
+    })
+    .filter((item): item is PracticeSessionAnswer => Boolean(item));
+}
+
+function parsePracticeResults(value: unknown): PracticeSessionResult[] {
+  const items = Array.isArray(value) ? value : [];
+  return items
+    .map((item) => {
+      const source = parseJsonRecord(item);
+      const questionId = String(source.questionId ?? '').trim();
+      const question = String(source.question ?? '').trim();
+      const userAnswer = String(source.userAnswer ?? '').trim();
+      const correctAnswer = String(source.correctAnswer ?? '').trim();
+      if (!questionId || !question || !correctAnswer) return null;
+      return {
+        questionId,
+        type: parsePracticeQuestionType(source.type),
+        question,
+        userAnswer,
+        correctAnswer,
+        explanation: String(source.explanation ?? '').trim(),
+        isCorrect: Boolean(source.isCorrect),
+        tags: parseJsonArray(source.tags),
+      } satisfies PracticeSessionResult;
+    })
+    .filter((item): item is PracticeSessionResult => Boolean(item));
+}
+
+function isPracticeAnswerCorrect(question: PracticeSessionQuestion, answer: string) {
+  const submitted = normalizePracticeAnswerText(answer);
+  const expected = normalizePracticeAnswerText(question.correctAnswer);
+  if (!submitted || !expected) return false;
+  if (submitted === expected) return true;
+  if (question.type === 'fill-blank') {
+    return expected.includes(submitted) || submitted.includes(expected);
+  }
+  return false;
+}
+
+async function listPracticeSessions(userId: string, options: { domain?: PracticeDomainId; savedOnly?: boolean } = {}) {
+  const clauses = ['user_id = $1'];
+  const params: string[] = [userId];
+  if (options.domain) {
+    clauses.push(`domain = $${params.length + 1}`);
+    params.push(options.domain);
+  }
+  if (options.savedOnly) {
+    clauses.push('saved_at IS NOT NULL');
+  }
+
+  const rows = await db.query<{
+    id: string;
+    domain: string;
+    topic: string;
+    status: string;
+    questions: unknown;
+    score: number | null;
+    correct_answers: number;
+    generated_at: string;
+    completed_at: string | null;
+    saved_at: string | null;
+    result_payload: unknown;
+  }>(`
+    SELECT id, domain, topic, status, questions, score, correct_answers, generated_at, completed_at, saved_at, result_payload
+      FROM open_practice_sessions
+     WHERE ${clauses.join(' AND ')}
+     ORDER BY generated_at DESC
+     LIMIT 40
+  `, params);
+
+  return rows.map((row) => {
+    const domain = toPracticeDomain(row.domain) || 'frontend';
+    const resultPayload = parseJsonRecord(row.result_payload);
+    const totalQuestions = parsePracticeQuestions(row.questions).length;
+    return {
+      id: row.id,
+      domain,
+      domainLabel: PRACTICE_DOMAIN_LABELS[domain],
+      topic: row.topic,
+      status: row.status,
+      score: row.score === null ? null : Number(row.score),
+      correctAnswers: Number(row.correct_answers ?? 0),
+      totalQuestions,
+      generatedAt: row.generated_at,
+      completedAt: row.completed_at,
+      savedAt: row.saved_at,
+      weakTags: parseJsonArray(resultPayload.weakTags),
+    } satisfies PracticeSessionSummary;
+  });
+}
+
+async function loadPracticeSession(sessionId: string, userId: string): Promise<PracticeSessionPayload | null> {
+  const row = await db.prepare(`
+    SELECT id, domain, topic, status, questions, answers, score, correct_answers, time_spent_seconds, generated_at, completed_at, saved_at, result_payload
+      FROM open_practice_sessions
      WHERE id = ? AND user_id = ?
   `).get<{
     id: string;
     domain: string;
-    current_module_index: number;
-    completed_module_ids: unknown;
-    started_at: string;
-    last_active_at: string;
-  }>(trackId, userId);
-  if (!track) return null;
-
-  const modules = await db.query<{
-    id: string;
-    module_key: string;
-    module_title: string;
-    module_index: number;
+    topic: string;
     status: string;
+    questions: unknown;
+    answers: unknown;
     score: number | null;
-    question_ids: unknown;
-  }>(`
-    SELECT id, module_key, module_title, module_index, status, score, question_ids
-      FROM track_modules
-     WHERE track_id = $1
-     ORDER BY module_index ASC
-  `, [trackId]);
+    correct_answers: number;
+    time_spent_seconds: number | null;
+    generated_at: string;
+    completed_at: string | null;
+    saved_at: string | null;
+    result_payload: unknown;
+  }>(sessionId, userId);
+  if (!row) return null;
 
-  const questionIds = Array.from(new Set(modules.flatMap((module) => parseJsonArray(module.question_ids))));
-  const questionRows = questionIds.length
-    ? await db.query<TrackQuestionRow>(`
-        SELECT id, domain, domain_label, topic, type, difficulty, question_text, options, correct_answer, explanation, code_snippet, tags, time_limit_minutes
-          FROM questions
-         WHERE id = ANY($1::text[])
-      `, [questionIds])
-    : [];
-  const questionsById = new Map(questionRows.map((row) => [row.id, mapTrackQuestion(row)]));
+  const domain = toPracticeDomain(row.domain) || 'frontend';
+  const questions = parsePracticeQuestions(row.questions);
+  const resultPayload = parseJsonRecord(row.result_payload);
 
   return {
-    id: track.id,
-    domain: track.domain,
-    currentModuleIndex: Number(track.current_module_index ?? 0),
-    completedModuleIds: parseJsonArray(track.completed_module_ids),
-    startedAt: track.started_at,
-    lastActiveAt: track.last_active_at,
-    modules: modules.map((module) => ({
-      id: module.id,
-      moduleKey: module.module_key,
-      moduleTitle: module.module_title,
-      moduleIndex: Number(module.module_index),
-      status: module.status,
-      score: module.score,
-      questions: parseJsonArray(module.question_ids).map((id) => questionsById.get(id)).filter(Boolean),
-    })),
+    id: row.id,
+    domain,
+    domainLabel: PRACTICE_DOMAIN_LABELS[domain],
+    topic: row.topic,
+    status: row.status,
+    questions,
+    answers: parsePracticeAnswers(row.answers),
+    score: row.score === null ? null : Number(row.score),
+    correctAnswers: Number(row.correct_answers ?? 0),
+    totalQuestions: questions.length,
+    timeSpentSeconds: row.time_spent_seconds === null ? null : Number(row.time_spent_seconds),
+    generatedAt: row.generated_at,
+    completedAt: row.completed_at,
+    savedAt: row.saved_at,
+    performanceLabel: typeof resultPayload.performanceLabel === 'string' ? resultPayload.performanceLabel : null,
+    coveredTags: parseJsonArray(resultPayload.coveredTags),
+    weakTags: parseJsonArray(resultPayload.weakTags),
+    results: parsePracticeResults(resultPayload.results),
+  } satisfies PracticeSessionPayload;
+}
+
+function buildPracticeSessionReport(questions: PracticeSessionQuestion[], answers: PracticeSessionAnswer[]) {
+  const answersByQuestionId = new Map(answers.map((answer) => [answer.questionId, answer.answer]));
+  const tagStats = new Map<string, { total: number; incorrect: number }>();
+
+  const results = questions.map((question) => {
+    const userAnswer = String(answersByQuestionId.get(question.id) ?? '').trim();
+    const isCorrect = userAnswer ? isPracticeAnswerCorrect(question, userAnswer) : false;
+
+    for (const tag of question.tags) {
+      const existing = tagStats.get(tag) ?? { total: 0, incorrect: 0 };
+      existing.total += 1;
+      if (!isCorrect) existing.incorrect += 1;
+      tagStats.set(tag, existing);
+    }
+
+    return {
+      questionId: question.id,
+      type: question.type,
+      question: question.question,
+      userAnswer,
+      correctAnswer: question.correctAnswer,
+      explanation: question.explanation,
+      isCorrect,
+      tags: question.tags,
+    } satisfies PracticeSessionResult;
+  });
+
+  const correctAnswers = results.filter((result) => result.isCorrect).length;
+  const totalQuestions = questions.length || 1;
+  const score = Math.round((correctAnswers / totalQuestions) * 100);
+  const coveredTags = Array.from(tagStats.keys());
+  const weakTags = Array.from(tagStats.entries())
+    .filter(([, stats]) => stats.incorrect > 0)
+    .sort((left, right) => {
+      if (right[1].incorrect !== left[1].incorrect) return right[1].incorrect - left[1].incorrect;
+      if (right[1].total !== left[1].total) return right[1].total - left[1].total;
+      return left[0].localeCompare(right[0]);
+    })
+    .slice(0, 8)
+    .map(([tag]) => tag);
+
+  const performanceLabel = score >= 85
+    ? 'Strong recall and judgment'
+    : score >= 70
+      ? 'Solid, with a few weak spots'
+      : score >= 50
+        ? 'Needs another focused pass'
+        : 'Rebuild the fundamentals';
+
+  return {
+    score,
+    correctAnswers,
+    performanceLabel,
+    coveredTags,
+    weakTags,
+    results,
   };
 }
 
-async function seedTrackModules(trackId: string, domain: string, userId: string) {
-  const existing = await db.prepare('SELECT COUNT(*)::int AS count FROM track_modules WHERE track_id = ?').get<{ count: number }>(trackId);
-  if (Number(existing?.count ?? 0) > 0) return;
+async function validatePracticeTopicForDomain(userId: string, topic: string, domain: PracticeDomainId) {
+  const mappedDomains = getPracticeTopicDomains(topic);
+  if (mappedDomains?.length) {
+    if (mappedDomains.includes(domain)) {
+      return { valid: true as const };
+    }
 
-  const topics = await db.query<{ topic: string; question_ids: unknown }>(`
-    SELECT topic, jsonb_agg(id ORDER BY type, difficulty, id) AS question_ids
-      FROM (
-        SELECT id, topic, type, difficulty,
-               ROW_NUMBER() OVER (PARTITION BY topic ORDER BY
-                 md5(id || $2),
-                 CASE type
-                   WHEN 'mcq' THEN 1
-                   WHEN 'fill_blank' THEN 2
-                   WHEN 'fundamentals' THEN 3
-                   ELSE 4
-                 END,
-                 difficulty,
-                 id
-               ) AS rn
-          FROM questions
-         WHERE domain = $1
-           AND type IN ('mcq', 'fill_blank', 'fundamentals', 'scenario')
-      ) ranked
-     WHERE rn <= 6
-     GROUP BY topic
-     ORDER BY MIN(difficulty), topic
-     LIMIT 6
-  `, [domain, userId]);
-
-  for (const [index, topic] of topics.entries()) {
-    await db.prepare(`
-      INSERT INTO track_modules (id, track_id, module_key, module_title, module_index, status, question_ids)
-      VALUES (?, ?, ?, ?, ?, ?, ?::jsonb)
-      ON CONFLICT (track_id, module_key) DO NOTHING
-    `).run(
-      crypto.randomUUID(),
-      trackId,
-      slugForKey(topic.topic),
-      topic.topic.replace(/\b\w/g, (letter) => letter.toUpperCase()),
-      index,
-      index === 0 ? 'active' : 'locked',
-      JSON.stringify(parseJsonArray(topic.question_ids).slice(0, 6)),
-    );
+    const suggestedDomain = mappedDomains[0];
+    return {
+      valid: false as const,
+      suggestedDomain,
+      error: `${topic.trim()} is a ${formatPracticeDomainList(mappedDomains)} topic. You're currently in ${PRACTICE_DOMAIN_LABELS[domain]} mode. Switch to ${PRACTICE_DOMAIN_LABELS[suggestedDomain]} or search for a ${PRACTICE_DOMAIN_LABELS[domain]} topic instead.`,
+    };
   }
+
+  try {
+    await checkAiRateLimit(userId, 'practice-domain-validation', 1);
+    const classification = await callStructuredModel(
+      'You classify whether a search topic is valid for an interview practice domain. Return only valid JSON.',
+      JSON.stringify({
+        topic,
+        domain: PRACTICE_DOMAIN_LABELS[domain],
+        schema: {
+          valid: 'boolean',
+          reason: 'string',
+        },
+      }),
+      (payload) => {
+        const source = parseJsonRecord(payload);
+        return {
+          valid: Boolean(source.valid),
+          reason: String(source.reason ?? '').trim(),
+        };
+      },
+      { maxTokens: 100, timeoutMs: 12000, model: 'deepseek/deepseek-chat', temperature: 0 },
+    );
+    if (classification.result.valid) return { valid: true as const };
+    return {
+      valid: false as const,
+      suggestedDomain: null,
+      error: classification.result.reason || `${topic.trim()} does not look like a strong ${PRACTICE_DOMAIN_LABELS[domain]} practice topic. Search for a different topic or switch domains.`,
+    };
+  } catch {
+    return { valid: true as const };
+  }
+}
+
+async function generatePracticeSessionQuestions(params: {
+  userId: string;
+  domain: PracticeDomainId;
+  topic: string;
+  level: string;
+}) {
+  const roundType = `practice:${normalizePracticeTopic(params.topic).replace(/\s+/g, '-')}`;
+  const seenRows = await db.query<{ question_hash: string; question_text: string }>(`
+    SELECT question_hash, question_text
+      FROM question_history
+     WHERE user_id = $1
+       AND domain = $2
+       AND round_type = $3
+     ORDER BY seen_at DESC
+     LIMIT 24
+  `, [params.userId, params.domain, roundType]);
+  const seenHashes = new Set(seenRows.map((row) => String(row.question_hash ?? '')));
+  const seenQuestions = seenRows.map((row) => String(row.question_text ?? '')).filter(Boolean);
+  const repoContext = await getLatestRepoContext(params.userId);
+
+  const generate = async (retry = false) => {
+    await checkAiRateLimit(params.userId, 'practice-session-generation', retry ? 3 : 5);
+    const sessionSeed = hashText(`${params.userId}:${params.topic}:${Date.now()}:${retry ? 'retry' : 'initial'}`).slice(0, 16);
+    const generated = await callStructuredModel(
+      `You are a senior ${PRACTICE_DOMAIN_LABELS[params.domain]} engineer creating a 20-question practice session on ${params.topic}. Generate exactly 10 fill-in-the-blank questions and exactly 10 multiple choice questions. Questions must test real engineering judgment, applied knowledge, and practical decision-making. Never generate trivia, memorization-only questions, or competitive programming problems. For fill-in-the-blank, the blank must be a meaningful technical term, decision, or short phrase. For multiple choice, provide exactly four options with one correct answer and three plausible distractors. Return only valid JSON.`,
+      JSON.stringify({
+        domain: PRACTICE_DOMAIN_LABELS[params.domain],
+        topic: params.topic,
+        userLevel: params.level || 'intermediate',
+        repoContext,
+        sessionSeed,
+        previouslySeenQuestionTexts: seenQuestions,
+        retry,
+        schema: {
+          topic: 'string',
+          domain: 'string',
+          totalQuestions: 20,
+          questions: [
+            {
+              id: 'string',
+              type: 'fill-blank or mcq',
+              question: 'string',
+              blank: 'string or null',
+              options: 'array of 4 strings or null',
+              correctAnswer: 'string',
+              explanation: 'string',
+              difficulty: 'easy or medium or hard',
+              tags: ['string'],
+            },
+          ],
+        },
+      }),
+      (payload) => {
+        const source = parseJsonRecord(payload);
+        const items = Array.isArray(source.questions) ? source.questions : [];
+        return items
+          .map((item, index) => normalizePracticeQuestionPayload(item, index, params.topic))
+          .filter((item): item is PracticeSessionQuestion => Boolean(item));
+      },
+      { maxTokens: 3200, timeoutMs: 45000, model: 'deepseek/deepseek-chat', temperature: 0.35 },
+    );
+    const questions = generated.result.slice(0, 20);
+    const questionHashes = questions.map((question) => hashText(`${question.question}:${question.correctAnswer}`));
+    const duplicateCount = questionHashes.length - new Set(questionHashes).size;
+    const repeatCount = questionHashes.filter((hash) => seenHashes.has(hash)).length;
+    if (!retry && (questions.length < 20 || duplicateCount > 0 || repeatCount > 4)) {
+      return generate(true);
+    }
+    return questions;
+  };
+
+  const questions = await generate(false);
+  if (questions.length < 20) {
+    throw new Error('Unable to generate a complete practice session right now.');
+  }
+
+  for (const question of questions) {
+    const questionHash = hashText(`${question.question}:${question.correctAnswer}`);
+    await db.prepare(`
+      INSERT INTO question_history (id, user_id, domain, round_type, question_hash, question_text, seen_at)
+      VALUES (?, ?, ?, ?, ?, ?, NOW())
+      ON CONFLICT (user_id, domain, round_type, question_hash) DO NOTHING
+    `).run(crypto.randomUUID(), params.userId, params.domain, roundType, questionHash, question.question);
+  }
+
+  return questions;
 }
 
 async function callStructuredModel<T>(
@@ -3015,243 +3382,200 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
-  app.get('/api/tracks/active', requireUser, async (request, response) => {
+  app.get('/api/practice/overview', requireUser, async (request, response) => {
     try {
       const user = (request as AuthedRequest).user!;
-      const rows = await db.query<{ id: string }>(
-        'SELECT id FROM practice_tracks WHERE user_id = $1 ORDER BY last_active_at DESC',
-        [user.id],
-      );
-      const tracks = (await Promise.all(rows.map((row) => loadTrack(row.id, user.id)))).filter(Boolean);
-      response.json({ tracks });
-    } catch (error) {
-      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load active tracks.' });
-    }
-  });
-
-  app.post('/api/tracks/start', requireUser, async (request, response) => {
-    const user = (request as AuthedRequest).user!;
-    const selectedDomain = await getUserSelectedDomain(user.id);
-    if (!selectedDomain) {
-      response.status(400).json({ error: 'Choose your interview domain in onboarding before starting a practice track.' });
-      return;
-    }
-    const domain = normalizeDomain(request.body?.domain, selectedDomain);
-    if (domain !== selectedDomain) {
-      response.status(400).json({ error: 'Practice tracks must use your selected domain. Change it in Settings first.' });
-      return;
-    }
-
-    try {
-      let track = await db.prepare('SELECT id FROM practice_tracks WHERE user_id = ? AND domain = ?').get<{ id: string }>(user.id, domain);
-      if (!track) {
-        const trackId = crypto.randomUUID();
-        await db.prepare(`
-          INSERT INTO practice_tracks (id, user_id, domain, current_module_index, completed_module_ids)
-          VALUES (?, ?, ?, 0, '[]'::jsonb)
-        `).run(trackId, user.id, domain);
-        track = { id: trackId };
-      } else {
-        await db.prepare('UPDATE practice_tracks SET last_active_at = NOW(), updated_at = NOW() WHERE id = ?').run(track.id);
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      const canonicalDomain = toPracticeDomain(String(request.query.domain ?? selectedDomain));
+      if (!canonicalDomain) {
+        response.status(400).json({ error: 'Choose your interview domain in onboarding before opening practice sessions.' });
+        return;
       }
-
-      await seedTrackModules(track.id, domain, user.id);
-      const payload = await loadTrack(track.id, user.id);
-      response.status(201).json({ track: payload });
+      const history = await listPracticeSessions(user.id, { domain: canonicalDomain });
+      response.json({
+        domain: canonicalDomain,
+        suggestedTopics: getPracticeTagCloud(canonicalDomain),
+        history,
+      });
     } catch (error) {
-      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to start practice track.' });
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load practice overview.' });
     }
   });
 
-  app.get('/api/tracks/:trackId', requireUser, async (request, response) => {
+  app.get('/api/practice/sessions', requireUser, async (request, response) => {
     try {
       const user = (request as AuthedRequest).user!;
-      const trackId = String(request.params.trackId ?? '').trim();
-      const track = await loadTrack(trackId, user.id);
-      if (!track) {
-        response.status(404).json({ error: 'Practice track not found.' });
-        return;
-      }
-      response.json({ track });
+      const canonicalDomain = request.query.domain ? toPracticeDomain(String(request.query.domain)) : '';
+      const savedOnly = String(request.query.savedOnly ?? '').trim().toLowerCase() === 'true';
+      const sessions = await listPracticeSessions(user.id, {
+        domain: canonicalDomain || undefined,
+        savedOnly,
+      });
+      response.json({ sessions });
     } catch (error) {
-      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load practice track.' });
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load practice sessions.' });
     }
   });
 
-  app.get('/api/tracks/:trackId/modules/:moduleKey/questions', requireUser, async (request, response) => {
+  app.post('/api/practice/search', requireUser, async (request, response) => {
     try {
       const user = (request as AuthedRequest).user!;
-      const trackId = String(request.params.trackId ?? '').trim();
-      const moduleKey = String(request.params.moduleKey ?? '').trim();
-      const track = await loadTrack(trackId, user.id);
-      const module = track?.modules.find((item) => item.moduleKey === moduleKey);
-      if (!track || !module) {
-        response.status(404).json({ error: 'Track module not found.' });
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      if (!selectedDomain) {
+        response.status(400).json({ error: 'Choose your interview domain in onboarding before starting a practice session.' });
         return;
       }
-      response.json({ questions: module.questions, module });
+
+      const selectedPracticeDomain = toPracticeDomain(selectedDomain);
+      const domain = toPracticeDomain(String(request.body?.domain ?? selectedDomain));
+      if (!selectedPracticeDomain || !domain || domain !== selectedPracticeDomain) {
+        response.status(400).json({ error: 'Practice sessions must use your selected domain. Change it in Settings first.' });
+        return;
+      }
+
+      const topic = String(request.body?.topic ?? '').trim();
+      if (!topic) {
+        response.status(400).json({ error: 'Topic is required.' });
+        return;
+      }
+
+      const validation = await validatePracticeTopicForDomain(user.id, topic, domain);
+      if (!validation.valid) {
+        response.status(400).json({
+          error: validation.error,
+          suggestedDomain: validation.suggestedDomain,
+        });
+        return;
+      }
+
+      const level = String(request.body?.level ?? '').trim().toLowerCase() || 'intermediate';
+      const questions = await generatePracticeSessionQuestions({ userId: user.id, domain, topic, level });
+      const sessionId = crypto.randomUUID();
+      await db.prepare(`
+        INSERT INTO open_practice_sessions (
+          id, user_id, domain, topic, status, questions, answers, generated_at, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, 'in-progress', ?::jsonb, '[]'::jsonb, NOW(), NOW(), NOW()
+        )
+      `).run(sessionId, user.id, domain, topic, JSON.stringify(questions));
+      const session = await loadPracticeSession(sessionId, user.id);
+      response.status(201).json({ session });
     } catch (error) {
-      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load module questions.' });
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to generate a practice session.' });
     }
   });
 
-  app.post('/api/tracks/:trackId/modules/:moduleKey/answers', requireUser, async (request, response) => {
-    const user = (request as AuthedRequest).user!;
-    const trackId = String(request.params.trackId ?? '').trim();
-    const moduleKey = String(request.params.moduleKey ?? '').trim();
-    const questionId = String(request.body?.questionId ?? '').trim();
-    const answer = String(request.body?.answer ?? '').trim();
-    if (!questionId || !answer) {
-      response.status(400).json({ error: 'questionId and answer are required.' });
-      return;
-    }
-
+  app.get('/api/practice/:sessionId', requireUser, async (request, response) => {
     try {
-      const track = await loadTrack(trackId, user.id);
-      const module = track?.modules.find((item) => item.moduleKey === moduleKey);
-      const question = module?.questions.find((item) => item.id === questionId);
-      if (!track || !module || !question) {
-        response.status(404).json({ error: 'Track question not found.' });
+      const user = (request as AuthedRequest).user!;
+      const sessionId = String(request.params.sessionId ?? '').trim();
+      const session = await loadPracticeSession(sessionId, user.id);
+      if (!session) {
+        response.status(404).json({ error: 'Practice session not found.' });
         return;
       }
-      let evaluation = {
-        aiUnavailable: true,
-        score: Math.min(10, Math.max(1, Math.round(answer.split(/\s+/).filter(Boolean).length / 12))),
-        verdict: answer.length > 120 ? 'adequate' : 'weak',
-        whatTheyGotRight: 'Your answer was saved and includes a usable starting point.',
-        whatIsMissing: 'Add more concrete implementation details, tradeoffs, and validation signals.',
-        improvedAnswer: question.correctAnswer,
-        followUpQuestion: `How would you verify this in a ${question.domainLabel} project?`,
-      };
-      try {
-        await checkAiRateLimit(user.id, 'practice-answer-evaluation', 1);
-        const repoContext = await getLatestRepoContext(user.id);
-        const ai = await callStructuredModel(
-          `Senior ${question.domainLabel} engineer. Evaluate the candidate answer. Fair and specific. Return only valid JSON.`,
-          JSON.stringify({
-            repoContext,
-            question: question.questionText,
-            expectedDepth: question.difficulty === 3 ? 'deep' : question.difficulty === 2 ? 'medium' : 'surface',
-            userAnswer: answer,
-            schema: {
-              score: 'number 1-10',
-              verdict: 'strong|adequate|weak',
-              whatTheyGotRight: 'string',
-              whatIsMissing: 'string',
-              improvedAnswer: 'string',
-              followUpQuestion: 'string',
-            },
-          }),
-          (payload) => {
-            const source = parseJsonRecord(payload);
-            return {
-              aiUnavailable: false,
-              score: clampScore(source.score, 5),
-              verdict: ['strong', 'adequate', 'weak'].includes(String(source.verdict)) ? String(source.verdict) : 'adequate',
-              whatTheyGotRight: String(source.whatTheyGotRight ?? 'You identified part of the expected idea.'),
-              whatIsMissing: String(source.whatIsMissing ?? 'Add more specificity and validation detail.'),
-              improvedAnswer: String(source.improvedAnswer ?? question.correctAnswer),
-              followUpQuestion: String(source.followUpQuestion ?? ''),
-            };
-          },
-          { maxTokens: 400, timeoutMs: 25000, model: process.env.CODE_EVALUATION_MODEL?.trim() || 'deepseek/deepseek-chat', temperature: 0.2 },
-        );
-        evaluation = ai.result;
-      } catch (error) {
-        if ((error as Error & { statusCode?: number }).statusCode === 429) {
-          response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
-          return;
-        }
-        await queueAiRetryJob(user.id, 'practice-answer', trackId, { moduleKey, questionId, answer });
-        await markAiRetryJobsFailed(user.id, 'practice-answer', trackId, error instanceof Error ? error.message : 'Practice answer evaluation failed after fallback.');
-      }
-
-      const payload = { moduleKey, questionId, answer, evaluation };
-      await db.prepare(`
-        INSERT INTO round_drafts (id, user_id, attempt_id, feature, draft_payload, saved_at, created_at, updated_at)
-        VALUES (?, ?, ?, 'practice-answer', ?::jsonb, NOW(), NOW(), NOW())
-        ON CONFLICT (user_id, attempt_id, feature)
-        DO UPDATE SET draft_payload = EXCLUDED.draft_payload, saved_at = NOW(), updated_at = NOW()
-      `).run(crypto.randomUUID(), user.id, `${trackId}:${moduleKey}:${questionId}`, JSON.stringify(payload));
-
-      response.json({ evaluation });
+      response.json({ session });
     } catch (error) {
-      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to evaluate answer.' });
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load practice session.' });
     }
   });
 
-  app.post('/api/tracks/:trackId/modules/:moduleKey/complete', requireUser, async (request, response) => {
-    const user = (request as AuthedRequest).user!;
-    const trackId = String(request.params.trackId ?? '').trim();
-    const moduleKey = String(request.params.moduleKey ?? '').trim();
-    const score = Math.min(100, Math.max(0, Math.round(Number(request.body?.score ?? 0))));
-
+  app.patch('/api/practice/:sessionId/answers', requireUser, async (request, response) => {
     try {
-      const track = await loadTrack(trackId, user.id);
-      if (!track) {
-        response.status(404).json({ error: 'Practice track not found.' });
+      const user = (request as AuthedRequest).user!;
+      const sessionId = String(request.params.sessionId ?? '').trim();
+      const session = await loadPracticeSession(sessionId, user.id);
+      if (!session) {
+        response.status(404).json({ error: 'Practice session not found.' });
         return;
       }
-      const module = track.modules.find((item) => item.moduleKey === moduleKey);
-      if (!module) {
-        response.status(404).json({ error: 'Track module not found.' });
-        return;
-      }
-      if (module.status === 'locked') {
-        response.status(409).json({ error: 'This module is still locked.' });
+      if (session.status === 'completed') {
+        response.status(409).json({ error: 'This practice session is already completed.' });
         return;
       }
 
+      const answers = parsePracticeAnswers(request.body?.answers);
       await db.prepare(`
-        UPDATE track_modules
-           SET status = 'done', score = ?, updated_at = NOW()
-         WHERE track_id = ? AND module_key = ?
-      `).run(score, trackId, moduleKey);
-
-      const completedModuleIds = Array.from(new Set([...track.completedModuleIds, moduleKey]));
-      let nextIndex = module.moduleIndex + 1;
-      if (score < 60) {
-        const remedialKey = `remedial-${moduleKey}`;
-        const hasRemedial = track.modules.some((item) => item.moduleKey === remedialKey);
-        if (!hasRemedial) {
-          await db.prepare(`
-            UPDATE track_modules
-               SET module_index = module_index + 1
-             WHERE track_id = ? AND module_index > ?
-          `).run(trackId, module.moduleIndex);
-          await db.prepare(`
-            INSERT INTO track_modules (id, track_id, module_key, module_title, module_index, status, question_ids)
-            VALUES (?, ?, ?, ?, ?, 'active', ?::jsonb)
-          `).run(
-            crypto.randomUUID(),
-            trackId,
-            remedialKey,
-            `Remedial: ${module.moduleTitle}`,
-            module.moduleIndex + 1,
-            JSON.stringify(module.questions.map((question) => question.id).slice(0, 6)),
-          );
-        }
-        nextIndex = module.moduleIndex + 1;
-      }
-
-      await db.prepare(`
-        UPDATE track_modules
-           SET status = 'active', updated_at = NOW()
-         WHERE track_id = ? AND module_index = ? AND status = 'locked'
-      `).run(trackId, nextIndex);
-
-      await db.prepare(`
-        UPDATE practice_tracks
-           SET current_module_index = ?,
-               completed_module_ids = ?::jsonb,
-               last_active_at = NOW(),
+        UPDATE open_practice_sessions
+           SET answers = ?::jsonb,
                updated_at = NOW()
          WHERE id = ? AND user_id = ?
-      `).run(nextIndex, JSON.stringify(completedModuleIds), trackId, user.id);
-
-      response.json({ track: await loadTrack(trackId, user.id) });
+      `).run(JSON.stringify(answers), sessionId, user.id);
+      response.json({ success: true, savedAt: new Date().toISOString() });
     } catch (error) {
-      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to complete module.' });
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to save practice progress.' });
+    }
+  });
+
+  app.post('/api/practice/:sessionId/complete', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const sessionId = String(request.params.sessionId ?? '').trim();
+      const session = await loadPracticeSession(sessionId, user.id);
+      if (!session) {
+        response.status(404).json({ error: 'Practice session not found.' });
+        return;
+      }
+
+      const answers = parsePracticeAnswers(request.body?.answers);
+      const finalAnswers = answers.length ? answers : session.answers;
+      const report = buildPracticeSessionReport(session.questions, finalAnswers);
+      const timeSpentSeconds = Number.isFinite(Number(request.body?.timeSpentSeconds))
+        ? Math.max(0, Math.round(Number(request.body?.timeSpentSeconds)))
+        : session.timeSpentSeconds;
+
+      await db.prepare(`
+        UPDATE open_practice_sessions
+           SET status = 'completed',
+               answers = ?::jsonb,
+               score = ?,
+               correct_answers = ?,
+               time_spent_seconds = ?,
+               result_payload = ?::jsonb,
+               completed_at = NOW(),
+               updated_at = NOW()
+         WHERE id = ? AND user_id = ?
+      `).run(
+        JSON.stringify(finalAnswers),
+        report.score,
+        report.correctAnswers,
+        timeSpentSeconds ?? null,
+        JSON.stringify({
+          performanceLabel: report.performanceLabel,
+          coveredTags: report.coveredTags,
+          weakTags: report.weakTags,
+          results: report.results,
+        }),
+        sessionId,
+        user.id,
+      );
+
+      response.json({ session: await loadPracticeSession(sessionId, user.id) });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to complete practice session.' });
+    }
+  });
+
+  app.post('/api/practice/:sessionId/save', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const sessionId = String(request.params.sessionId ?? '').trim();
+      const session = await loadPracticeSession(sessionId, user.id);
+      if (!session) {
+        response.status(404).json({ error: 'Practice session not found.' });
+        return;
+      }
+
+      const saved = Boolean(request.body?.saved);
+      await db.prepare(`
+        UPDATE open_practice_sessions
+           SET saved_at = CASE WHEN ? THEN NOW() ELSE NULL END,
+               updated_at = NOW()
+         WHERE id = ? AND user_id = ?
+      `).run(saved, sessionId, user.id);
+      response.json({ savedAt: saved ? new Date().toISOString() : null });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to update saved state.' });
     }
   });
 
@@ -3431,12 +3755,6 @@ export async function createApp(options: { listen?: boolean } = {}) {
   app.post('/api/mock/start', requireUser, async (request, response) => {
     const user = (request as AuthedRequest).user!;
     try {
-      const entitlement = await getEntitlement(user.id, 'mock-interview');
-      if (!entitlement.hasAccess) {
-        response.status(403).json({ error: entitlement.upgradeMessage ?? 'Upgrade required.', ...entitlement });
-        return;
-      }
-      await checkAiRateLimit(user.id, 'mock-question-generation', 3);
       const selectedDomain = await getUserSelectedDomain(user.id);
       const requestedDomain = normalizeOptionalDomain(request.body?.domain);
       if (!selectedDomain || !requestedDomain || requestedDomain !== selectedDomain) {
@@ -3444,8 +3762,29 @@ export async function createApp(options: { listen?: boolean } = {}) {
         return;
       }
       const domain = requestedDomain;
-      const timeout = new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('timeout')), 10000));
-      const attemptPromise = createRoundAttempt({
+      const existing = await db.prepare(`
+        SELECT id
+          FROM round_attempts
+         WHERE user_id = ? AND round_type = 'mock-interview' AND domain = ? AND status = 'started'
+         ORDER BY started_at DESC
+         LIMIT 1
+      `).get<{ id: string }>(user.id, domain);
+      if (existing?.id) {
+        const attempt = await getRoundAttemptById(user.id, existing.id);
+        if (attempt) {
+          response.json({ attempt });
+          return;
+        }
+      }
+
+      const entitlement = await getEntitlement(user.id, 'mock-interview');
+      if (!entitlement.hasAccess) {
+        response.status(403).json({ error: entitlement.upgradeMessage ?? 'Upgrade required.', ...entitlement });
+        return;
+      }
+      await checkAiRateLimit(user.id, 'mock-question-generation', 3);
+
+      const attempt = await createRoundAttempt({
         userId: user.id,
         roundType: 'mock-interview',
         questionType: 'mock',
@@ -3453,7 +3792,6 @@ export async function createApp(options: { listen?: boolean } = {}) {
         limit: 8,
         durationMinutes: 35,
       });
-      const attempt = await Promise.race([attemptPromise, timeout]);
       response.status(201).json({ attempt });
     } catch (error) {
       if ((error as Error & { statusCode?: number }).statusCode === 429) {
@@ -3532,6 +3870,23 @@ export async function createApp(options: { listen?: boolean } = {}) {
       return;
     }
 
+    if (['coding-round', 'mock-interview'].includes(roundType)) {
+      const existing = await db.prepare(`
+        SELECT id
+          FROM round_attempts
+         WHERE user_id = ? AND round_type = ? AND domain = ? AND status = 'started'
+         ORDER BY started_at DESC
+         LIMIT 1
+      `).get<{ id: string }>(user.id, roundType, domain);
+      if (existing?.id) {
+        const attempt = await getRoundAttemptById(user.id, existing.id);
+        if (attempt) {
+          response.json({ attempt });
+          return;
+        }
+      }
+    }
+
     if (['scenario-round', 'coding-round', 'mock-interview'].includes(roundType)) {
       const entitlement = await getEntitlement(user.id, roundType);
       if (!entitlement.hasAccess) {
@@ -3541,23 +3896,6 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
 
     try {
-      if (['coding-round', 'mock-interview'].includes(roundType)) {
-        const existing = await db.prepare(`
-          SELECT id
-            FROM round_attempts
-           WHERE user_id = ? AND round_type = ? AND domain = ? AND status = 'started'
-           ORDER BY started_at DESC
-           LIMIT 1
-        `).get<{ id: string }>(user.id, roundType, domain);
-        if (existing?.id) {
-          const attempt = await getRoundAttemptById(user.id, existing.id);
-          if (attempt) {
-            response.json({ attempt });
-            return;
-          }
-        }
-      }
-
       const attempt = await createRoundAttempt({
         userId: user.id,
         roundType,

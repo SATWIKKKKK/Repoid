@@ -1,13 +1,3 @@
-Let me address both requests in sequence.
-
----
-
-# REMAINING CYBERSECURITY Q&A (Q591–Q640 were already provided)
-
-The cybersecurity questions were complete — Q1 through Q640 were fully delivered across both responses. Q336–Q500 were the gap that was filled in the follow-up. The full set is complete.
-
----
-
 # FRONTEND DEVELOPMENT INTERVIEW QUESTIONS — 640 Q&A
 ## End-to-End: Basics to Advanced
 
@@ -1962,6 +1952,21 @@ Answer: display: flow-root (or overflow: hidden historically)
 
 Q495. ________ is a build-time optimization converting SVG files into React components with tree-shaking support.
 Answer: SVGR (svg-to-react transformer)
+
+Q496. ________ is the browser API used to abort an in-flight fetch request before it finishes.
+Answer: AbortController
+
+Q497. ________ is the React feature that renders children outside the parent DOM hierarchy while preserving the same React tree.
+Answer: React Portal
+
+Q498. ________ is the HTTP response header used to restrict which script, style, and media sources the browser may load, reducing XSS risk.
+Answer: Content-Security-Policy (CSP)
+
+Q499. ________ is the browser scheduling API that lets you run low-priority work when the main thread is idle.
+Answer: requestIdleCallback()
+
+Q500. ________ is the CSS viewport unit equal to 1% of the viewport width.
+Answer: vw
 
 ---
 

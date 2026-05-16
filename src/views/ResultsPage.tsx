@@ -9,7 +9,7 @@ const ROUND_LABELS: Record<string, string> = {
   'scenario-round': 'Scenario Round Results',
   'coding-round': 'Coding Round Results',
   'mock-interview': 'Mock Interview Results',
-  'practice-tracks': 'Practice Track Results',
+  'practice-tracks': 'Practice Session Results',
   'full-test': 'Full Test Results',
 };
 

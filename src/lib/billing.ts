@@ -4,7 +4,7 @@ export type BillingInterval = 'monthly' | 'annual';
 export type PlanLimits = {
   activeDomains: number | 'all';
   questionsPerDay: number | 'unlimited';
-  practiceTrackModules: number | 'all';
+  practiceSessions: number | 'unlimited';
   mockInterviewsPerMonth: number | 'unlimited';
   codingRoundsPerMonth: number | 'unlimited';
   scenarioRounds: boolean | 'unlimited';

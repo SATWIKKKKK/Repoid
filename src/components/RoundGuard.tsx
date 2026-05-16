@@ -40,7 +40,8 @@ export default function RoundGuard({
   const rules = useMemo(() => [
     'Do not refresh or leave the round once started.',
     'When the timer ends, inputs lock and the round is submitted automatically.',
-    'Open another practice section only after this round is finished.',
+    'Navigating away will automatically submit your round.',
+    'Your answers are evaluated by AI after each step.',
   ], []);
 
   useEffect(() => {
@@ -95,8 +96,9 @@ export default function RoundGuard({
       </div>
 
       {!started ? (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/35 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-2xl border border-blueprint-line bg-white p-8 shadow-[0_24px_80px_rgba(0,0,0,0.18)]">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-background px-4">
+          <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
+          <div className="relative w-full max-w-lg rounded-2xl border border-blueprint-line bg-white p-8 shadow-[0_24px_80px_rgba(0,0,0,0.12)]">
             <p className="text-ui-label text-blueprint-muted">Before You Start</p>
             <h2 className="mt-3 text-headline-lg text-primary">{roundName}</h2>
             <div className="mt-6 space-y-3">

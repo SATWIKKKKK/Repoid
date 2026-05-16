@@ -19,6 +19,8 @@ import WorkflowDetail from './views/WorkflowDetail';
 import Settings from './views/Settings';
 import QuestionBank from './views/QuestionBank';
 import ResultsPage from './views/ResultsPage';
+import PracticeRound from './views/PracticeRound';
+import PracticeSessionResults from './views/PracticeSessionResults';
 import GithubRepos from './views/GithubRepos';
 import GithubProjectQuestions from './views/GithubProjectQuestions';
 import { Contact, Privacy, SecurityPage, Terms } from './views/Legal';
@@ -88,7 +90,7 @@ function AppShell() {
     };
   }, []);
 
-  const isResultsPath = Boolean(matchPath('/results/:roundType', location.pathname));
+  const isResultsPath = Boolean(matchPath('/results/:roundType', location.pathname)) || Boolean(matchPath('/results/practice/:sessionId', location.pathname));
   const isRoundPath = Boolean(matchPath('/round/*', location.pathname));
   const isLiveRoundPath = ['/scenario-round', '/coding-round', '/mock-interview'].includes(location.pathname);
   const isSettingsPath = location.pathname === '/settings' || location.pathname.startsWith('/settings/');
@@ -246,6 +248,7 @@ function AppShell() {
             <Route path="/practice-tracks" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Workflows /></ProtectedRoute>} />
             <Route path="/workflows" element={<Navigate to="/practice-tracks" replace />} />
             <Route path="/workflows/:id" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><WorkflowDetail /></ProtectedRoute>} />
+            <Route path="/round/practice/:sessionId" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><PracticeRound /></ProtectedRoute>} />
             <Route path="/scenario-round" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Registry /></ProtectedRoute>} />
             <Route path="/round/scenario/:attemptId?" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Registry /></ProtectedRoute>} />
             <Route path="/registry" element={<Navigate to="/scenario-round" replace />} />
@@ -263,6 +266,7 @@ function AppShell() {
             <Route path="/templates" element={<Navigate to="/question-bank" replace />} />
             <Route path="/pulse" element={<Navigate to="/results/practice-tracks" replace />} />
             <Route path="/results" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><ResultsPage /></ProtectedRoute>} />
+            <Route path="/results/practice/:sessionId" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><PracticeSessionResults /></ProtectedRoute>} />
             <Route path="/results/:roundType" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><ResultsPage /></ProtectedRoute>} />
             <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
             <Route path="/settings/:tab" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><SettingsRoute onViewChange={handleViewChange} /></ProtectedRoute>} />

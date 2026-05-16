@@ -88,7 +88,7 @@ export default function GithubRepos() {
   return (
     <div className="min-h-full bg-background">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
-      <main className="relative z-10 mx-auto w-full max-w-5xl px-4 pb-14 pt-6 sm:px-6 lg:px-8">
+      <main className="relative z-10 w-full max-w-6xl px-4 pb-14 pt-6 sm:px-6 lg:ml-32 lg:mr-auto lg:px-10 xl:ml-40">
         <header className="mb-6 flex flex-col gap-4 border-b border-blueprint-line pb-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h1 className="text-headline-lg text-primary">GitHub Repos</h1>

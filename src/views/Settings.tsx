@@ -300,7 +300,7 @@ export default function Settings({ onViewChange, initialTab = 'profile' }: Setti
                 <div className="mt-3 rounded-2xl border border-blueprint-line bg-card p-5 shadow-[inset_0_0_0_1px_rgba(0,0,0,0.02)] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]">
                   <p className="text-body-lg font-semibold text-primary">{selectedDomainOption?.label ?? DOMAIN_LABELS[domain] ?? 'Not selected yet'}</p>
                   <p className="mt-2 max-w-2xl text-body-md text-blueprint-muted">
-                    {selectedDomainOption?.description ?? 'Questions, rounds, practice tracks, and dashboard insights will use this domain.'}
+                    {selectedDomainOption?.description ?? 'Questions, rounds, practice sessions, and dashboard insights will use this domain.'}
                   </p>
                   <button type="button" onClick={() => setDomainModalOpen(true)} className="mt-4 rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5">
                     Change domain

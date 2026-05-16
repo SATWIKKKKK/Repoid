@@ -85,7 +85,7 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
         </button>
       </div>
 
-      <div className="hidden min-w-0 flex-1 items-center justify-center px-4 lg:flex">
+      <div className="hidden min-w-0 flex-1 items-center px-4 lg:flex">
         <GlobalSearch compact />
       </div>
 

@@ -18,7 +18,7 @@ export default function DomainPickerDialog({
   open,
   value,
   title = 'Change domain',
-  description = 'Update your question bank, rounds, practice tracks, and dashboard context in one place.',
+  description = 'Update your question bank, rounds, practice sessions, and dashboard context in one place.',
   saving = false,
   error = null,
   onClose,

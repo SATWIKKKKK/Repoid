@@ -74,7 +74,7 @@ const PLAN_DETAILS: Array<{
     monthly: '₹0',
     annual: '₹0',
     helper: 'No credit card required',
-    features: ['1 active domain', '20 question-bank questions/day', 'First 2 modules of any practice track', '1 GitHub repo scan'],
+    features: ['1 active domain', '20 question-bank questions/day', 'Unlimited practice sessions', '1 GitHub repo scan'],
     mutedFeatures: ['No mock interviews', 'No coding rounds', 'No PDF exports'],
   },
   {
@@ -86,7 +86,7 @@ const PLAN_DETAILS: Array<{
     monthly: '₹999',
     annual: '₹8,499',
     helper: 'Annual saves over 25%',
-    features: ['All domains unlocked', 'Unlimited question bank', 'Full practice tracks', '5 mock interviews/month', '10 coding problems/month', 'Unlimited scenario rounds', '5 GitHub repos + PDF export'],
+    features: ['All domains unlocked', 'Unlimited question bank', 'Unlimited practice sessions', '5 mock interviews/month', '10 coding problems/month', 'Unlimited scenario rounds', '5 GitHub repos + PDF export'],
   },
   {
     id: 'team',
@@ -105,7 +105,7 @@ const COMPARISON_ROWS: Array<{ category?: string; feature?: string; free?: strin
   { category: 'Practice' },
   { feature: 'Active domains', free: '1', pro: 'All domains', team: 'All domains' },
   { feature: 'Question bank', free: '20/day', pro: 'Unlimited', team: 'Unlimited' },
-  { feature: 'Practice track modules', free: 'First 2', pro: 'All', team: 'All' },
+  { feature: 'Practice sessions', free: 'Unlimited', pro: 'Unlimited', team: 'Unlimited' },
   { feature: 'Scenario round', free: false, pro: 'Unlimited', team: 'Unlimited' },
   { category: 'Rounds' },
   { feature: 'Mock interviews/month', free: false, pro: '5', team: 'Unlimited' },
@@ -130,7 +130,7 @@ const FAQS = [
   },
   {
     question: 'Does the free plan expire?',
-    answer: 'No. Free stays available forever with the daily question limit, first two practice-track modules, and one GitHub repo scan.',
+    answer: 'No. Free stays available forever with the daily question limit, unlimited practice sessions, and one GitHub repo scan.',
   },
   {
     question: 'What domains are covered?',
