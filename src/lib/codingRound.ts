@@ -1,6 +1,6 @@
 export type CodingDifficulty = 'easy' | 'medium' | 'hard';
 export type CodingVerdict = 'pass' | 'needs-work' | 'fail';
-export type CodingLanguage = 'typescript' | 'python' | 'sql';
+export type CodingLanguage = 'typescript' | 'javascript' | 'python' | 'sql' | 'bash';
 
 export type CodingExample = {
   input: string;
@@ -45,6 +45,8 @@ export type CodingAttempt = {
   score: number | null;
   timeSpentSeconds: number | null;
   evaluation: CodingEvaluation | null;
+  aiUnavailable: boolean;
+  evaluationError: string | null;
   summary: string;
   focusAreas: string[];
   nextSteps: string[];
@@ -108,6 +110,7 @@ export async function submitCodingAttempt(
     timeSpentSeconds?: number;
     difficulty: CodingDifficulty;
     domain: string;
+    language: CodingLanguage;
   },
 ): Promise<ApiResult<CodingAttempt>> {
   const result = await requestJson<{ attempt: CodingAttempt }>(`/api/coding/${encodeURIComponent(attemptId)}/submit`, {

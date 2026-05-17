@@ -2,7 +2,7 @@ import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } fr
 import { ChevronDown, LoaderCircle, Play, X } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import RoundShell from '../components/RoundShell';
-import { DOMAIN_LABELS } from '../lib/prep';
+import { DOMAIN_FAMILIES, DOMAIN_LABELS } from '../lib/prep';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 import {
   fetchCodingAttempt,
@@ -11,11 +11,43 @@ import {
   submitCodingAttempt,
   type CodingAttempt,
   type CodingDifficulty,
+  type CodingLanguage,
 } from '../lib/codingRound';
+import { executeCodingSnippet, type CodingExecutionResult } from '../lib/codingExecution';
 import { fetchServerDraft, readLocalDraft, saveLocalDraft, saveServerDraft, shouldPromptForLocalDraft } from '../lib/roundRuntime';
 
 const LazyCodeEditor = React.lazy(() => import('../components/LazyCodeEditor'));
 const CODING_GENERATION_ESTIMATED_TOTAL_SECONDS = 15;
+
+const LANGUAGE_LABELS: Record<CodingLanguage, string> = {
+  typescript: 'TypeScript',
+  javascript: 'JavaScript',
+  python: 'Python',
+  sql: 'SQL',
+  bash: 'Bash',
+};
+
+const DOMAIN_LANGUAGE_OPTIONS: Record<string, CodingLanguage[]> = {
+  frontend: ['typescript', 'javascript'],
+  backend: ['typescript', 'javascript', 'python'],
+  'backend-python': ['python', 'typescript', 'javascript'],
+  'full-stack': ['typescript', 'javascript'],
+  cybersecurity: ['python', 'typescript', 'bash'],
+  security: ['python', 'typescript', 'bash'],
+  'data-science': ['python'],
+  'data-analytics': ['sql', 'python'],
+  'sql-databases': ['sql', 'python'],
+  'ai-ml': ['python', 'typescript'],
+  react: ['typescript', 'javascript'],
+  'next-js': ['typescript', 'javascript'],
+  typescript: ['typescript', 'javascript'],
+  'backend-nodejs': ['typescript', 'javascript', 'python'],
+};
+
+type LanguageOption = {
+  value: CodingLanguage;
+  label: string;
+};
 
 type CodingDraftPayload = {
   code?: string;
@@ -23,6 +55,8 @@ type CodingDraftPayload = {
   language?: string;
   savedAt?: string;
 };
+
+type RunPanelOutput = CodingExecutionResult;
 
 function difficultyCardClasses(level: CodingDifficulty, selected: boolean) {
   if (level === 'easy') {
@@ -47,9 +81,43 @@ function difficultyBadgeClasses(level: CodingDifficulty) {
 }
 
 function formatLanguageLabel(language: string) {
+  if (language === 'bash') return 'Bash';
+  if (language === 'javascript') return 'JavaScript';
   if (language === 'sql') return 'SQL';
   if (language === 'python') return 'Python';
   return 'TypeScript';
+}
+
+function normalizeClientCodingLanguage(value: unknown, fallback: CodingLanguage): CodingLanguage {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'javascript' || normalized === 'js') return 'javascript';
+  if (normalized === 'python') return 'python';
+  if (normalized === 'sql') return 'sql';
+  if (normalized === 'bash' || normalized === 'shell' || normalized === 'sh') return 'bash';
+  if (normalized === 'typescript' || normalized === 'ts') return 'typescript';
+  return fallback;
+}
+
+function resolveLanguageDomainKey(domain: string) {
+  if (DOMAIN_LANGUAGE_OPTIONS[domain]) return domain;
+  const family = DOMAIN_FAMILIES[domain];
+  if (family === 'frontend') return 'frontend';
+  if (family === 'backend') return domain === 'backend-python' ? 'backend-python' : 'backend';
+  if (family === 'full-stack') return 'full-stack';
+  if (family === 'security') return 'cybersecurity';
+  if (family === 'ai-ml') return 'ai-ml';
+  if (domain === 'sql-databases') return 'data-analytics';
+  if (family === 'data') return 'data-science';
+  return 'frontend';
+}
+
+function getDomainLanguageOptions(domain: string): LanguageOption[] {
+  const values = DOMAIN_LANGUAGE_OPTIONS[resolveLanguageDomainKey(domain)] ?? DOMAIN_LANGUAGE_OPTIONS.frontend;
+  return values.map((value) => ({ value, label: LANGUAGE_LABELS[value] }));
+}
+
+function getPrimaryCodingLanguage(domain: string): CodingLanguage {
+  return getDomainLanguageOptions(domain)[0]?.value ?? 'typescript';
 }
 
 export default function CodingRoundPage() {
@@ -68,10 +136,14 @@ export default function CodingRoundPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState<CodingAttempt | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState<CodingLanguage>(getPrimaryCodingLanguage(domain));
   const [code, setCode] = useState('');
   const [notes, setNotes] = useState('');
   const [notesOpen, setNotesOpen] = useState(true);
   const [runPanelOpen, setRunPanelOpen] = useState(false);
+  const [runningCode, setRunningCode] = useState(false);
+  const [runStatus, setRunStatus] = useState<string | null>(null);
+  const [runOutput, setRunOutput] = useState<RunPanelOutput>({ stdout: [], stderr: [], notices: [] });
   const [clockNow, setClockNow] = useState(Date.now());
   const [expiring, setExpiring] = useState(false);
 
@@ -86,6 +158,7 @@ export default function CodingRoundPage() {
     ? Math.max(0, Math.floor((clockNow - new Date(attempt.startedAt).getTime()) / 1000))
     : 0;
   const roundExpired = Boolean(attempt && elapsedSeconds >= attempt.durationMinutes * 60);
+  const languageOptions = useMemo(() => getDomainLanguageOptions(attempt?.problem.domain ?? domain), [attempt?.problem.domain, domain]);
 
   const startCodingRound = useCallback(async () => {
     if (!selectedDifficulty || generating) return;
@@ -110,10 +183,19 @@ export default function CodingRoundPage() {
       timeSpentSeconds: Math.min(elapsedSeconds, attempt.durationMinutes * 60),
       difficulty: attempt.problem.difficulty,
       domain: attempt.problem.domain,
+      language: selectedLanguage,
     });
     setSubmitting(false);
     setExpiring(false);
     if (result.ok === false) {
+      const refreshed = await fetchCodingAttempt(attempt.id);
+      if (refreshed.ok === true && refreshed.data.status === 'submitted') {
+        setAttempt(refreshed.data);
+        if (navigateOnComplete) {
+          navigate(`/results/coding/${encodeURIComponent(refreshed.data.id)}`, options.autoSubmitted ? { replace: true } : undefined);
+        }
+        return refreshed.data;
+      }
       setError(result.error);
       return null;
     }
@@ -122,7 +204,39 @@ export default function CodingRoundPage() {
       navigate(`/results/coding/${encodeURIComponent(result.data.id)}`, options.autoSubmitted ? { replace: true } : undefined);
     }
     return result.data;
-  }, [attempt, code, elapsedSeconds, navigate, notes, submitting]);
+  }, [attempt, code, elapsedSeconds, navigate, notes, selectedLanguage, submitting]);
+
+  const handleRunCode = useCallback(async () => {
+    if (!attempt || runningCode) return;
+    setRunPanelOpen(true);
+    setRunningCode(true);
+    setRunStatus('Preparing runtime...');
+    setRunOutput({ stdout: [], stderr: [], notices: [] });
+    try {
+      const result = await executeCodingSnippet(codeRef.current || code, selectedLanguage, (message) => {
+        setRunStatus(message);
+      });
+      setRunOutput(
+        result.stdout.length || result.stderr.length || result.notices.length
+          ? result
+          : { stdout: [], stderr: [], notices: ['Execution finished with no output. Add console.log or print statements to inspect behavior.'] },
+      );
+    } catch (executionError) {
+      setRunOutput({
+        stdout: [],
+        stderr: [executionError instanceof Error ? executionError.message : 'Execution failed.'],
+        notices: [],
+      });
+    } finally {
+      setRunningCode(false);
+      setRunStatus(null);
+    }
+  }, [attempt, code, runningCode, selectedLanguage]);
+
+  useEffect(() => {
+    if (attemptId) return;
+    setSelectedLanguage(getPrimaryCodingLanguage(domain));
+  }, [attemptId, domain]);
 
   useEffect(() => {
     if (attemptId) return undefined;
@@ -150,6 +264,7 @@ export default function CodingRoundPage() {
   useEffect(() => {
     if (!attemptId) {
       setAttempt(null);
+      setSelectedLanguage(getPrimaryCodingLanguage(domain));
       setCode('');
       setNotes('');
       return undefined;
@@ -173,11 +288,13 @@ export default function CodingRoundPage() {
 
       let restoredCode = result.data.code || result.data.problem.starterCode;
       let restoredNotes = result.data.notes || '';
+      let restoredLanguage = normalizeClientCodingLanguage(result.data.language, getPrimaryCodingLanguage(result.data.problem.domain));
       const serverDraft = await fetchServerDraft<CodingDraftPayload>('coding-round', result.data.id);
       const localDraft = readLocalDraft<CodingDraftPayload>('coding-round', result.data.id);
       if (serverDraft.ok && serverDraft.data?.payload?.code) {
         restoredCode = serverDraft.data.payload.code;
         restoredNotes = serverDraft.data.payload.notes ?? restoredNotes;
+        restoredLanguage = normalizeClientCodingLanguage(serverDraft.data.payload.language, restoredLanguage);
       }
       if (localDraft?.payload?.code) {
         const useLocal = shouldPromptForLocalDraft(localDraft.savedAt, serverDraft.ok ? serverDraft.data?.savedAt : null)
@@ -186,21 +303,23 @@ export default function CodingRoundPage() {
         if (useLocal) {
           restoredCode = localDraft.payload.code;
           restoredNotes = localDraft.payload.notes ?? restoredNotes;
+          restoredLanguage = normalizeClientCodingLanguage(localDraft.payload.language, restoredLanguage);
         }
       }
       setCode(restoredCode);
       codeRef.current = restoredCode;
       setNotes(restoredNotes);
+      setSelectedLanguage(restoredLanguage);
     });
     return () => {
       ignore = true;
     };
-  }, [attemptId, navigate]);
+  }, [attemptId, domain, navigate]);
 
   useEffect(() => {
     if (!attempt) return undefined;
     const save = () => {
-      const payload = { code: codeRef.current, notes, language: attempt.problem.language, savedAt: new Date().toISOString() };
+      const payload = { code: codeRef.current, notes, language: selectedLanguage, savedAt: new Date().toISOString() };
       saveLocalDraft('coding-round', attempt.id, payload);
       void saveServerDraft('coding-round', attempt.id, payload);
     };
@@ -213,7 +332,7 @@ export default function CodingRoundPage() {
       window.clearInterval(interval);
       document.removeEventListener('visibilitychange', onHidden);
     };
-  }, [attempt, notes]);
+  }, [attempt, notes, selectedLanguage]);
 
   useEffect(() => {
     if (!attempt) return undefined;
@@ -393,14 +512,28 @@ export default function CodingRoundPage() {
 
               <section className="relative flex h-full w-full min-w-0 flex-col bg-[#0f0f10] lg:w-3/5">
                 <div className="flex items-center justify-between border-b border-[#242427] bg-[#141416] px-5 py-4">
-                  <span className="rounded-full border border-[#2e2e33] bg-[#1b1b20] px-3 py-1 text-ui-label text-[#f1e5d0]">{formatLanguageLabel(attempt.problem.language)}</span>
+                  <div className="relative">
+                    <select
+                      value={selectedLanguage}
+                      onChange={(event) => setSelectedLanguage(normalizeClientCodingLanguage(event.target.value, getPrimaryCodingLanguage(attempt.problem.domain)))}
+                      disabled={languageOptions.length <= 1}
+                      className="appearance-none rounded-full border border-[#2e2e33] bg-[#1b1b20] px-3 py-1 pr-9 text-ui-label text-[#f6efe3] outline-none transition-colors hover:border-[#4a4a50] disabled:cursor-default disabled:opacity-90"
+                    >
+                      {languageOptions.map((option) => (
+                        <option key={option.value} value={option.value} className="bg-[#111113] text-[#f6efe3]">
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#9f9a92]" />
+                  </div>
                   <div className="flex items-center gap-3">
                     <button
                       type="button"
-                      onClick={() => setRunPanelOpen(true)}
+                      onClick={() => { void handleRunCode(); }}
                       className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-2.5 text-ui-label text-white hover:bg-emerald-500"
                     >
-                      <Play size={16} /> Run Code
+                      <Play size={16} /> {runningCode ? 'Running...' : 'Run Code'}
                     </button>
                     <button
                       type="button"
@@ -413,20 +546,49 @@ export default function CodingRoundPage() {
                   </div>
                 </div>
 
-                <div className="min-h-0 flex-1 border-b border-[#242427] px-4 py-4">
+                <div className="border-b border-[#242427] px-4 py-4">
                   <Suspense fallback={<div className="h-full animate-pulse rounded-2xl border border-[#2a2a2f] bg-[#111114]" />}>
-                    <div className="h-full overflow-hidden rounded-2xl border border-[#2a2a2f] bg-[#111114]">
+                    <div className="relative overflow-hidden rounded-2xl border border-[#2a2a2f] bg-[#111114]" style={{ height: 'calc(100vh - 180px)', overflow: 'hidden' }}>
                       <LazyCodeEditor
                         value={code}
-                        language={attempt.problem.language}
+                        language={selectedLanguage}
                         editable={!submitting && !expiring}
                         height="100%"
                         onChange={(value) => {
                           codeRef.current = value;
                           setCode(value);
-                          saveLocalDraft('coding-round', attempt.id, { code: value, notes, language: attempt.problem.language, savedAt: new Date().toISOString() });
+                          saveLocalDraft('coding-round', attempt.id, { code: value, notes, language: selectedLanguage, savedAt: new Date().toISOString() });
                         }}
                       />
+                      <div className={`pointer-events-none absolute inset-x-4 bottom-4 z-20 transition-all duration-200 ${runPanelOpen ? 'translate-y-0 opacity-100' : 'translate-y-6 opacity-0'}`}>
+                        <div className="pointer-events-auto h-[200px] overflow-hidden rounded-2xl border border-[#284535] bg-[rgba(8,12,10,0.94)] shadow-[0_-12px_40px_rgba(0,0,0,0.35)] backdrop-blur-sm">
+                          <div className="flex items-center justify-between border-b border-[#1e3227] px-4 py-3">
+                            <p className="font-mono text-xs tracking-[0.24em] text-[#8bcf9f]">OUTPUT</p>
+                            <button
+                              type="button"
+                              onClick={() => setRunPanelOpen(false)}
+                              className="rounded-full border border-[#335341] p-2 text-[#d8f5de] hover:bg-[#173024]"
+                            >
+                              <X size={16} />
+                            </button>
+                          </div>
+                          <div className="h-[152px] overflow-y-auto px-4 py-3 font-mono text-sm">
+                            {runningCode && runStatus ? <p className="text-[#facc15]">{runStatus}</p> : null}
+                            {runOutput.notices.map((line) => (
+                              <p key={`notice-${line}`} className="text-[#facc15]">{line}</p>
+                            ))}
+                            {runOutput.stdout.map((line, index) => (
+                              <p key={`stdout-${index}-${line}`} className="text-[#86efac]">{line}</p>
+                            ))}
+                            {runOutput.stderr.map((line, index) => (
+                              <p key={`stderr-${index}-${line}`} className="whitespace-pre-wrap text-[#f87171]">{line}</p>
+                            ))}
+                            {!runningCode && !runOutput.stdout.length && !runOutput.stderr.length && !runOutput.notices.length ? (
+                              <p className="text-[#6ee7b7]">Run your code to inspect stdout and runtime errors here.</p>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </Suspense>
                 </div>
@@ -452,19 +614,6 @@ export default function CodingRoundPage() {
                   ) : null}
                 </div>
 
-                {runPanelOpen ? (
-                  <div className="absolute inset-x-0 bottom-0 border-t border-[#2a2a2f] bg-[#17171a] px-5 py-4 shadow-[0_-12px_40px_rgba(0,0,0,0.35)]">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-ui-label text-[#f6efe3]">Run Code</p>
-                        <p className="mt-2 max-w-2xl text-body-md text-[#c9c1b6]">Code execution is not available in this environment. Use the notes field to explain your approach and expected output.</p>
-                      </div>
-                      <button type="button" onClick={() => setRunPanelOpen(false)} className="rounded-full border border-[#333338] p-2 text-[#f6efe3] hover:bg-[#222227]">
-                        <X size={16} />
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
               </section>
             </section>
           ) : null}

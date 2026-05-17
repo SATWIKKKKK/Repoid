@@ -77,7 +77,7 @@ const CODING_PROBLEM_GENERATION_MODEL = process.env.CODING_PROBLEM_GENERATION_MO
 const CODING_PROBLEM_GENERATION_TIMEOUT_MS = Math.max(10_000, Number(process.env.CODING_PROBLEM_GENERATION_TIMEOUT_MS ?? 20_000));
 const CODING_PROBLEM_GENERATION_MAX_TOKENS = Math.max(1_200, Number(process.env.CODING_PROBLEM_GENERATION_MAX_TOKENS ?? 2_000));
 const CODING_PROBLEM_GENERATION_MAX_ATTEMPTS = Math.min(2, Math.max(1, Number(process.env.CODING_PROBLEM_GENERATION_MAX_ATTEMPTS ?? 2)));
-const CODING_EVALUATION_MODEL = process.env.CODING_EVALUATION_MODEL?.trim() || process.env.CODE_EVALUATION_MODEL?.trim() || 'deepseek/deepseek-chat';
+const CODING_EVALUATION_MODEL = 'deepseek/deepseek-chat';
 const oauthStates = new Map<string, { provider: 'google' | 'github'; createdAt: number; nextPath?: string }>();
 const activeGithubScanRequests = new Map<string, string>();
 let runtimeSchemaReadyPromise: Promise<void> | null = null;
@@ -2911,7 +2911,7 @@ type CodingProblemRecord = {
   domain: string;
   difficulty: CodingDifficulty;
   title: string;
-  language: 'typescript' | 'python' | 'sql';
+  language: 'typescript' | 'javascript' | 'python' | 'sql' | 'bash';
   starterCode: string;
   problemStatement: string;
   requirements: string[];
@@ -2938,13 +2938,15 @@ type CodingAttemptRecord = {
   status: string;
   code: string;
   notes: string;
-  language: 'typescript' | 'python' | 'sql';
+  language: 'typescript' | 'javascript' | 'python' | 'sql' | 'bash';
   startedAt: string;
   durationMinutes: number;
   submittedAt: string | null;
   score: number | null;
   timeSpentSeconds: number | null;
   evaluation: CodingEvaluation | null;
+  aiUnavailable: boolean;
+  evaluationError: string | null;
   summary: string;
   focusAreas: string[];
   nextSteps: string[];
@@ -2962,19 +2964,50 @@ function normalizeCodingVerdict(value: unknown, fallback: CodingVerdict = 'needs
   return fallback;
 }
 
-function normalizeCodingLanguage(value: unknown, fallback: 'typescript' | 'python' | 'sql'): 'typescript' | 'python' | 'sql' {
+function normalizeCodingLanguage(value: unknown, fallback: 'typescript' | 'javascript' | 'python' | 'sql' | 'bash'): 'typescript' | 'javascript' | 'python' | 'sql' | 'bash' {
   const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized.includes('javascript') || normalized === 'js') return 'javascript';
   if (normalized.includes('python')) return 'python';
   if (normalized.includes('sql')) return 'sql';
+  if (normalized.includes('bash') || normalized === 'sh' || normalized.includes('shell')) return 'bash';
   return fallback;
 }
 
-function getCodingLanguageForDomain(domain: string): 'typescript' | 'python' | 'sql' {
+function getCodingLanguageForDomain(domain: string): 'typescript' | 'javascript' | 'python' | 'sql' | 'bash' {
   const normalized = String(domain ?? '').trim().toLowerCase();
+  if (normalized === 'backend-python') return 'python';
   if (normalized === 'data-science' || normalized === 'ai-ml') return 'python';
   if (normalized === 'data-analytics') return 'sql';
   if (normalized === 'cybersecurity') return 'python';
   return 'typescript';
+}
+
+function formatCodingLanguageLabel(language: 'typescript' | 'javascript' | 'python' | 'sql' | 'bash') {
+  if (language === 'javascript') return 'JavaScript';
+  if (language === 'python') return 'Python';
+  if (language === 'sql') return 'SQL';
+  if (language === 'bash') return 'Bash';
+  return 'TypeScript';
+}
+
+function formatNumberedList(items: string[]) {
+  if (!items.length) return '1. None provided';
+  return items.map((item, index) => `${index + 1}. ${item}`).join('\n');
+}
+
+function hasStoredCodingEvaluation(payload: Record<string, unknown>) {
+  if (Boolean(payload.aiUnavailable)) return false;
+  return Boolean(payload.correctness && payload.codeQuality && payload.edgeCases && payload.modelSolutionSketch);
+}
+
+function buildCodingEvaluationUnavailablePayload(problem: CodingProblemRecord, errorMessage: string) {
+  return {
+    aiUnavailable: true,
+    error: errorMessage,
+    summary: `Evaluation unavailable for ${problem.title}. Your code is saved.`,
+    focusAreas: [],
+    nextSteps: [],
+  };
 }
 
 function getCodingDurationMinutes(difficulty: CodingDifficulty) {
@@ -3114,16 +3147,100 @@ function normalizeCodingEvaluationPayload(payload: unknown): CodingEvaluation {
   };
 }
 
-function buildCodingResultMeta(problem: CodingProblemRecord, evaluation: CodingEvaluation | null) {
-  const resolvedEvaluation = evaluation ?? fallbackCodingEvaluation(problem, '', '');
-  const focusAreas = resolvedEvaluation.improvements.slice(0, 3);
-  const nextSteps = resolvedEvaluation.improvements.slice(0, 3).map((item) => `Before the next problem, fix this: ${item}`);
+function buildCodingResultMeta(problem: CodingProblemRecord, evaluation: CodingEvaluation | null, aiUnavailable = false) {
+  if (!evaluation) {
+    return {
+      score: 0,
+      summary: aiUnavailable ? `Evaluation unavailable for ${problem.title}. Your code is saved.` : '',
+      focusAreas: [],
+      nextSteps: [],
+    };
+  }
+  const focusAreas = evaluation.improvements.slice(0, 3);
+  const nextSteps = evaluation.improvements.slice(0, 3).map((item) => `Before the next problem, fix this: ${item}`);
   return {
-    score: resolvedEvaluation.score,
-    summary: `Coding round on ${problem.title} scored ${resolvedEvaluation.score}/10.`,
+    score: evaluation.score,
+    summary: `Coding round on ${problem.title} scored ${evaluation.score}/10.`,
     focusAreas,
     nextSteps,
   };
+}
+
+async function evaluateCodingSubmission(params: {
+  userId: string;
+  problem: CodingProblemRecord;
+  language: 'typescript' | 'javascript' | 'python' | 'sql' | 'bash';
+  code: string;
+  notes: string;
+}) {
+  const domainLabel = PRACTICE_DOMAIN_LABELS[toPracticeDomain(params.problem.domain) || 'frontend'];
+  const systemPrompt = `You are a strict senior ${domainLabel} engineer doing a real technical interview evaluation. You have zero tolerance for incomplete implementations. A partially written solution scores below 5. A solution that does not compile or has obvious syntax errors scores below 3. Be honest and specific - do not give vague feedback. Return only valid JSON starting with { and ending with }.`;
+  const userPrompt = [
+    `Problem title: ${params.problem.title}.`,
+    `Difficulty: ${params.problem.difficulty}.`,
+    `Language: ${formatCodingLanguageLabel(params.language)}.`,
+    `Problem statement: ${params.problem.problemStatement}.`,
+    'Requirements the solution must satisfy:',
+    formatNumberedList(params.problem.requirements),
+    'Evaluation criteria:',
+    formatNumberedList(params.problem.evaluationCriteria),
+    'The candidate submitted this code:',
+    params.code || '(no code submitted)',
+    `Their notes: ${params.notes || 'none provided'}.`,
+    'Evaluate strictly. For correctness: actually read the code line by line and determine if it correctly implements the requirements. If the code is incomplete (has TODO comments not implemented, missing return statements, empty function bodies), state this explicitly and score correctness below 4. For edge cases: identify specific edge cases the problem requires and state whether each is handled or not. For code quality: evaluate naming, structure, and whether an interviewer would approve. For model solution sketch: write a concrete 3-4 sentence description of what a correct optimal solution looks like - specific to this problem, not generic.',
+    "Return JSON: { score: number (1-10, be strict - a passing solution at medium difficulty should score 6-8 only if it correctly implements all requirements), verdict: 'pass' | 'needs-work' | 'fail', correctness: string (specific - does this code actually work? what does it do correctly and what is wrong?), codeQuality: string (specific feedback on the actual code structure), edgeCases: string (list the specific edge cases and whether each is handled), improvements: string[] (3-5 concrete specific improvements for this exact code), modelSolutionSketch: string (3-4 sentences describing the optimal approach for this specific problem) }",
+  ].join('\n');
+
+  const startedAt = Date.now();
+  console.log('[coding-eval] start');
+
+  let lastFailure = {
+    message: 'unknown',
+    rawLength: 0,
+    rawPreview: '',
+  };
+
+  for (let retry = 0; retry < 2; retry += 1) {
+    try {
+      await checkAiRateLimit(params.userId, 'coding-answer-evaluation', 1);
+      const ai = await callStructuredModel(
+        systemPrompt,
+        userPrompt,
+        (payload) => normalizeCodingEvaluationPayload(payload),
+        {
+          maxTokens: 900,
+          timeoutMs: 20_000,
+          model: CODING_EVALUATION_MODEL,
+          temperature: 0.65,
+        },
+      );
+      if (ai.result.modelSolutionSketch.trim().length < 80) {
+        const error = new Error('coding_evaluation_insufficient_model_solution_sketch') as Error & { rawResponse?: string };
+        error.rawResponse = JSON.stringify(ai.result);
+        throw error;
+      }
+      console.log('[coding-eval] done', { score: ai.result.score, verdict: ai.result.verdict, durationMs: Date.now() - startedAt });
+      return ai.result;
+    } catch (error) {
+      if ((error as Error & { statusCode?: number }).statusCode === 429) {
+        throw error;
+      }
+      const rawResponse = typeof (error as Error & { rawResponse?: unknown }).rawResponse === 'string'
+        ? String((error as Error & { rawResponse?: string }).rawResponse ?? '')
+        : '';
+      lastFailure = {
+        message: error instanceof Error ? error.message : String(error),
+        rawLength: rawResponse.length,
+        rawPreview: (rawResponse || (error instanceof Error ? error.message : String(error))).slice(0, 240),
+      };
+      console.error('[coding-eval] failed', { rawLength: lastFailure.rawLength, rawPreview: lastFailure.rawPreview, error: lastFailure.message });
+    }
+  }
+
+  const failure = new Error(`aiUnavailable: DeepSeek could not evaluate this submission right now. Last error: ${lastFailure.message}`) as Error & { rawLength?: number; rawPreview?: string };
+  failure.rawLength = lastFailure.rawLength;
+  failure.rawPreview = lastFailure.rawPreview;
+  throw failure;
 }
 
 async function loadCodingAttempt(userId: string, attemptId: string) {
@@ -3205,9 +3322,10 @@ async function loadCodingAttempt(userId: string, attemptId: string) {
   });
 
   const evaluationPayload = parseJsonRecord(row.evaluation_payload);
-  const evaluation = Object.keys(evaluationPayload).length ? normalizeCodingEvaluationPayload(evaluationPayload) : null;
-  const meta = buildCodingResultMeta(problem, evaluation);
-  const storedScore = Number(row.score ?? evaluationPayload.score ?? 0);
+  const aiUnavailable = Boolean(evaluationPayload.aiUnavailable);
+  const evaluation = hasStoredCodingEvaluation(evaluationPayload) ? normalizeCodingEvaluationPayload(evaluationPayload) : null;
+  const meta = buildCodingResultMeta(problem, evaluation, aiUnavailable);
+  const storedScore = aiUnavailable ? null : Number(row.score ?? evaluationPayload.score ?? 0);
 
   return {
     id: row.attempt_id,
@@ -3219,10 +3337,12 @@ async function loadCodingAttempt(userId: string, attemptId: string) {
     startedAt: row.started_at,
     durationMinutes: Number(row.duration_minutes ?? getCodingDurationMinutes(problem.difficulty)),
     submittedAt: row.submitted_at,
-    score: Number.isFinite(storedScore) && storedScore > 0 ? clampScore(storedScore, meta.score) : (evaluation ? meta.score : null),
+    score: typeof storedScore === 'number' && Number.isFinite(storedScore) && storedScore > 0 ? clampScore(storedScore, meta.score) : (evaluation ? meta.score : null),
     timeSpentSeconds: row.time_spent_seconds === null ? null : Number(row.time_spent_seconds),
     evaluation,
-    summary: String(evaluationPayload.summary ?? (evaluation ? meta.summary : '')),
+    aiUnavailable,
+    evaluationError: aiUnavailable ? String(evaluationPayload.error ?? 'DeepSeek could not evaluate your submission right now.') : null,
+    summary: String(evaluationPayload.summary ?? ((evaluation || aiUnavailable) ? meta.summary : '')),
     focusAreas: Array.isArray(evaluationPayload.focusAreas) ? evaluationPayload.focusAreas.map(String) : (evaluation ? meta.focusAreas : []),
     nextSteps: Array.isArray(evaluationPayload.nextSteps) ? evaluationPayload.nextSteps.map(String) : (evaluation ? meta.nextSteps : []),
   } satisfies CodingAttemptRecord;
@@ -3289,7 +3409,7 @@ function toCodingResultAttemptPayload(attempt: CodingAttemptRecord) {
       title: attempt.problem.title,
       domain: attempt.problem.domain,
       difficulty: attempt.problem.difficulty,
-      language: attempt.problem.language,
+      language: attempt.language,
       starterCode: attempt.problem.starterCode,
       problemStatement: attempt.problem.problemStatement,
       requirements: attempt.problem.requirements,
@@ -3307,6 +3427,8 @@ function toCodingResultAttemptPayload(attempt: CodingAttemptRecord) {
       notes: attempt.notes,
       startedAt: attempt.startedAt,
       submittedAt: attempt.submittedAt,
+      aiUnavailable: attempt.aiUnavailable,
+      evaluationError: attempt.evaluationError,
     },
   };
 }
@@ -6522,40 +6644,50 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
       const code = String(request.body?.code ?? attempt.code ?? '').trimEnd();
       const notes = String(request.body?.notes ?? '').trim();
+      const language = normalizeCodingLanguage(request.body?.language, attempt.language);
       const timeSpentSeconds = Number.isFinite(Number(request.body?.timeSpentSeconds))
         ? Math.max(0, Math.round(Number(request.body?.timeSpentSeconds)))
         : null;
 
-      let evaluation = fallbackCodingEvaluation(attempt.problem, code, notes);
-      if (code.trim()) {
-        try {
-          await checkAiRateLimit(user.id, 'coding-answer-evaluation', 1);
-          const ai = await callStructuredModel(
-            `You are a senior ${PRACTICE_DOMAIN_LABELS[toPracticeDomain(attempt.problem.domain) || 'frontend']} engineer doing a technical code review as part of an interview evaluation. Be specific and honest. Return only valid JSON.`,
-            `Problem: ${attempt.problem.title}. Difficulty: ${attempt.problem.difficulty}. Problem statement: ${attempt.problem.problemStatement}. Requirements: ${JSON.stringify(attempt.problem.requirements)}. Evaluation criteria: ${JSON.stringify(attempt.problem.evaluationCriteria)}. Candidate's ${attempt.problem.language} code: ${code}. Candidate's notes: ${notes || 'none'}. Evaluate thoroughly. Return JSON: { score: number (1-10), verdict: 'pass' | 'needs-work' | 'fail', correctness: string, codeQuality: string, edgeCases: string, improvements: string[] (3-5 items), modelSolutionSketch: string }.`,
-            (payload) => normalizeCodingEvaluationPayload(payload),
-            {
-              maxTokens: 700,
-              timeoutMs: 20_000,
-              model: CODING_EVALUATION_MODEL,
-              temperature: 0.7,
-            },
-          );
-          evaluation = ai.result;
-        } catch (error) {
-          if ((error as Error & { statusCode?: number }).statusCode === 429) {
-            response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
-            return;
-          }
+      let evaluation: CodingEvaluation | null = null;
+      let aiUnavailable = false;
+      let evaluationError: string | null = null;
+
+      try {
+        evaluation = await evaluateCodingSubmission({
+          userId: user.id,
+          problem: { ...attempt.problem, language },
+          language,
+          code,
+          notes,
+        });
+      } catch (error) {
+        if ((error as Error & { statusCode?: number }).statusCode === 429) {
+          response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
+          return;
         }
+        aiUnavailable = true;
+        evaluationError = error instanceof Error
+          ? error.message.replace(/^aiUnavailable:\s*/, '')
+          : 'DeepSeek could not evaluate your submission right now.';
       }
 
-      const meta = buildCodingResultMeta(attempt.problem, evaluation);
+      const meta = buildCodingResultMeta(attempt.problem, evaluation, aiUnavailable);
+      const evaluationPayload = aiUnavailable
+        ? buildCodingEvaluationUnavailablePayload(attempt.problem, evaluationError ?? 'DeepSeek could not evaluate your submission right now.')
+        : {
+            ...evaluation,
+            summary: meta.summary,
+            focusAreas: meta.focusAreas,
+            nextSteps: meta.nextSteps,
+          };
+
       await db.prepare(`
         UPDATE coding_attempts
            SET status = 'submitted',
                code_draft = ?,
                notes = ?,
+               language = ?,
                score = ?,
                time_spent_seconds = ?,
                submitted_at = NOW(),
@@ -6565,19 +6697,19 @@ export async function createApp(options: { listen?: boolean } = {}) {
       `).run(
         code,
         notes,
-        evaluation.score,
+        language,
+        evaluation?.score ?? 0,
         timeSpentSeconds,
-        JSON.stringify({
-          ...evaluation,
-          summary: meta.summary,
-          focusAreas: meta.focusAreas,
-          nextSteps: meta.nextSteps,
-        }),
+        JSON.stringify(evaluationPayload),
         attemptId,
         user.id,
       );
 
       const submittedAttempt = await loadCodingAttempt(user.id, attemptId);
+      if (aiUnavailable) {
+        response.status(503).json({ error: evaluationError ?? 'DeepSeek could not evaluate your submission right now.', aiUnavailable: true, attemptId });
+        return;
+      }
       response.json({ attempt: submittedAttempt });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to submit coding attempt.' });
