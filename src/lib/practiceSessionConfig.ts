@@ -305,3 +305,95 @@ export function formatPracticeDomainList(domains: readonly PracticeDomainId[]) {
   if (labels.length === 2) return `${labels[0]} or ${labels[1]}`;
   return `${labels.slice(0, -1).join(', ')}, or ${labels[labels.length - 1]}`;
 }
+
+export type PracticeSessionValidationQuestion = {
+  id?: unknown;
+  type?: unknown;
+  question?: unknown;
+  codeBlock?: unknown;
+  blank?: unknown;
+  options?: unknown;
+  correctAnswer?: unknown;
+  explanation?: unknown;
+  difficulty?: unknown;
+  tags?: unknown;
+};
+
+const VALID_PRACTICE_QUESTION_TYPES = new Set(['mcq', 'fill-blank', 'code-reading']);
+
+export type PracticeSessionValidationFailure = {
+  index: number;
+  type: string;
+  questionPreview: string;
+  reasons: string[];
+};
+
+function getPracticeSessionValidationReasons(question: PracticeSessionValidationQuestion | null) {
+  if (!question) return ['question is not an object'];
+
+  const reasons: string[] = [];
+  const type = String(question.type ?? '').trim();
+  const text = String(question.question ?? '').trim();
+  const correctAnswer = String(question.correctAnswer ?? '').trim();
+  const explanation = String(question.explanation ?? '').trim();
+  const difficulty = String(question.difficulty ?? '').trim();
+
+  if (!VALID_PRACTICE_QUESTION_TYPES.has(type)) reasons.push(`invalid type: ${type || '(empty)'}`);
+  if (!text) reasons.push('missing question text');
+  if (!correctAnswer) reasons.push('missing correctAnswer');
+  if (!explanation) reasons.push('missing explanation');
+  if (!['easy', 'medium', 'hard'].includes(difficulty)) reasons.push(`invalid difficulty: ${difficulty || '(empty)'}`);
+
+  if (type === 'mcq') {
+    const optionCount = Array.isArray(question.options) ? question.options.length : 0;
+    if (optionCount !== 4) reasons.push(`mcq options count must be 4, got ${Array.isArray(question.options) ? optionCount : 'non-array'}`);
+  } else if (type === 'fill-blank') {
+    if (!String(question.blank ?? '').trim()) reasons.push('fill-blank is missing blank');
+  } else if (type === 'code-reading') {
+    if (!String(question.codeBlock ?? '').trim()) reasons.push('code-reading is missing codeBlock');
+  }
+
+  return reasons;
+}
+
+export function validatePracticeSession(
+  parsed: unknown,
+  expectedCount?: number,
+): {
+  valid: boolean;
+  validQuestions: PracticeSessionValidationQuestion[];
+  invalidCount: number;
+  invalidIndexes: number[];
+  invalidDetails: PracticeSessionValidationFailure[];
+} {
+  const source = parsed && typeof parsed === 'object' ? parsed as { questions?: unknown } : {};
+  const questions = Array.isArray(source.questions) ? source.questions : [];
+  const validQuestions: PracticeSessionValidationQuestion[] = [];
+  const invalidIndexes: number[] = [];
+  const invalidDetails: PracticeSessionValidationFailure[] = [];
+
+  questions.forEach((item, index) => {
+    const question = item && typeof item === 'object' ? item as PracticeSessionValidationQuestion : null;
+    const reasons = getPracticeSessionValidationReasons(question);
+
+    if (!reasons.length) {
+      validQuestions.push(question);
+    } else {
+      invalidIndexes.push(index);
+      invalidDetails.push({
+        index,
+        type: String(question?.type ?? '').trim(),
+        questionPreview: String(question?.question ?? '').trim().slice(0, 160),
+        reasons,
+      });
+    }
+  });
+
+  return {
+    valid: invalidIndexes.length === 0 && (expectedCount === undefined || validQuestions.length === expectedCount),
+    validQuestions,
+    invalidCount: invalidIndexes.length + Math.max(0, (expectedCount ?? validQuestions.length) - validQuestions.length),
+    invalidIndexes,
+    invalidDetails,
+  };
+}

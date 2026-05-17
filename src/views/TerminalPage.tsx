@@ -11,6 +11,7 @@ import {
   type RoundFeedback,
   type StoredRoundAttempt,
 } from '../lib/questionBankApi';
+import { getRoundEntryPath } from '../lib/roundNavigation';
 import { saveLocalDraft, saveServerDraft } from '../lib/roundRuntime';
 import { View } from '../App';
 
@@ -27,6 +28,7 @@ const PERSONAS = [
 export default function TerminalPage(_props: TerminalPageProps) {
   const navigate = useNavigate();
   const workspace = usePrepWorkspace();
+  const exitPath = getRoundEntryPath('mock-interview');
   const [attempt, setAttempt] = useState<StoredRoundAttempt | null>(null);
   const [persona, setPersona] = useState(PERSONAS[0].id);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -130,7 +132,7 @@ export default function TerminalPage(_props: TerminalPageProps) {
         {({ formattedTime, inputsLocked }) => (
           <RoundShell attemptId={attempt?.id} feature="mock-interview" label={`${domainLabel} Mock Interview`} startedAt={attempt?.startedAt} counter={`Question ${currentIndex + 1} of ${questions.length || 8}`} onEndEarly={() => { void finishRound(false); }}>
             <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
-            <main className="relative z-10 mx-auto flex w-full max-w-320 flex-col gap-5">
+            <main className="relative z-10 mx-auto flex w-full max-w-7xl flex-col gap-5">
               <header className="surface-card-compact flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="text-ui-label text-blueprint-muted">{domainLabel} Mock Interview</p>
@@ -189,7 +191,7 @@ export default function TerminalPage(_props: TerminalPageProps) {
                               setFollowUps((current) => ({ ...current, [question.id]: followUpDraft }));
                               saveLocalDraft('mock-interview', attempt?.id ?? 'pending', { currentIndex, answers, followUps: { ...followUps, [question.id]: followUpDraft }, feedback });
                             }}
-                            className="mt-3 min-h-24 w-full resize-none rounded-xl border border-blueprint-line bg-[#fbf9f9] p-3 text-body-md text-primary outline-none focus:border-primary"
+                            className="mt-3 min-h-24 w-full resize-none rounded-xl border border-blueprint-line bg-blueprint-bg p-3 text-body-md text-primary outline-none focus:border-primary"
                             placeholder="Optional follow-up answer"
                           />
                         </div>
@@ -204,7 +206,7 @@ export default function TerminalPage(_props: TerminalPageProps) {
                     value={draft}
                     onChange={(event) => setDraft(event.target.value)}
                     disabled={inputsLocked || !question || submittedCurrent}
-                    className="mt-3 min-h-[320px] flex-1 resize-none rounded-xl border border-blueprint-line bg-[#fbf9f9] p-4 text-body-md text-primary outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-70"
+                    className="mt-3 min-h-80 flex-1 resize-none rounded-xl border border-blueprint-line bg-blueprint-bg p-4 text-body-md text-primary outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-70"
                     placeholder="Write what you said. Include tradeoffs, failure modes, and validation."
                   />
                   <div className="mt-2 flex items-center justify-between text-ui-label text-blueprint-muted">
@@ -212,7 +214,7 @@ export default function TerminalPage(_props: TerminalPageProps) {
                     {voiceSupported ? <span>Voice mode available</span> : null}
                   </div>
                   <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:justify-end">
-                    <button type="button" onClick={() => navigate('/practice-tracks')} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary hover:bg-[#f5f3f3]">
+                    <button type="button" onClick={() => navigate(exitPath)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary hover:bg-[#f5f3f3]">
                       Exit
                     </button>
                     {submittedCurrent ? (

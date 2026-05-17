@@ -119,7 +119,7 @@ export default function GlobalSearch({ compact = false }: { compact?: boolean })
           aria-expanded={open}
           aria-haspopup="listbox"
         />
-        <button type="submit" aria-label="Search" className="absolute right-2 flex h-8 w-8 items-center justify-center rounded-full border border-blueprint-line bg-[#f4f4f4] text-primary transition-colors hover:bg-white">
+        <button type="submit" aria-label="Search" className="absolute right-2 flex h-8 w-8 items-center justify-center rounded-full border border-blueprint-line bg-[#f4f4f4] text-primary transition-colors hover:bg-white dark:bg-[#f3ecec] dark:text-[#111111] dark:hover:bg-white">
           <ArrowRight size={15} />
         </button>
       </form>

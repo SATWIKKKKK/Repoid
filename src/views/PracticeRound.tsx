@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, ChevronLeft, ChevronRight, Circle, LoaderCircle } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import RoundShell from '../components/RoundShell';
@@ -19,12 +19,75 @@ type LocalPracticeDraft = {
   currentQuestionIndex: number;
 };
 
+type QuestionContentPart =
+  | { kind: 'text'; value: string }
+  | { kind: 'code'; value: string };
+
+const INLINE_CODE_FENCE_PATTERN = /```[\w]*\n?([\s\S]*?)```/g;
+
 function toAnswerMap(answers: PracticeSessionAnswer[]) {
   return Object.fromEntries(answers.map((answer) => [answer.questionId, answer])) as AnswerMap;
 }
 
 function toAnswerList(answerMap: AnswerMap) {
   return Object.values(answerMap).sort((left, right) => left.confirmedAt.localeCompare(right.confirmedAt));
+}
+
+function stripCodeFences(value: string | null | undefined) {
+  return String(value ?? '')
+    .replace(/^\s*```[a-zA-Z0-9_-]*\s*\r?\n/, '')
+    .replace(/\r?\n```\s*$/, '')
+    .replace(/^\s*~~~[a-zA-Z0-9_-]*\s*\r?\n/, '')
+    .replace(/\r?\n~~~\s*$/, '')
+    .trim();
+}
+
+function splitQuestionContent(value: string | null | undefined) {
+  const text = String(value ?? '');
+  if (!text.trim()) return [] as QuestionContentPart[];
+
+  const parts: QuestionContentPart[] = [];
+  let lastIndex = 0;
+
+  for (const match of text.matchAll(INLINE_CODE_FENCE_PATTERN)) {
+    const startIndex = match.index ?? 0;
+    if (startIndex > lastIndex) {
+      const prose = text.slice(lastIndex, startIndex).trim();
+      if (prose) parts.push({ kind: 'text', value: prose });
+    }
+
+    const code = String(match[1] ?? '').trim();
+    if (code) parts.push({ kind: 'code', value: code });
+    lastIndex = startIndex + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    const prose = text.slice(lastIndex).trim();
+    if (prose) parts.push({ kind: 'text', value: prose });
+  }
+
+  return parts.length ? parts : [{ kind: 'text', value: text.trim() }];
+}
+
+function renderQuestionContent(value: string | null | undefined) {
+  const parts = splitQuestionContent(value);
+  if (!parts.length) return null;
+
+  return (
+    <div className="mt-5 space-y-5">
+      {parts.map((part, index) => part.kind === 'code' ? (
+        <div key={`question-code-${index}`} className="max-h-80 overflow-x-auto overflow-y-auto rounded-lg border border-blueprint-line bg-[#111827] p-4 [scrollbar-gutter:stable]">
+          <pre className="whitespace-pre font-['JetBrains_Mono','Fira_Code','Courier_New',monospace] text-[13px] leading-[1.6] text-slate-100">
+            {part.value}
+          </pre>
+        </div>
+      ) : (
+        <p key={`question-text-${index}`} className="whitespace-pre-line text-body-lg leading-8 text-primary">
+          {part.value}
+        </p>
+      ))}
+    </div>
+  );
 }
 
 export default function PracticeRound() {
@@ -129,7 +192,7 @@ export default function PracticeRound() {
     await persistAnswers(nextAnswers);
   };
 
-  const handleCompleteSession = async () => {
+  const handleCompleteSession = useCallback(async (options: { navigate?: boolean } = {}) => {
     if (!session || submitting) return;
     setSubmitConfirmOpen(false);
     setSubmitting(true);
@@ -150,20 +213,11 @@ export default function PracticeRound() {
     } catch {
       // Ignore local cleanup failures.
     }
-    navigate(`/results/practice/${result.data.id}`, { replace: true });
-  };
-
-  useEffect(() => {
-    if (!session || submitting) return;
-    try {
-      const leaveCount = Number(window.localStorage.getItem(`repoid-round-leaves:practice-session:${session.id}`) ?? 0);
-      if (leaveCount >= 5) {
-        void handleCompleteSession();
-      }
-    } catch {
-      // If localStorage cannot be read, keep the server-backed session resumable.
+    if (options.navigate !== false) {
+      navigate(`/results/practice/${result.data.id}`, { replace: true });
     }
-  }, [session, submitting]);
+    return result.data;
+  }, [answerMap, navigate, session, submitting]);
 
   const startTimerAlert = () => {
     if (!session) return;
@@ -230,7 +284,10 @@ export default function PracticeRound() {
       startedAt={session.generatedAt}
       counter={`Q${currentQuestionIndex + 1} of ${session.totalQuestions}`}
       onEndEarly={() => { void handleCompleteSession(); }}
-      onMaxVisibilityLeaves={() => { void handleCompleteSession(); }}
+      onMaxVisibilityLeaves={() => { void handleCompleteSession({ navigate: false }); }}
+      kickOutResultsPath={`/results/practice/${session.id}`}
+      kickOutTopic={session.topic}
+      kickOutCompletedLabel={`${answeredCount} of ${session.totalQuestions} questions completed`}
     >
       <div className="mx-auto w-full max-w-360 px-4 py-6 sm:px-6 lg:px-8">
         <div className="rounded-3xl border border-blueprint-line bg-card p-5 shadow-[0_22px_44px_rgba(0,0,0,0.05)]">
@@ -242,7 +299,7 @@ export default function PracticeRound() {
                 Confirm each answer when ready, move freely between questions, and submit whenever you want your score.
               </p>
             </div>
-            <div className="rounded-2xl border border-blueprint-line bg-[#fbf9f9] px-4 py-3 text-right">
+            <div className="rounded-2xl border border-blueprint-line bg-blueprint-bg px-4 py-3 text-right">
               <p className="text-ui-label text-blueprint-muted">Answered</p>
               <p className="mt-1 text-headline-md text-primary not-italic">{answeredCount}/{session.totalQuestions}</p>
             </div>
@@ -278,19 +335,30 @@ export default function PracticeRound() {
             })}
           </div>
 
-          <article className="mt-6 rounded-3xl border border-blueprint-line bg-[#fbf9f9] p-5 sm:p-6">
+          <article className="mt-6 rounded-3xl border border-blueprint-line bg-blueprint-bg p-5 sm:p-6">
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-full border border-blueprint-line bg-white px-3 py-1 text-ui-label text-blueprint-muted">
-                {currentQuestion.type === 'fill-blank' ? 'FILL BLANK' : 'MCQ'}
+                {currentQuestion.type === 'code-reading' ? 'CODE READING' : currentQuestion.type === 'fill-blank' ? 'FILL BLANK' : 'MCQ'}
               </span>
               <span className="rounded-full border border-blueprint-line bg-white px-3 py-1 text-ui-label text-blueprint-muted">
                 {currentQuestion.difficulty.toUpperCase()}
               </span>
             </div>
 
-            <h2 className="mt-5 font-serif text-[clamp(1.7rem,2.8vw,2.5rem)] leading-tight text-primary">{currentQuestion.question}</h2>
+            {currentQuestion.type === 'code-reading' ? (
+              <div className="mt-5">
+                <div className="max-h-80 overflow-x-auto overflow-y-auto rounded-lg border border-blueprint-line bg-[#111827] p-4 [scrollbar-gutter:stable]">
+                  <pre className="whitespace-pre font-['JetBrains_Mono','Fira_Code','Courier_New',monospace] text-[13px] leading-[1.6] text-slate-100">
+                    {stripCodeFences(currentQuestion.codeBlock)}
+                  </pre>
+                </div>
+                {renderQuestionContent(currentQuestion.question)}
+              </div>
+            ) : (
+              renderQuestionContent(currentQuestion.question)
+            )}
 
-            {currentQuestion.type === 'mcq' ? (
+            {currentQuestion.type === 'mcq' || (currentQuestion.type === 'code-reading' && currentQuestion.options?.length) ? (
               <div className="mt-6 grid gap-3">
                 {(currentQuestion.options ?? []).map((option) => {
                   const selected = draftAnswer === option;
@@ -327,13 +395,17 @@ export default function PracticeRound() {
 
             {isConfirmed ? (
               <div className={`mt-6 rounded-2xl border px-4 py-4 ${currentIsCorrect ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className={`rounded-full px-3 py-1 text-ui-label ${currentIsCorrect ? 'bg-emerald-600 text-white' : 'bg-amber-600 text-white'}`}>
+                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                  <div>
+                    {!currentIsCorrect ? (
+                      <span className="text-body-md text-primary">Correct answer: {currentQuestion.correctAnswer}</span>
+                    ) : (
+                      <span className="text-body-md text-primary">Answer confirmed.</span>
+                    )}
+                  </div>
+                  <span className={`justify-self-end rounded-full px-3 py-1 text-ui-label ${currentIsCorrect ? 'bg-emerald-600 text-white' : 'bg-amber-600 text-white'}`}>
                     {currentIsCorrect ? 'Correct' : 'Incorrect'}
                   </span>
-                  {!currentIsCorrect ? (
-                    <span className="text-body-md text-primary">Correct answer: {currentQuestion.correctAnswer}</span>
-                  ) : null}
                 </div>
                 <p className="mt-3 text-body-md text-primary">{currentQuestion.explanation || 'Explanation unavailable for this question.'}</p>
               </div>
@@ -384,7 +456,7 @@ export default function PracticeRound() {
         </div>
       </div>
       {submitConfirmOpen ? (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 px-4">
+        <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/40 px-4">
           <div className="w-full max-w-md rounded-2xl border border-blueprint-line bg-card p-6 shadow-2xl">
             <p className="text-ui-label text-blueprint-muted">End Session</p>
             <h2 className="mt-2 text-headline-md text-primary not-italic">Submit and see results?</h2>

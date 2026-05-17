@@ -88,7 +88,7 @@ export default function GithubRepos() {
   return (
     <div className="min-h-full bg-background">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
-      <main className="relative z-10 w-full max-w-6xl px-4 pb-14 pt-6 sm:px-6 lg:ml-32 lg:mr-auto lg:px-10 xl:ml-40">
+      <main className="relative z-10 mx-auto w-full max-w-[1320px] px-4 pb-14 pt-6 sm:px-6 lg:px-10">
         <header className="mb-6 flex flex-col gap-4 border-b border-blueprint-line pb-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h1 className="text-headline-lg text-primary">GitHub Repos</h1>
@@ -115,7 +115,7 @@ export default function GithubRepos() {
               <CheckCircle2 size={15} /> GitHub connected
             </span>
           ) : (
-            <button type="button" onClick={() => window.location.assign(githubConnectUrl)} className="inline-flex w-fit items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-ui-label font-bold text-white transition-colors hover:bg-[#303031]">
+            <button type="button" onClick={() => window.location.replace(githubConnectUrl)} className="inline-flex w-fit items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-ui-label font-bold text-white transition-colors hover:bg-[#303031]">
               <Github size={16} /> Enable private repo access
             </button>
           )}

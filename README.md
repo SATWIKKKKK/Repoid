@@ -26,5 +26,6 @@
 - Deployment entry points include `vercel.json` and `api/[...path].ts`, which reuses the Express app with `createApp({ listen: false })` for serverless handling.
 
 - Useful scripts in `package.json` are `npm run dev` for local development, `npm run build` for production frontend builds, `npm run preview` for Vite preview, `npm run lint` for TypeScript checking, and `npm run db:migrate` for database migrations.
+- For a split local setup, run `npm run dev:server` for the API-only backend on port `3110` and `npm run dev:client` for the standalone Vite frontend on port `3109`; the client proxies `/api` to `127.0.0.1:3110` in that mode.
 
 - The previous placeholder Python test file was removed because it did not test product behavior. No project-owned OTP test files or server-dev test files were present; OTP and dev-server code remain because they are runtime features, not tests.

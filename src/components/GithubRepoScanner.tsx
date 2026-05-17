@@ -282,7 +282,7 @@ export function GithubScanOverlay({ repoUrl, force = false, onClose, onError, on
                 </div>
                 <div className="flex flex-wrap gap-3">
                   {result?.status === 'private' ? (
-                    <button type="button" onClick={() => window.location.assign('/api/auth/oauth/github?next=/github-repos')} className="rounded-full bg-primary px-5 py-3 text-ui-label font-bold text-white transition-colors hover:bg-[#303031]">
+                    <button type="button" onClick={() => window.location.replace('/api/auth/oauth/github?next=/github-repos')} className="rounded-full bg-primary px-5 py-3 text-ui-label font-bold text-white transition-colors hover:bg-[#303031]">
                       Enable private repo access
                     </button>
                   ) : (

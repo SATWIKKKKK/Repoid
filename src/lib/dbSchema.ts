@@ -169,7 +169,9 @@ export const DATABASE_SCHEMA_SQL = `
 
   CREATE TABLE IF NOT EXISTS scenarios (
     id TEXT PRIMARY KEY,
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
     domain TEXT NOT NULL,
+    topic TEXT NOT NULL DEFAULT '',
     level TEXT NOT NULL DEFAULT 'mid',
     scenario_type TEXT NOT NULL,
     company_context TEXT NOT NULL DEFAULT 'scaling company',
@@ -177,6 +179,8 @@ export const DATABASE_SCHEMA_SQL = `
     context TEXT NOT NULL,
     role TEXT NOT NULL,
     steps JSONB NOT NULL DEFAULT '[]'::jsonb,
+    seed TEXT DEFAULT '',
+    question_hash TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
     generated_at TIMESTAMPTZ DEFAULT NOW(),
     refreshed_from_id TEXT,
@@ -186,19 +190,36 @@ export const DATABASE_SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_scenarios_domain_level ON scenarios(domain, level, generated_at DESC);
 
+  ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE CASCADE;
+  ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS topic TEXT NOT NULL DEFAULT '';
+  ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS seed TEXT DEFAULT '';
+  ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS question_hash TEXT DEFAULT '';
+  ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS question TEXT NOT NULL DEFAULT '';
+  ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS question_type TEXT NOT NULL DEFAULT 'technical';
+  ALTER TABLE scenarios ADD COLUMN IF NOT EXISTS hint TEXT NOT NULL DEFAULT '';
+
+  CREATE INDEX IF NOT EXISTS idx_scenarios_user_domain_topic ON scenarios(user_id, domain, topic, generated_at DESC);
+
   CREATE TABLE IF NOT EXISTS scenario_attempts (
     id TEXT PRIMARY KEY,
     scenario_id TEXT NOT NULL REFERENCES scenarios(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'started',
     started_at TIMESTAMPTZ DEFAULT NOW(),
+    duration_minutes INTEGER NOT NULL DEFAULT 30,
     paused_ms INTEGER NOT NULL DEFAULT 0,
     last_saved_at TIMESTAMPTZ DEFAULT NOW(),
+    score INTEGER NOT NULL DEFAULT 0,
+    time_spent_seconds INTEGER,
     completed_at TIMESTAMPTZ,
     result_payload JSONB NOT NULL DEFAULT '{}'::jsonb
   );
 
   CREATE INDEX IF NOT EXISTS idx_scenario_attempts_user ON scenario_attempts(user_id, started_at DESC);
+
+  ALTER TABLE scenario_attempts ADD COLUMN IF NOT EXISTS duration_minutes INTEGER NOT NULL DEFAULT 30;
+  ALTER TABLE scenario_attempts ADD COLUMN IF NOT EXISTS score INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE scenario_attempts ADD COLUMN IF NOT EXISTS time_spent_seconds INTEGER;
 
   CREATE TABLE IF NOT EXISTS scenario_step_answers (
     id TEXT PRIMARY KEY,
@@ -213,6 +234,7 @@ export const DATABASE_SCHEMA_SQL = `
 
   CREATE TABLE IF NOT EXISTS coding_problems (
     id TEXT PRIMARY KEY,
+    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
     domain TEXT NOT NULL,
     difficulty TEXT NOT NULL DEFAULT 'medium',
     category TEXT NOT NULL,
@@ -221,6 +243,10 @@ export const DATABASE_SCHEMA_SQL = `
     context TEXT NOT NULL,
     starter_code TEXT NOT NULL,
     language TEXT NOT NULL,
+    question_hash TEXT NOT NULL DEFAULT '',
+    requirements JSONB NOT NULL DEFAULT '[]'::jsonb,
+    examples JSONB NOT NULL DEFAULT '[]'::jsonb,
+    constraints JSONB NOT NULL DEFAULT '[]'::jsonb,
     evaluation_criteria JSONB NOT NULL DEFAULT '[]'::jsonb,
     hints JSONB NOT NULL DEFAULT '[]'::jsonb,
     status TEXT NOT NULL DEFAULT 'active',
@@ -231,6 +257,12 @@ export const DATABASE_SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_coding_problems_domain ON coding_problems(domain, difficulty, generated_at DESC);
 
+  ALTER TABLE coding_problems ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE CASCADE;
+  ALTER TABLE coding_problems ADD COLUMN IF NOT EXISTS question_hash TEXT NOT NULL DEFAULT '';
+  ALTER TABLE coding_problems ADD COLUMN IF NOT EXISTS requirements JSONB NOT NULL DEFAULT '[]'::jsonb;
+  ALTER TABLE coding_problems ADD COLUMN IF NOT EXISTS examples JSONB NOT NULL DEFAULT '[]'::jsonb;
+  ALTER TABLE coding_problems ADD COLUMN IF NOT EXISTS constraints JSONB NOT NULL DEFAULT '[]'::jsonb;
+
   CREATE TABLE IF NOT EXISTS coding_attempts (
     id TEXT PRIMARY KEY,
     problem_id TEXT NOT NULL REFERENCES coding_problems(id) ON DELETE CASCADE,
@@ -240,13 +272,20 @@ export const DATABASE_SCHEMA_SQL = `
     notes TEXT,
     language TEXT NOT NULL,
     started_at TIMESTAMPTZ DEFAULT NOW(),
+    duration_minutes INTEGER NOT NULL DEFAULT 45,
     paused_ms INTEGER NOT NULL DEFAULT 0,
     last_saved_at TIMESTAMPTZ DEFAULT NOW(),
+    score INTEGER NOT NULL DEFAULT 0,
+    time_spent_seconds INTEGER,
     submitted_at TIMESTAMPTZ,
     evaluation_payload JSONB NOT NULL DEFAULT '{}'::jsonb
   );
 
   CREATE INDEX IF NOT EXISTS idx_coding_attempts_user ON coding_attempts(user_id, started_at DESC);
+
+  ALTER TABLE coding_attempts ADD COLUMN IF NOT EXISTS duration_minutes INTEGER NOT NULL DEFAULT 45;
+  ALTER TABLE coding_attempts ADD COLUMN IF NOT EXISTS score INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE coding_attempts ADD COLUMN IF NOT EXISTS time_spent_seconds INTEGER;
 
   CREATE TABLE IF NOT EXISTS mock_interviews (
     id TEXT PRIMARY KEY,
@@ -278,6 +317,7 @@ export const DATABASE_SCHEMA_SQL = `
     topic TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'in-progress',
     questions JSONB NOT NULL DEFAULT '[]'::jsonb,
+    question_type_breakdown JSONB NOT NULL DEFAULT '{"mcq":10,"fill-blank":10,"code-reading":20}'::jsonb,
     answers JSONB NOT NULL DEFAULT '[]'::jsonb,
     score INTEGER,
     correct_answers INTEGER NOT NULL DEFAULT 0,
@@ -291,6 +331,7 @@ export const DATABASE_SCHEMA_SQL = `
   );
 
   ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS answers JSONB NOT NULL DEFAULT '[]'::jsonb;
+  ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS question_type_breakdown JSONB NOT NULL DEFAULT '{"mcq":10,"fill-blank":10,"code-reading":20}'::jsonb;
   ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS score INTEGER;
   ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS correct_answers INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE open_practice_sessions ADD COLUMN IF NOT EXISTS time_spent_seconds INTEGER;

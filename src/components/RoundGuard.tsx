@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Clock3, FileCheck2, Focus, Sparkles } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 function formatTime(totalSeconds: number) {
@@ -11,6 +12,7 @@ export default function RoundGuard({
   roundName,
   durationMinutes,
   resultsPath,
+  showTimerBadge = true,
   onExpire,
   onStart,
   children,
@@ -18,6 +20,7 @@ export default function RoundGuard({
   roundName: string;
   durationMinutes: number;
   resultsPath: string;
+  showTimerBadge?: boolean;
   onExpire?: () => void | Promise<void>;
   onStart?: () => void | Promise<void>;
   children?: (state: {
@@ -37,12 +40,12 @@ export default function RoundGuard({
   const [startError, setStartError] = useState<string | null>(null);
   const expireHandledRef = useRef(false);
 
-  const rules = useMemo(() => [
-    'Do not refresh or leave the round once started.',
-    'When the timer ends, inputs lock and the round is submitted automatically.',
-    'Navigating away will automatically submit your round.',
-    'Your answers are evaluated by AI after each step.',
-  ], []);
+  const brief = useMemo(() => [
+    { icon: Clock3, label: `${durationMinutes} min`, body: 'Timed practice with autosave while you work.' },
+    { icon: Focus, label: 'Focused mode', body: 'Stay inside the round until you submit.' },
+    { icon: FileCheck2, label: 'Auto submit', body: 'When time ends, your current progress is submitted.' },
+    { icon: Sparkles, label: 'AI feedback', body: 'Responses are reviewed as you move through the round.' },
+  ], [durationMinutes]);
 
   useEffect(() => {
     if (!started || expired) return undefined;
@@ -91,24 +94,37 @@ export default function RoundGuard({
         inputsLocked: !started || expired,
       })}
 
-      <div className="fixed right-4 top-20 z-40 rounded-full border border-blueprint-line bg-white px-4 py-2 text-ui-label text-primary shadow-[0_8px_24px_rgba(0,0,0,0.06)]">
-        {formatTime(secondsLeft)}
-      </div>
+      {showTimerBadge ? (
+        <div className="fixed right-4 top-20 z-40 rounded-full border border-blueprint-line bg-white px-4 py-2 text-ui-label text-primary shadow-[0_8px_24px_rgba(0,0,0,0.06)]">
+          {formatTime(secondsLeft)}
+        </div>
+      ) : null}
 
       {!started ? (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-background px-4">
+        <div className="fixed inset-0 z-70 flex items-center justify-center bg-background px-4">
           <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
           <div className="relative w-full max-w-lg rounded-2xl border border-blueprint-line bg-white p-8 shadow-[0_24px_80px_rgba(0,0,0,0.12)]">
-            <p className="text-ui-label text-blueprint-muted">Before You Start</p>
+            <p className="text-ui-label text-blueprint-muted">Ready when you are</p>
             <h2 className="mt-3 text-headline-lg text-primary">{roundName}</h2>
-            <div className="mt-6 space-y-3">
-              {rules.map((rule) => (
-                <div key={rule} className="flex gap-3 rounded-lg border border-blueprint-line bg-[#fbf9f9] p-3 text-body-md text-primary">
-                  <span className="material-symbols-outlined text-[18px]">rule</span>
-                  <span>{rule}</span>
-                </div>
-              ))}
+            <div className="mt-6 grid gap-3 sm:grid-cols-2">
+              {brief.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <div key={item.label} className="rounded-xl border border-blueprint-line bg-blueprint-bg p-4 text-primary">
+                    <div className="flex items-center gap-2">
+                      <Icon size={17} className="text-blueprint-muted" />
+                      <p className="text-ui-label text-primary">{item.label}</p>
+                    </div>
+                    <p className="mt-2 text-body-md text-blueprint-muted">{item.body}</p>
+                  </div>
+                );
+              })}
             </div>
+            <div className="mt-5 rounded-xl border border-blueprint-line bg-card px-4 py-3">
+              <p className="text-body-md text-primary">
+                Pick your pace, answer clearly, and submit when you are done. We will keep your timer and saved responses in sync.
+              </p>
+                </div>
             <button
               type="button"
               onClick={async () => {
@@ -135,13 +151,13 @@ export default function RoundGuard({
       ) : null}
 
       {showStartedNotice ? (
-        <div className="fixed left-1/2 top-20 z-[65] -translate-x-1/2 rounded-full border border-blueprint-line bg-white px-5 py-3 text-ui-label text-primary shadow-[0_8px_24px_rgba(0,0,0,0.08)]">
+        <div className="fixed left-1/2 top-20 z-65 -translate-x-1/2 rounded-full border border-blueprint-line bg-white px-5 py-3 text-ui-label text-primary shadow-[0_8px_24px_rgba(0,0,0,0.08)]">
           Round started. Your timer is now active.
         </div>
       ) : null}
 
       {expired ? (
-        <div className="fixed inset-0 z-[75] flex items-center justify-center bg-white/80 px-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-75 flex items-center justify-center bg-white/80 px-4 backdrop-blur-sm">
           <div className="max-w-md rounded-2xl border border-blueprint-line bg-white p-8 text-center shadow-[0_24px_80px_rgba(0,0,0,0.14)]">
             <p className="text-ui-label text-blueprint-muted">Time Is Up</p>
             <h2 className="mt-3 text-headline-lg text-primary">The prep is over.</h2>

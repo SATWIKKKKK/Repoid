@@ -3,11 +3,13 @@ import crypto from 'node:crypto';
 import dotenv from 'dotenv';
 import express from 'express';
 import fs from 'node:fs';
+import { jsonrepair } from 'jsonrepair';
 import net from 'node:net';
 import nodemailer from 'nodemailer';
 import path from 'node:path';
 import { createServer as createViteServer } from 'vite';
 import db from './src/lib/db.js';
+import { DATABASE_SCHEMA_SQL } from './src/lib/dbSchema.js';
 import {
   createRoundAttempt,
   ensureQuestionBankSeeded,
@@ -24,8 +26,20 @@ import {
   getPracticeTopicDomains,
   normalizePracticeTopic,
   toPracticeDomain,
+  validatePracticeSession,
   type PracticeDomainId,
 } from './src/lib/practiceSessionConfig.js';
+import {
+  formatScenarioDomainList,
+  findScenarioTopicDomains,
+  getScenarioTagCloud,
+  getScenarioTopicCategories,
+  normalizeScenarioTopic,
+  SCENARIO_ANGLES,
+  SCENARIO_DOMAIN_LABELS,
+  toScenarioDomain,
+  type ScenarioDomainId,
+} from './src/lib/scenarioConfig.js';
 
 const envPath = path.resolve(process.cwd(), '.env');
 if (fs.existsSync(envPath)) {
@@ -48,8 +62,25 @@ const GITHUB_SCAN_TEMPERATURE = Number(process.env.GITHUB_SCAN_TEMPERATURE ?? 0.
 const GITHUB_SCAN_TOP_P = Number(process.env.GITHUB_SCAN_TOP_P ?? 0.95);
 const GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET = Number(process.env.GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET ?? 120000);
 const GITHUB_SCAN_ENGINE_VERSION = 'deepseek-chat-single-flight-2026-05-13';
+const EMBED_VITE_DEV_SERVER = String(process.env.EMBED_VITE_DEV_SERVER ?? 'true').trim().toLowerCase() !== 'false';
+const SCENARIO_GENERATION_MODEL = process.env.SCENARIO_GENERATION_MODEL?.trim() || 'deepseek/deepseek-chat';
+const SCENARIO_GENERATION_TIMEOUT_MS = Math.max(8_000, Number(process.env.SCENARIO_GENERATION_TIMEOUT_MS ?? 18_000));
+const SCENARIO_GENERATION_ROUTE_TIMEOUT_MS = Math.max(
+  SCENARIO_GENERATION_TIMEOUT_MS + 4_000,
+  Number(process.env.SCENARIO_GENERATION_ROUTE_TIMEOUT_MS ?? (SCENARIO_GENERATION_TIMEOUT_MS + 4_000)),
+);
+const SCENARIO_GENERATION_MAX_TOKENS = Math.max(600, Number(process.env.SCENARIO_GENERATION_MAX_TOKENS ?? 800));
+const SCENARIO_GENERATION_TEMPERATURE = Number(process.env.SCENARIO_GENERATION_TEMPERATURE ?? 0.6);
+const SCENARIO_GENERATION_MAX_ATTEMPTS = Math.min(2, Math.max(1, Number(process.env.SCENARIO_GENERATION_MAX_ATTEMPTS ?? 2)));
+const SCENARIO_STEP_EVALUATION_MODEL = process.env.SCENARIO_STEP_EVALUATION_MODEL?.trim() || 'deepseek/deepseek-chat';
+const CODING_PROBLEM_GENERATION_MODEL = process.env.CODING_PROBLEM_GENERATION_MODEL?.trim() || 'deepseek/deepseek-chat';
+const CODING_PROBLEM_GENERATION_TIMEOUT_MS = Math.max(10_000, Number(process.env.CODING_PROBLEM_GENERATION_TIMEOUT_MS ?? 20_000));
+const CODING_PROBLEM_GENERATION_MAX_TOKENS = Math.max(1_200, Number(process.env.CODING_PROBLEM_GENERATION_MAX_TOKENS ?? 2_000));
+const CODING_PROBLEM_GENERATION_MAX_ATTEMPTS = Math.min(2, Math.max(1, Number(process.env.CODING_PROBLEM_GENERATION_MAX_ATTEMPTS ?? 2)));
+const CODING_EVALUATION_MODEL = process.env.CODING_EVALUATION_MODEL?.trim() || process.env.CODE_EVALUATION_MODEL?.trim() || 'deepseek/deepseek-chat';
 const oauthStates = new Map<string, { provider: 'google' | 'github'; createdAt: number; nextPath?: string }>();
 const activeGithubScanRequests = new Map<string, string>();
+let runtimeSchemaReadyPromise: Promise<void> | null = null;
 
 type DbUserRow = {
   id: string;
@@ -74,7 +105,7 @@ type UserPreferencesRow = {
 };
 
 type BillingPlan = 'free' | 'pro' | 'team';
-type BillingInterval = 'monthly' | 'semiannual' | 'annual';
+type BillingInterval = 'monthly' | 'annual';
 
 type SubscriptionRow = {
   id: string;
@@ -189,6 +220,72 @@ function wait(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function isRequestAbortedError(error: unknown) {
+  if (!error || typeof error !== 'object') return false;
+  const type = String((error as { type?: unknown }).type ?? '').trim().toLowerCase();
+  const code = String((error as { code?: unknown }).code ?? '').trim().toLowerCase();
+  const message = String((error as { message?: unknown }).message ?? '').trim().toLowerCase();
+  return type === 'request.aborted' || code === 'ecconnreset' || code === 'econnreset' || message === 'request aborted';
+}
+
+function linkAbortSignal(target: AbortController, signal?: AbortSignal) {
+  if (!signal) {
+    return () => undefined;
+  }
+
+  const abort = () => {
+    if (target.signal.aborted) return;
+    const reason = signal.reason instanceof Error
+      ? signal.reason
+      : new Error(String(signal.reason ?? 'request_aborted'));
+    target.abort(reason);
+  };
+
+  if (signal.aborted) {
+    abort();
+    return () => undefined;
+  }
+
+  signal.addEventListener('abort', abort, { once: true });
+  return () => signal.removeEventListener('abort', abort);
+}
+
+function createRequestAbortHandle(request: express.Request, response: express.Response) {
+  const controller = new AbortController();
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort(new Error('request_aborted'));
+  };
+  const handleRequestAborted = () => abort();
+  const handleResponseClosed = () => {
+    if (!response.writableEnded) abort();
+  };
+
+  request.on('aborted', handleRequestAborted);
+  response.on('close', handleResponseClosed);
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      request.off('aborted', handleRequestAborted);
+      response.off('close', handleResponseClosed);
+    },
+  };
+}
+
+async function withOperationTimeout<T>(label: string, timeoutMs: number, action: () => Promise<T>) {
+  let timeoutId: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      action(),
+      new Promise<T>((_resolve, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label}_timeout`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 function readPort(name: string, fallback: number) {
   const rawValue = process.env[name]?.trim();
   if (!rawValue) return fallback;
@@ -270,18 +367,16 @@ const DOMAIN_ALIASES = new Map<string, string>([
 ]);
 
 const BILLING_PLANS = ['free', 'pro', 'team'] as const;
-const BILLING_INTERVALS = ['monthly', 'semiannual', 'annual'] as const;
+const BILLING_INTERVALS = ['monthly', 'annual'] as const;
 
 const PLAN_PRICING: Record<Exclude<BillingPlan, 'free'>, Record<BillingInterval, { amountPaise: number; displayPrice: string; label: string }>> = {
   pro: {
-    monthly: { amountPaise: 2900, displayPrice: '₹29', label: 'Pro monthly' },
-    semiannual: { amountPaise: 14900, displayPrice: '₹149', label: 'Pro 6 months' },
-    annual: { amountPaise: 29900, displayPrice: '₹299', label: 'Pro annual' },
+    monthly: { amountPaise: 9900, displayPrice: '₹99', label: 'Monthly' },
+    annual: { amountPaise: 29900, displayPrice: '₹299', label: 'Yearly' },
   },
   team: {
-    monthly: { amountPaise: 2900, displayPrice: '₹29', label: 'Premium monthly seat' },
-    semiannual: { amountPaise: 14900, displayPrice: '₹149', label: 'Premium 6-month seat' },
-    annual: { amountPaise: 29900, displayPrice: '₹299', label: 'Premium annual seat' },
+    monthly: { amountPaise: 9900, displayPrice: '₹99', label: 'Monthly' },
+    annual: { amountPaise: 29900, displayPrice: '₹299', label: 'Yearly' },
   },
 };
 
@@ -405,6 +500,15 @@ function extractJsonPayload(text: string): string {
   }
 
   return trimmed;
+}
+
+function parseStructuredPayload(rawText: string) {
+  const payload = extractJsonPayload(rawText);
+  try {
+    return JSON.parse(jsonrepair(payload));
+  } catch {
+    return JSON.parse(payload);
+  }
 }
 
 function githubScanModelCandidates() {
@@ -760,7 +864,29 @@ function clampScore(value: unknown, fallback = 5) {
   return Math.min(10, Math.max(1, Math.round(score)));
 }
 
-function fallbackRoundFeedback(mode: 'scenario' | 'mock', answer: string) {
+type MockRoundFeedbackPayload = {
+  aiUnavailable: boolean;
+  score: number;
+  feedback: string;
+  whatWorked: string;
+  whatWasMissed: string;
+  spokenResponse: string;
+  followUpQuestion: string | null;
+  internalFlags: string[];
+};
+
+type ScenarioRoundFeedbackPayload = {
+  aiUnavailable: boolean;
+  score: number;
+  feedback: string;
+  whatWorked: string;
+  whatWasMissed: string;
+  seniorEngineerWouldHaveSaid: string;
+};
+
+type RoundFeedbackPayload = MockRoundFeedbackPayload | ScenarioRoundFeedbackPayload;
+
+function fallbackRoundFeedback(mode: 'scenario' | 'mock', answer: string): RoundFeedbackPayload {
   const words = answer.trim().split(/\s+/).filter(Boolean).length;
   const score = words >= 90 ? 8 : words >= 45 ? 6 : 4;
   if (mode === 'mock') {
@@ -785,7 +911,7 @@ function fallbackRoundFeedback(mode: 'scenario' | 'mock', answer: string) {
   };
 }
 
-function normalizeRoundFeedbackPayload(mode: 'scenario' | 'mock', payload: unknown) {
+function normalizeRoundFeedbackPayload(mode: 'scenario' | 'mock', payload: unknown): RoundFeedbackPayload {
   const source = parseJsonRecord(payload);
   if (mode === 'mock') {
     return {
@@ -881,13 +1007,14 @@ type TrackQuestionRow = {
   time_limit_minutes: number;
 };
 
-type PracticeQuestionType = 'fill-blank' | 'mcq';
+type PracticeQuestionType = 'fill-blank' | 'mcq' | 'code-reading';
 type PracticeQuestionDifficulty = 'easy' | 'medium' | 'hard';
 
 type PracticeSessionQuestion = {
   id: string;
   type: PracticeQuestionType;
   question: string;
+  codeBlock: string | null;
   blank: string | null;
   options: string[] | null;
   correctAnswer: string;
@@ -906,6 +1033,7 @@ type PracticeSessionResult = {
   questionId: string;
   type: PracticeQuestionType;
   question: string;
+  codeBlock?: string | null;
   userAnswer: string;
   correctAnswer: string;
   explanation: string;
@@ -929,7 +1057,6 @@ type PracticeSessionPayload = {
   completedAt: string | null;
   savedAt: string | null;
   performanceLabel: string | null;
-  coveredTags: string[];
   weakTags: string[];
   results: PracticeSessionResult[];
 };
@@ -941,6 +1068,10 @@ type PracticeSessionSummary = Pick<
 
 function hashText(value: string) {
   return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function practiceQuestionHistoryHash(question: Pick<PracticeSessionQuestion, 'question' | 'correctAnswer'>) {
+  return hashText(normalizePracticeAnswerText(`${question.question} ${question.correctAnswer}`).slice(0, 80));
 }
 
 function normalizePracticeAnswerText(value: string) {
@@ -962,9 +1093,9 @@ function cleanPracticeTag(value: string) {
 
 function parsePracticeQuestionType(value: unknown): PracticeQuestionType {
   const normalized = String(value ?? '').trim().toLowerCase();
-  return normalized === 'fill blank' || normalized === 'fill_blank' || normalized === 'fill-blank'
-    ? 'fill-blank'
-    : 'mcq';
+  if (normalized === 'code reading' || normalized === 'code_reading' || normalized === 'code-reading') return 'code-reading';
+  if (normalized === 'fill blank' || normalized === 'fill_blank' || normalized === 'fill-blank') return 'fill-blank';
+  return 'mcq';
 }
 
 function parsePracticeDifficulty(value: unknown): PracticeQuestionDifficulty {
@@ -978,6 +1109,7 @@ function normalizePracticeQuestionPayload(value: unknown, index: number, topic: 
   const type = parsePracticeQuestionType(source.type);
   const explicitId = String(source.id ?? '').trim();
   const question = String(source.question ?? '').trim().replace(/^Q\d+[.:]\s*/, '');
+  const codeBlock = type === 'code-reading' ? stripCodeFences(String(source.codeBlock ?? source.code ?? '').trim()) : null;
   const correctAnswer = String(source.correctAnswer ?? source.answer ?? source.blank ?? '').trim();
   const explanation = String(source.explanation ?? '').trim();
   const tags = parseJsonArray(source.tags)
@@ -986,6 +1118,7 @@ function normalizePracticeQuestionPayload(value: unknown, index: number, topic: 
     .slice(0, 6);
 
   if (!question || !correctAnswer) return null;
+  if (type === 'code-reading' && !codeBlock) return null;
 
   if (type === 'mcq') {
     const options = parseJsonArray(source.options).map((option) => String(option).trim()).filter(Boolean).slice(0, 4);
@@ -994,8 +1127,25 @@ function normalizePracticeQuestionPayload(value: unknown, index: number, topic: 
       id: explicitId || `${hashText(`${topic}:${question}:${correctAnswer}`).slice(0, 12)}-${index + 1}`,
       type,
       question,
+      codeBlock,
       blank: null,
       options,
+      correctAnswer,
+      explanation,
+      difficulty: parsePracticeDifficulty(source.difficulty),
+      tags,
+    };
+  }
+
+  if (type === 'code-reading') {
+    const options = parseJsonArray(source.options).map((option) => String(option).trim()).filter(Boolean).slice(0, 4);
+    return {
+      id: explicitId || `${hashText(`${topic}:${question}:${correctAnswer}`).slice(0, 12)}-${index + 1}`,
+      type,
+      question,
+      codeBlock,
+      blank: String(source.blank ?? '').trim() || null,
+      options: options.length === 4 ? options : null,
       correctAnswer,
       explanation,
       difficulty: parsePracticeDifficulty(source.difficulty),
@@ -1007,6 +1157,7 @@ function normalizePracticeQuestionPayload(value: unknown, index: number, topic: 
     id: explicitId || `${hashText(`${topic}:${question}:${correctAnswer}`).slice(0, 12)}-${index + 1}`,
     type,
     question,
+    codeBlock: null,
     blank: String(source.blank ?? correctAnswer).trim() || correctAnswer,
     options: null,
     correctAnswer,
@@ -1014,6 +1165,15 @@ function normalizePracticeQuestionPayload(value: unknown, index: number, topic: 
     difficulty: parsePracticeDifficulty(source.difficulty),
     tags,
   };
+}
+
+function stripCodeFences(value: string) {
+  return value
+    .replace(/^\s*```[a-zA-Z0-9_-]*\s*\r?\n/, '')
+    .replace(/\r?\n```\s*$/, '')
+    .replace(/^\s*~~~[a-zA-Z0-9_-]*\s*\r?\n/, '')
+    .replace(/\r?\n~~~\s*$/, '')
+    .trim();
 }
 
 function parsePracticeQuestions(value: unknown): PracticeSessionQuestion[] {
@@ -1032,13 +1192,14 @@ function buildPracticeTopUpQuestion(params: {
   const domainLabel = PRACTICE_DOMAIN_LABELS[params.domain];
   const topic = params.topic.trim() || domainLabel;
   const tags = [cleanPracticeTag(topic), domainLabel, params.index >= 20 ? 'Hard Coding Scenario' : 'Practice Top-Up'].filter(Boolean).slice(0, 6);
-  if (params.index < 10) {
+  if (params.index < 0) {
     const answers = ['dependency array', 'idempotency', 'authorization check', 'data leakage', 'evaluation metric'];
     const correctAnswer = answers[params.index % answers.length];
     return {
       id: `topup-${hashText(`${params.domain}:${topic}:fill:${params.index}:${params.variant}`).slice(0, 12)}-${params.index + 1}`,
       type: 'fill-blank',
       question: `In ${domainLabel} ${topic} work, the missing concept in this production review is ________: the specific control or decision that prevents repeated work, unsafe access, or misleading results. Focus on the strongest term for scenario ${params.variant + 1}.`,
+      codeBlock: null,
       blank: correctAnswer,
       options: null,
       correctAnswer,
@@ -1048,12 +1209,13 @@ function buildPracticeTopUpQuestion(params: {
     };
   }
 
-  if (params.index < 20) {
+  if (params.index < 0) {
     const correctAnswer = 'Identify the boundary, validate the assumption, and make the smallest reversible fix.';
     return {
       id: `topup-${hashText(`${params.domain}:${topic}:mcq:${params.index}:${params.variant}`).slice(0, 12)}-${params.index + 1}`,
       type: 'mcq',
       question: `A ${domainLabel} interview question on ${topic} describes a bug but gives incomplete logs. What is the strongest first response? Scenario ${params.variant + 1}: choose the best option.`,
+      codeBlock: null,
       blank: null,
       options: [
         correctAnswer,
@@ -1151,8 +1313,11 @@ function buildPracticeTopUpQuestion(params: {
   const salt = `${params.domain}:${topic}:top-up:${params.index}:${params.variant}`;
   return {
     id: `topup-${hashText(salt).slice(0, 12)}-${params.index + 1}`,
-    type: 'mcq',
+    type: params.index >= 20 ? 'code-reading' : 'mcq',
     question: `${scenario.question} Scenario ${params.variant + 1}: choose the strongest answer.`,
+    codeBlock: params.index >= 20
+      ? `async function handleRequest(req, res) {\n  const userId = req.body.userId;\n  const record = await repository.findByUserId(userId);\n  if (!record) {\n    await repository.create({ userId, topic: '${topic}' });\n  }\n  const payload = await service.buildPayload(userId);\n  await audit.log({ userId, action: 'practice.topup' });\n  res.json({ ok: true, payload });\n}\n\nrouter.post('/practice/topup', authenticate, handleRequest);`
+      : null,
     blank: null,
     options: scenario.options,
     correctAnswer: scenario.correctAnswer,
@@ -1166,7 +1331,7 @@ function ensurePracticeQuestionCount(
   questions: PracticeSessionQuestion[],
   params: { domain: PracticeDomainId; topic: string; targetCount?: number },
 ) {
-  const targetCount = params.targetCount ?? 30;
+  const targetCount = params.targetCount ?? 40;
   const seen = new Set(questions.map((question) => hashText(`${question.question}:${question.correctAnswer}`)));
   const nextQuestions = [...questions];
   let variant = 0;
@@ -1330,7 +1495,6 @@ async function loadPracticeSession(sessionId: string, userId: string): Promise<P
     completedAt: row.completed_at,
     savedAt: row.saved_at,
     performanceLabel: typeof resultPayload.performanceLabel === 'string' ? resultPayload.performanceLabel : null,
-    coveredTags: parseJsonArray(resultPayload.coveredTags),
     weakTags: parseJsonArray(resultPayload.weakTags),
     results: parsePracticeResults(resultPayload.results),
   } satisfies PracticeSessionPayload;
@@ -1355,6 +1519,7 @@ function buildPracticeSessionReport(questions: PracticeSessionQuestion[], answer
       questionId: question.id,
       type: question.type,
       question: question.question,
+      codeBlock: question.codeBlock,
       userAnswer,
       correctAnswer: question.correctAnswer,
       explanation: question.explanation,
@@ -1366,7 +1531,6 @@ function buildPracticeSessionReport(questions: PracticeSessionQuestion[], answer
   const correctAnswers = results.filter((result) => result.isCorrect).length;
   const totalQuestions = questions.length || 1;
   const score = Math.round((correctAnswers / totalQuestions) * 100);
-  const coveredTags = Array.from(tagStats.keys());
   const weakTags = Array.from(tagStats.entries())
     .filter(([, stats]) => stats.incorrect > 0)
     .sort((left, right) => {
@@ -1389,7 +1553,6 @@ function buildPracticeSessionReport(questions: PracticeSessionQuestion[], answer
     score,
     correctAnswers,
     performanceLabel,
-    coveredTags,
     weakTags,
     results,
   };
@@ -1442,6 +1605,1871 @@ async function validatePracticeTopicForDomain(userId: string, topic: string, dom
   }
 }
 
+type ScenarioStepType = 'decision' | 'technical' | 'tradeoff' | 'communication';
+
+type ScenarioStep = {
+  stepNumber: number;
+  question: string;
+  type: ScenarioStepType;
+  hint: string;
+};
+
+type ScenarioRecord = {
+  id: string;
+  userId: string | null;
+  domain: ScenarioDomainId;
+  topic: string;
+  level: string;
+  scenarioType: string;
+  title: string;
+  context: string;
+  role: string;
+  steps: ScenarioStep[];
+  seed: string;
+  questionHash: string;
+  generatedAt: string;
+};
+
+type ScenarioStepFeedback = {
+  aiUnavailable: boolean;
+  score: number;
+  feedback: string;
+  whatWorked: string;
+  whatWasMissed: string;
+  seniorEngineerWouldSay: string;
+};
+
+type ScenarioAttemptAnswerRecord = {
+  stepNumber: number;
+  answer: string;
+  feedback: ScenarioStepFeedback | null;
+  updatedAt: string;
+};
+
+type StoredScenarioAttempt = {
+  id: string;
+  scenario: ScenarioRecord;
+  status: string;
+  startedAt: string;
+  durationMinutes: number;
+  completedAt: string | null;
+  score: number;
+  timeSpentSeconds: number | null;
+  answers: ScenarioAttemptAnswerRecord[];
+  summary: string;
+  focusAreas: string[];
+  nextSteps: string[];
+  results: Array<{
+    questionId: string;
+    topic: string;
+    prompt: string;
+    submittedAnswer: string | null;
+    correctAnswer: string;
+    explanation: string;
+    isCorrect: boolean;
+    score: number;
+    observations: string[];
+  }>;
+};
+
+const SCENARIO_STEP_TYPE_SET = new Set<ScenarioStepType>(['decision', 'technical', 'tradeoff', 'communication']);
+const PREFERRED_SCENARIO_STEP_TYPE_SEQUENCE: ScenarioStepType[] = ['communication', 'technical', 'decision', 'technical', 'tradeoff'];
+
+function formatScenarioStepTypeLabel(type: ScenarioStepType) {
+  return type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+function buildScenarioStepId(scenarioId: string, stepNumber: number) {
+  return `${scenarioId}:step-${stepNumber}`;
+}
+
+function buildScenarioQuestionHash(context: string, firstQuestion: string) {
+  const normalized = normalizeScenarioTopic(`${context} ${firstQuestion}`).slice(0, 80);
+  return hashText(normalized);
+}
+
+function parseScenarioSteps(value: unknown) {
+  if (!Array.isArray(value)) return [] as ScenarioStep[];
+
+  return value
+    .map((item, index) => {
+      const source = parseJsonRecord(item);
+      const type = String(source.type ?? '').trim().toLowerCase() as ScenarioStepType;
+      const stepNumber = Number(source.stepNumber ?? index + 1);
+      const question = String(source.question ?? '').trim();
+      const hint = String(source.hint ?? '').trim();
+      if (!Number.isInteger(stepNumber) || stepNumber < 1 || !question || !hint || !SCENARIO_STEP_TYPE_SET.has(type)) {
+        return null;
+      }
+      return {
+        stepNumber,
+        question,
+        type,
+        hint,
+      } satisfies ScenarioStep;
+    })
+    .filter((item): item is ScenarioStep => Boolean(item))
+    .sort((left, right) => left.stepNumber - right.stepNumber);
+}
+
+function normalizeScenarioStepTypeSequence(steps: ScenarioStep[]) {
+  return steps.reduce<ScenarioStep[]>((normalized, step, index) => {
+    const previousType = normalized[index - 1]?.type ?? null;
+    const preferredType = PREFERRED_SCENARIO_STEP_TYPE_SEQUENCE[index] ?? 'technical';
+    let nextType = step.type;
+
+    if (index === steps.length - 1 && nextType !== 'tradeoff' && nextType !== 'decision') {
+      nextType = preferredType;
+    }
+
+    if (previousType && nextType === previousType) {
+      nextType = preferredType;
+    }
+
+    if (previousType && nextType === previousType) {
+      nextType = PREFERRED_SCENARIO_STEP_TYPE_SEQUENCE.find((candidate) => candidate !== previousType)
+        ?? 'tradeoff';
+    }
+
+    normalized.push({
+      ...step,
+      type: nextType,
+    });
+    return normalized;
+  }, []);
+}
+
+function normalizeGeneratedScenarioPayload(
+  payload: unknown,
+  domain: ScenarioDomainId,
+  topic: string,
+  level: string,
+  scenarioType: string,
+) {
+  const source = parseJsonRecord(payload);
+  const title = String(source.title ?? '').trim();
+  const context = String(source.context ?? '').trim();
+  const role = String(source.role ?? '').trim();
+  const steps = normalizeScenarioStepTypeSequence(parseScenarioSteps(source.steps));
+
+  if (!title) throw new Error('scenario_validation_failed:title');
+  if (!context) throw new Error('scenario_validation_failed:context');
+  if (!role) throw new Error('scenario_validation_failed:role');
+  if (steps.length !== 5) throw new Error(`scenario_validation_failed:steps:${steps.length}`);
+  for (let index = 1; index < steps.length; index += 1) {
+    if (steps[index].type === steps[index - 1].type) {
+      throw new Error(`scenario_validation_failed:consecutive_step_type:${steps[index].type}`);
+    }
+  }
+
+  return {
+    title,
+    domain,
+    topic,
+    level,
+    context,
+    role,
+    steps,
+    scenarioType,
+  };
+}
+
+function fallbackScenarioStepFeedback(answer: string, topic: string, question: string): ScenarioStepFeedback {
+  const words = answer.trim().split(/\s+/).filter(Boolean).length;
+  const score = words >= 90 ? 8 : words >= 45 ? 6 : 4;
+  return {
+    aiUnavailable: true,
+    score,
+    feedback: 'Saved locally because the AI evaluator was unavailable. Strong scenario answers stay specific to the step, name the constraint, and justify the next action.',
+    whatWorked: words >= 45 ? 'You gave enough substance to show a direction and some context.' : 'You identified a plausible starting point.',
+    whatWasMissed: 'Make the tradeoff, risk, and validation signal explicit for this exact step.',
+    seniorEngineerWouldSay: `For ${topic}, I would answer "${question}" by naming the concrete tradeoff, the immediate risk, and the exact signal I would check before committing to a change.`,
+  };
+}
+
+function normalizeScenarioStepFeedbackPayload(payload: unknown): ScenarioStepFeedback {
+  const source = parseJsonRecord(payload);
+  return {
+    aiUnavailable: Boolean(source.aiUnavailable),
+    score: clampScore(source.score, 6),
+    feedback: String(source.feedback ?? 'Scenario step recorded.'),
+    whatWorked: String(source.whatWorked ?? 'The answer identified a concrete direction.'),
+    whatWasMissed: String(source.whatWasMissed ?? 'Add a clearer tradeoff, constraint, and validation step.'),
+    seniorEngineerWouldSay: String(
+      source.seniorEngineerWouldSay
+      ?? source.seniorEngineerWouldHaveSaid
+      ?? 'A stronger senior answer would stay tightly tied to this topic and step, rather than falling back to a generic incident response.',
+    ),
+  };
+}
+
+function mapScenarioRow(row: {
+  id: string;
+  user_id: string | null;
+  domain: string;
+  topic: string;
+  level: string;
+  scenario_type: string;
+  title: string;
+  context: string;
+  role: string;
+  steps: unknown;
+  seed: string | null;
+  question_hash: string | null;
+  generated_at: string;
+}): ScenarioRecord {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    domain: toScenarioDomain(row.domain) || 'frontend',
+    topic: row.topic,
+    level: row.level,
+    scenarioType: row.scenario_type,
+    title: row.title,
+    context: row.context,
+    role: row.role,
+    steps: parseScenarioSteps(row.steps),
+    seed: row.seed ?? '',
+    questionHash: row.question_hash ?? '',
+    generatedAt: row.generated_at,
+  };
+}
+
+async function loadScenarioById(userId: string, scenarioId: string) {
+  const rows = await db.query<{
+    id: string;
+    user_id: string | null;
+    domain: string;
+    topic: string;
+    level: string;
+    scenario_type: string;
+    title: string;
+    context: string;
+    role: string;
+    steps: unknown;
+    seed: string | null;
+    question_hash: string | null;
+    generated_at: string;
+  }>(
+    `SELECT id, user_id, domain, topic, level, scenario_type, title, context, role, steps, seed, question_hash, generated_at
+       FROM scenarios
+      WHERE id = $1 AND (user_id IS NULL OR user_id = $2)
+      LIMIT 1`,
+    [scenarioId, userId],
+  );
+  return rows[0] ? mapScenarioRow(rows[0]) : null;
+}
+
+function buildScenarioAttemptResults(scenario: ScenarioRecord, answers: ScenarioAttemptAnswerRecord[]) {
+  const answersByStep = new Map(answers.map((answer) => [answer.stepNumber, answer]));
+  const results = scenario.steps.map((step) => {
+    const savedAnswer = answersByStep.get(step.stepNumber);
+    const feedback = savedAnswer?.feedback ?? fallbackScenarioStepFeedback(savedAnswer?.answer ?? '', scenario.topic, step.question);
+    const normalizedScore = savedAnswer?.answer ? clampScore(feedback.score, 5) * 10 : 0;
+    return {
+      questionId: buildScenarioStepId(scenario.id, step.stepNumber),
+      topic: `Step ${step.stepNumber} · ${formatScenarioStepTypeLabel(step.type)}`,
+      prompt: step.question,
+      submittedAnswer: savedAnswer?.answer ?? null,
+      correctAnswer: feedback.seniorEngineerWouldSay,
+      explanation: [feedback.feedback, feedback.whatWorked, feedback.whatWasMissed].filter(Boolean).join(' '),
+      isCorrect: normalizedScore >= 70,
+      score: normalizedScore,
+      observations: [feedback.whatWorked, feedback.whatWasMissed].filter(Boolean),
+    };
+  });
+
+  const score = results.length
+    ? Math.round(results.reduce((sum, result) => sum + result.score, 0) / results.length)
+    : 0;
+  const weakResults = [...results].sort((left, right) => left.score - right.score).slice(0, 3);
+  const focusAreas = weakResults.map((result) => result.topic);
+  const nextSteps = weakResults.length
+    ? weakResults.map((result) => `Redo ${result.topic.toLowerCase()} and make the tradeoff, risk, and validation signal explicit before answering.`)
+    : [
+      `Generate a fresh ${scenario.topic} scenario with a different angle to keep your reasoning sharp.`,
+      'Tighten one answer by making the business constraint explicit before you propose the action.',
+      'Practice saying the validation signal out loud before your final recommendation.',
+    ];
+
+  return {
+    results,
+    score,
+    correctAnswers: results.filter((result) => result.isCorrect).length,
+    focusAreas,
+    nextSteps,
+    summary: `Scenario round on ${scenario.topic} scored ${score}% across ${results.length} evaluated steps.`,
+  };
+}
+
+async function loadScenarioAttempt(userId: string, attemptId: string) {
+  const rows = await db.query<{
+    attempt_id: string;
+    status: string;
+    started_at: string;
+    duration_minutes: number;
+    completed_at: string | null;
+    score: number;
+    time_spent_seconds: number | null;
+    result_payload: unknown;
+    scenario_id: string;
+    user_id: string | null;
+    domain: string;
+    topic: string;
+    level: string;
+    scenario_type: string;
+    title: string;
+    context: string;
+    role: string;
+    steps: unknown;
+    seed: string | null;
+    question_hash: string | null;
+    generated_at: string;
+  }>(
+    `SELECT
+        sa.id AS attempt_id,
+        sa.status,
+        sa.started_at,
+        sa.duration_minutes,
+        sa.completed_at,
+        sa.score,
+        sa.time_spent_seconds,
+        sa.result_payload,
+        s.id AS scenario_id,
+        s.user_id,
+        s.domain,
+        s.topic,
+        s.level,
+        s.scenario_type,
+        s.title,
+        s.context,
+        s.role,
+        s.steps,
+        s.seed,
+        s.question_hash,
+        s.generated_at
+      FROM scenario_attempts sa
+      JOIN scenarios s ON s.id = sa.scenario_id
+     WHERE sa.id = $1 AND sa.user_id = $2
+     LIMIT 1`,
+    [attemptId, userId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+
+  const scenario = mapScenarioRow({
+    id: row.scenario_id,
+    user_id: row.user_id,
+    domain: row.domain,
+    topic: row.topic,
+    level: row.level,
+    scenario_type: row.scenario_type,
+    title: row.title,
+    context: row.context,
+    role: row.role,
+    steps: row.steps,
+    seed: row.seed,
+    question_hash: row.question_hash,
+    generated_at: row.generated_at,
+  });
+  const answerRows = await db.query<{
+    step_number: number;
+    user_answer: string;
+    feedback_payload: unknown;
+    updated_at: string;
+  }>(
+    `SELECT step_number, user_answer, feedback_payload, updated_at
+       FROM scenario_step_answers
+      WHERE attempt_id = $1
+      ORDER BY step_number ASC`,
+    [attemptId],
+  );
+  const answers = answerRows.map((answerRow) => ({
+    stepNumber: Number(answerRow.step_number),
+    answer: answerRow.user_answer,
+    feedback: Object.keys(parseJsonRecord(answerRow.feedback_payload)).length
+      ? normalizeScenarioStepFeedbackPayload(answerRow.feedback_payload)
+      : null,
+    updatedAt: answerRow.updated_at,
+  }));
+  const resultPayload = parseJsonRecord(row.result_payload);
+  const computed = buildScenarioAttemptResults(scenario, answers);
+  const storedResults = Array.isArray(resultPayload.results)
+    ? resultPayload.results.map((item) => parseJsonRecord(item)).map((item) => ({
+      questionId: String(item.questionId ?? ''),
+      topic: String(item.topic ?? ''),
+      prompt: String(item.prompt ?? ''),
+      submittedAnswer: item.submittedAnswer === null ? null : String(item.submittedAnswer ?? ''),
+      correctAnswer: String(item.correctAnswer ?? ''),
+      explanation: String(item.explanation ?? ''),
+      isCorrect: Boolean(item.isCorrect),
+      score: Number(item.score ?? 0),
+      observations: parseJsonArray(item.observations),
+    }))
+    : computed.results;
+
+  return {
+    id: row.attempt_id,
+    scenario,
+    status: row.status,
+    startedAt: row.started_at,
+    durationMinutes: Number(row.duration_minutes ?? 30),
+    completedAt: row.completed_at,
+    score: Number(row.score ?? resultPayload.score ?? computed.score ?? 0),
+    timeSpentSeconds: row.time_spent_seconds === null ? null : Number(row.time_spent_seconds),
+    answers,
+    summary: String(resultPayload.summary ?? computed.summary),
+    focusAreas: Array.isArray(resultPayload.focusAreas) ? resultPayload.focusAreas.map(String) : computed.focusAreas,
+    nextSteps: Array.isArray(resultPayload.nextSteps) ? resultPayload.nextSteps.map(String) : computed.nextSteps,
+    results: storedResults,
+  } satisfies StoredScenarioAttempt;
+}
+
+function toStoredRoundAttemptFromScenarioAttempt(attempt: StoredScenarioAttempt) {
+  const domainLabel = SCENARIO_DOMAIN_LABELS[attempt.scenario.domain];
+  const questions = attempt.scenario.steps.map((step) => ({
+    id: buildScenarioStepId(attempt.scenario.id, step.stepNumber),
+    domain: attempt.scenario.domain,
+    domainLabel,
+    topic: attempt.scenario.topic,
+    type: 'scenario' as const,
+    difficulty: 2 as const,
+    questionText: step.question,
+    correctAnswer: step.hint,
+    explanation: attempt.scenario.context,
+    tags: [attempt.scenario.topic, step.type, attempt.scenario.scenarioType],
+    timeLimitMinutes: Math.max(4, Math.floor(attempt.durationMinutes / Math.max(attempt.scenario.steps.length, 1))),
+  }));
+  const answers = attempt.scenario.steps.map((step) => {
+    const saved = attempt.answers.find((answer) => answer.stepNumber === step.stepNumber);
+    return {
+      questionId: buildScenarioStepId(attempt.scenario.id, step.stepNumber),
+      selectedAnswer: saved?.answer ?? null,
+      notes: saved?.answer ?? null,
+    };
+  });
+
+  return {
+    id: attempt.id,
+    roundType: 'scenario-round',
+    questionType: 'scenario',
+    domain: attempt.scenario.domain,
+    status: attempt.status,
+    durationMinutes: attempt.durationMinutes,
+    totalQuestions: attempt.scenario.steps.length,
+    correctAnswers: attempt.results.filter((result) => result.isCorrect).length,
+    score: attempt.score,
+    timeSpentSeconds: attempt.timeSpentSeconds,
+    startedAt: attempt.startedAt,
+    submittedAt: attempt.completedAt,
+    expiresAt: new Date(new Date(attempt.startedAt).getTime() + (attempt.durationMinutes * 60 * 1000)).toISOString(),
+    summary: attempt.summary,
+    focusAreas: attempt.focusAreas,
+    nextSteps: attempt.nextSteps,
+    questions,
+    answers,
+    results: attempt.results,
+  };
+}
+
+async function getLatestScenarioAttempt(userId: string, domain?: ScenarioDomainId) {
+  const params: unknown[] = [userId];
+  const domainClause = domain ? 'AND s.domain = $2' : '';
+  if (domain) params.push(domain);
+  const rows = await db.query<{ attempt_id: string }>(
+    `SELECT sa.id AS attempt_id
+       FROM scenario_attempts sa
+       JOIN scenarios s ON s.id = sa.scenario_id
+      WHERE sa.user_id = $1 ${domainClause}
+      ORDER BY COALESCE(sa.completed_at, sa.started_at) DESC, sa.started_at DESC
+      LIMIT 1`,
+    params,
+  );
+  return rows[0] ? loadScenarioAttempt(userId, rows[0].attempt_id) : null;
+}
+
+async function listScenarioOverview(userId: string, domain: ScenarioDomainId) {
+  const rows = await db.query<{
+    attempt_id: string;
+    scenario_id: string;
+    topic: string;
+    title: string;
+    status: string;
+    score: number;
+    generated_at: string;
+    completed_at: string | null;
+    step_count: number;
+  }>(
+    `SELECT
+        sa.id AS attempt_id,
+        s.id AS scenario_id,
+        s.topic,
+        s.title,
+        sa.status,
+        sa.score,
+        s.generated_at,
+        sa.completed_at,
+        jsonb_array_length(s.steps) AS step_count
+      FROM scenario_attempts sa
+      JOIN scenarios s ON s.id = sa.scenario_id
+     WHERE sa.user_id = $1 AND s.domain = $2
+     ORDER BY COALESCE(sa.completed_at, sa.started_at) DESC, sa.started_at DESC
+     LIMIT 12`,
+    [userId, domain],
+  );
+
+  return {
+    domain,
+    suggestedTopics: getScenarioTagCloud(domain),
+    history: rows.map((row) => ({
+      attemptId: row.attempt_id,
+      scenarioId: row.scenario_id,
+      topic: row.topic,
+      title: row.title,
+      status: row.status,
+      score: Number.isFinite(Number(row.score)) ? Number(row.score) : null,
+      generatedAt: row.generated_at,
+      completedAt: row.completed_at,
+      stepCount: Math.max(0, Number(row.step_count ?? 0)),
+    })),
+  };
+}
+
+async function pickScenarioAngle(userId: string, domain: ScenarioDomainId, topic: string, existingScenarioCount: number) {
+  const moduleKey = `scenario:${normalizeScenarioTopic(topic)}`;
+  const rows = await db.query<{ angle: string }>(
+    `SELECT angle
+       FROM question_angle_history
+      WHERE user_id = $1 AND domain = $2 AND module_key = $3
+      ORDER BY used_at DESC
+      LIMIT 7`,
+    [userId, domain, moduleKey],
+  );
+  const recentAngles = rows.map((row) => row.angle);
+  if (existingScenarioCount < 3) {
+    return SCENARIO_ANGLES[existingScenarioCount % SCENARIO_ANGLES.length];
+  }
+  return SCENARIO_ANGLES.find((angle) => !recentAngles.slice(0, 3).includes(angle)) ?? SCENARIO_ANGLES[existingScenarioCount % SCENARIO_ANGLES.length];
+}
+
+async function recordScenarioAngle(userId: string, domain: ScenarioDomainId, topic: string, angle: string) {
+  const moduleKey = `scenario:${normalizeScenarioTopic(topic)}`;
+  await db.prepare(`
+    INSERT INTO question_angle_history (id, user_id, domain, module_key, angle, first_used_at, used_at)
+    VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+    ON CONFLICT (user_id, domain, module_key, angle)
+    DO UPDATE SET used_at = NOW()
+  `).run(crypto.randomUUID(), userId, domain, moduleKey, angle);
+}
+
+async function validateScenarioTopicForDomain(userId: string, topic: string, domain: ScenarioDomainId) {
+  const mappedDomains = findScenarioTopicDomains(topic);
+  if (mappedDomains?.length) {
+    if (mappedDomains.includes(domain)) {
+      return { valid: true as const };
+    }
+  }
+
+  if (!mappedDomains?.length) {
+    return { valid: true as const };
+  }
+
+  try {
+    await checkAiRateLimit(userId, 'scenario-domain-validation', 1);
+    const classification = await callStructuredModel(
+      'You answer a domain-fit classifier with a single yes or no only. No JSON. No punctuation. No explanation.',
+      `Is ${topic.trim()} a valid topic for a ${SCENARIO_DOMAIN_LABELS[domain]} engineer to practice? Reply only yes or no.`,
+      (payload) => {
+        const normalized = typeof payload === 'string'
+          ? payload.trim().toLowerCase()
+          : String(payload ?? '').trim().toLowerCase();
+        return normalized.startsWith('yes') ? 'yes' : 'no';
+      },
+      { maxTokens: 100, timeoutMs: 12000, model: 'deepseek/deepseek-chat', temperature: 0 },
+    );
+    if (classification.result === 'yes') return { valid: true as const };
+    return {
+      valid: false as const,
+      suggestedDomain: mappedDomains[0] ?? null,
+      error: `This topic doesn't seem to fall under ${SCENARIO_DOMAIN_LABELS[domain]}. Try a topic relevant to your domain.`,
+    };
+  } catch {
+    return { valid: true as const };
+  }
+}
+
+async function generateScenarioForTopic(params: {
+  userId: string;
+  domain: ScenarioDomainId;
+  topic: string;
+  level: string;
+  abortSignal?: AbortSignal;
+}) {
+  const seenRows = await db.query<{ question_hash: string; scenario_type: string }>(
+    `SELECT question_hash, scenario_type
+       FROM scenarios
+      WHERE user_id = $1 AND domain = $2 AND topic = $3
+      ORDER BY generated_at DESC
+      LIMIT 6`,
+    [params.userId, params.domain, params.topic],
+  );
+  const seenHashes = new Set(seenRows.map((row) => String(row.question_hash ?? '')).filter(Boolean));
+  const additionalAvoidHashes: string[] = [];
+  const scenarioType = await pickScenarioAngle(params.userId, params.domain, params.topic, seenRows.length);
+  const repoContext = await getLatestRepoContext(params.userId);
+  let lastError = 'unknown';
+
+  for (let attempt = 1; attempt <= SCENARIO_GENERATION_MAX_ATTEMPTS; attempt += 1) {
+    await checkAiRateLimit(params.userId, 'scenario-generation', 1);
+    const seed = hashText(`${params.userId}:${params.topic}:${Date.now()}:scenario:${attempt}`).slice(0, 20);
+    const startedAt = Date.now();
+    console.log('[scenario-gen] start', {
+      topic: params.topic,
+      domain: params.domain,
+      userId: params.userId,
+      attempt,
+      scenarioType,
+    });
+    try {
+      const systemPrompt = `You are a senior ${SCENARIO_DOMAIN_LABELS[params.domain]} engineer creating a realistic workplace scenario for interview preparation. The scenario must reflect real engineering situations. Return only valid JSON. Start with { and end with }. No markdown fences. No preamble.`;
+      const seenHashList = JSON.stringify([...seenHashes, ...additionalAvoidHashes]);
+      const userPrompt = `Domain: ${SCENARIO_DOMAIN_LABELS[params.domain]}. Topic: ${params.topic}. Level: ${params.level}. Repo context: ${repoContext || 'none'}. Session seed: ${seed}. Preferred scenario angle: ${scenarioType}. Avoid hashes: ${seenHashList}. Generate a scenario with exactly 5 steps. Return JSON: { id: string, title: string, domain: string, topic: string, level: string, context: string, role: string, steps: [ { stepNumber: number, question: string, type: 'decision' | 'technical' | 'tradeoff' | 'communication', hint: string } ] }. Rules: the context must be specific to ${params.topic} - not generic. Steps must escalate in complexity - step 1 is situational awareness, step 5 is a hard tradeoff or architectural decision. Use this step-type pattern unless the scenario strongly requires a different one: step 1 communication, step 2 technical, step 3 decision, step 4 technical, step 5 tradeoff. Never repeat the same step type consecutively. The scenario must feel like a real conversation with a senior engineer, not a quiz. If a similar scenario hash appears in Avoid hashes, generate a different angle on the same topic.`;
+
+      const generated = await callStructuredModel(
+        systemPrompt,
+        userPrompt,
+        (payload) => normalizeGeneratedScenarioPayload(payload, params.domain, params.topic, params.level, scenarioType),
+        {
+          abortSignal: params.abortSignal,
+          maxTokens: SCENARIO_GENERATION_MAX_TOKENS,
+          timeoutMs: SCENARIO_GENERATION_TIMEOUT_MS,
+          model: SCENARIO_GENERATION_MODEL,
+          temperature: SCENARIO_GENERATION_TEMPERATURE,
+        },
+      );
+
+      const questionHash = buildScenarioQuestionHash(generated.result.context, generated.result.steps[0]?.question ?? '');
+      if (seenHashes.has(questionHash) || additionalAvoidHashes.includes(questionHash)) {
+        lastError = 'scenario_duplicate_hash';
+        additionalAvoidHashes.push(questionHash);
+        console.warn('[scenario-gen] duplicate-hash', {
+          topic: params.topic,
+          domain: params.domain,
+          attempt,
+          questionHash,
+        });
+        continue;
+      }
+
+      const scenarioId = crypto.randomUUID();
+      await db.prepare(`
+        INSERT INTO scenarios (
+          id, user_id, domain, topic, level, scenario_type, title, context, role, steps, seed, question_hash, status, generated_at, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, 'active', NOW(), NOW(), NOW()
+        )
+      `).run(
+        scenarioId,
+        params.userId,
+        params.domain,
+        params.topic,
+        params.level,
+        scenarioType,
+        generated.result.title,
+        generated.result.context,
+        generated.result.role,
+        JSON.stringify(generated.result.steps),
+        seed,
+        questionHash,
+      );
+      await db.prepare(`
+        INSERT INTO question_history (id, user_id, domain, round_type, question_hash, question_text, seen_at)
+        VALUES (?, ?, ?, 'scenario', ?, ?, NOW())
+        ON CONFLICT (user_id, domain, round_type, question_hash) DO NOTHING
+      `).run(
+        crypto.randomUUID(),
+        params.userId,
+        params.domain,
+        questionHash,
+        `${generated.result.context}\n${generated.result.steps[0]?.question ?? ''}`,
+      );
+      await recordScenarioAngle(params.userId, params.domain, params.topic, scenarioType);
+
+      console.log('[scenario-gen] done', {
+        topic: params.topic,
+        domain: params.domain,
+        attempt,
+        scenarioId,
+        rawLength: generated.rawLength,
+        durationMs: Date.now() - startedAt,
+      });
+
+      const scenario = await loadScenarioById(params.userId, scenarioId);
+      if (!scenario) throw new Error('scenario_load_failed');
+      return scenario;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      const rawText = typeof (error as { rawResponse?: unknown }).rawResponse === 'string'
+        ? String((error as { rawResponse?: unknown }).rawResponse)
+        : '';
+      console.error('[scenario-gen] failed', {
+        topic: params.topic,
+        domain: params.domain,
+        attempt,
+        error: lastError,
+        rawLength: rawText.length,
+        rawPreview: rawText.slice(0, 400),
+        rawTail: rawText.slice(-200),
+      });
+    }
+  }
+
+  throw new Error(`aiUnavailable: Unable to generate a fresh scenario right now. Last error: ${lastError}`);
+}
+
+type SingleScenarioType = 'decision' | 'technical' | 'tradeoff' | 'communication';
+
+type SingleScenarioRecord = {
+  id: string;
+  userId: string | null;
+  domain: ScenarioDomainId;
+  topic: string;
+  level: string;
+  scenarioType: string;
+  title: string;
+  context: string;
+  role: string;
+  question: string;
+  type: SingleScenarioType;
+  hint: string;
+  seed: string;
+  questionHash: string;
+  generatedAt: string;
+};
+
+type SingleScenarioEvaluation = {
+  aiUnavailable: boolean;
+  score: number;
+  feedback: string;
+  whatWorked: string;
+  whatWasMissed: string;
+  seniorEngineerWouldSay: string;
+};
+
+type SingleScenarioAttempt = {
+  id: string;
+  scenario: SingleScenarioRecord;
+  status: string;
+  startedAt: string;
+  durationMinutes: number;
+  completedAt: string | null;
+  score: number | null;
+  timeSpentSeconds: number | null;
+  answer: string;
+  evaluation: SingleScenarioEvaluation | null;
+  summary: string;
+  focusAreas: string[];
+  nextSteps: string[];
+};
+
+type ScenarioResultsAttemptPayload = ReturnType<typeof buildScenarioResultsPayload>;
+
+function normalizeSingleScenarioType(value: unknown): SingleScenarioType {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'decision' || normalized === 'technical' || normalized === 'tradeoff' || normalized === 'communication') {
+    return normalized;
+  }
+  return 'technical';
+}
+
+function readLegacyScenarioPrompt(steps: unknown) {
+  const firstStep = parseScenarioSteps(steps)[0];
+  return {
+    question: String(firstStep?.question ?? '').trim(),
+    type: normalizeSingleScenarioType(firstStep?.type ?? 'technical'),
+    hint: String(firstStep?.hint ?? '').trim(),
+  };
+}
+
+function mapSingleScenarioRow(row: {
+  id: string;
+  user_id: string | null;
+  domain: string;
+  topic: string;
+  level: string;
+  scenario_type: string;
+  title: string;
+  context: string;
+  role: string;
+  question: string | null;
+  question_type: string | null;
+  hint: string | null;
+  steps?: unknown;
+  seed: string | null;
+  question_hash: string | null;
+  generated_at: string;
+}): SingleScenarioRecord {
+  const legacyPrompt = readLegacyScenarioPrompt(row.steps);
+  return {
+    id: row.id,
+    userId: row.user_id,
+    domain: toScenarioDomain(row.domain) || 'frontend',
+    topic: row.topic,
+    level: row.level,
+    scenarioType: row.scenario_type,
+    title: row.title,
+    context: row.context,
+    role: row.role,
+    question: String(row.question ?? '').trim() || legacyPrompt.question || 'Describe how you would approach this scenario end to end.',
+    type: normalizeSingleScenarioType(row.question_type ?? legacyPrompt.type),
+    hint: String(row.hint ?? '').trim() || legacyPrompt.hint,
+    seed: row.seed ?? '',
+    questionHash: row.question_hash ?? '',
+    generatedAt: row.generated_at,
+  };
+}
+
+async function loadSingleScenarioById(userId: string, scenarioId: string) {
+  const rows = await db.query<{
+    id: string;
+    user_id: string | null;
+    domain: string;
+    topic: string;
+    level: string;
+    scenario_type: string;
+    title: string;
+    context: string;
+    role: string;
+    question: string | null;
+    question_type: string | null;
+    hint: string | null;
+    steps: unknown;
+    seed: string | null;
+    question_hash: string | null;
+    generated_at: string;
+  }>(
+    `SELECT id, user_id, domain, topic, level, scenario_type, title, context, role, question, question_type, hint, steps, seed, question_hash, generated_at
+       FROM scenarios
+      WHERE id = $1 AND (user_id IS NULL OR user_id = $2)
+      LIMIT 1`,
+    [scenarioId, userId],
+  );
+  return rows[0] ? mapSingleScenarioRow(rows[0]) : null;
+}
+
+function normalizeGeneratedSingleScenarioPayload(
+  payload: unknown,
+  domain: ScenarioDomainId,
+  topic: string,
+  level: string,
+  scenarioType: string,
+) {
+  const source = parseJsonRecord(payload);
+  const title = String(source.title ?? '').trim();
+  const context = String(source.context ?? '').trim();
+  const role = String(source.role ?? '').trim();
+  const question = String(source.question ?? '').trim();
+  const type = normalizeSingleScenarioType(source.type ?? 'technical');
+  const hint = String(source.hint ?? '').trim();
+
+  if (!title) throw new Error('scenario_validation_failed:title');
+  if (!context) throw new Error('scenario_validation_failed:context');
+  if (!role) throw new Error('scenario_validation_failed:role');
+  if (!question || question.length < 80) throw new Error('scenario_validation_failed:question');
+  if (!hint) throw new Error('scenario_validation_failed:hint');
+
+  return {
+    title,
+    domain,
+    topic,
+    level,
+    context,
+    role,
+    question,
+    type,
+    hint,
+    scenarioType,
+  };
+}
+
+function fallbackSingleScenarioEvaluation(answer: string, scenario: SingleScenarioRecord): SingleScenarioEvaluation {
+  const wordCount = answer.trim().split(/\s+/).filter(Boolean).length;
+  const score = wordCount >= 150 ? 8 : wordCount >= 100 ? 6 : wordCount >= 50 ? 4 : 2;
+  return {
+    aiUnavailable: true,
+    score,
+    feedback: 'Your answer was saved, but the evaluator was unavailable. Strong scenario answers stay anchored to the exact context, surface the tradeoff clearly, and explain how you would validate the outcome.',
+    whatWorked: wordCount >= 100
+      ? 'You provided enough detail to show a concrete plan and some engineering judgment.'
+      : 'You identified a plausible direction for the scenario.',
+    whatWasMissed: 'Make the business constraint, engineering tradeoff, and validation signal explicit for this specific scenario.',
+    seniorEngineerWouldSay: `For ${scenario.topic}, I would answer by stating the immediate constraint, the technical tradeoff I am choosing, the risk I am accepting, and the exact signal I would watch to prove the decision is working.`,
+  };
+}
+
+function normalizeSingleScenarioEvaluationPayload(payload: unknown): SingleScenarioEvaluation {
+  const source = parseJsonRecord(payload);
+  return {
+    aiUnavailable: Boolean(source.aiUnavailable),
+    score: clampScore(source.score, 6),
+    feedback: String(source.feedback ?? 'Scenario answer recorded.'),
+    whatWorked: String(source.whatWorked ?? 'The answer identified a concrete direction.'),
+    whatWasMissed: String(source.whatWasMissed ?? 'Add a clearer tradeoff, risk, and validation step.'),
+    seniorEngineerWouldSay: String(
+      source.seniorEngineerWouldSay
+      ?? source.seniorEngineerWouldHaveSaid
+      ?? 'A stronger senior answer would tie the recommendation directly to the scenario context and the engineering tradeoff being made.',
+    ),
+  };
+}
+
+function buildScenarioResultsPayload(scenario: SingleScenarioRecord, answer: string, evaluation: SingleScenarioEvaluation | null) {
+  const resolvedEvaluation = evaluation ?? fallbackSingleScenarioEvaluation(answer, scenario);
+  const normalizedScore = clampScore(resolvedEvaluation.score, 5);
+  const focusAreas = [scenario.topic, formatScenarioStepTypeLabel(resolvedEvaluation.score >= 6 ? 'tradeoff' : scenario.type)].slice(0, 2);
+  const nextSteps = [
+    `Retry a ${scenario.topic} scenario and make the tradeoff explicit before recommending the action.`,
+    'State the validation signal you would watch after the change is shipped.',
+    'Name the risk you are accepting so the answer sounds deliberate instead of generic.',
+  ];
+
+  return {
+    score: normalizedScore,
+    summary: `Scenario round on ${scenario.topic} scored ${normalizedScore}/10.`,
+    focusAreas,
+    nextSteps,
+    evaluation: resolvedEvaluation,
+  };
+}
+
+async function loadSingleScenarioAttempt(userId: string, attemptId: string) {
+  const rows = await db.query<{
+    attempt_id: string;
+    status: string;
+    started_at: string;
+    duration_minutes: number;
+    completed_at: string | null;
+    score: number;
+    time_spent_seconds: number | null;
+    result_payload: unknown;
+    scenario_id: string;
+    user_id: string | null;
+    domain: string;
+    topic: string;
+    level: string;
+    scenario_type: string;
+    title: string;
+    context: string;
+    role: string;
+    question: string | null;
+    question_type: string | null;
+    hint: string | null;
+    steps: unknown;
+    seed: string | null;
+    question_hash: string | null;
+    generated_at: string;
+  }>(
+    `SELECT
+        sa.id AS attempt_id,
+        sa.status,
+        sa.started_at,
+        sa.duration_minutes,
+        sa.completed_at,
+        sa.score,
+        sa.time_spent_seconds,
+        sa.result_payload,
+        s.id AS scenario_id,
+        s.user_id,
+        s.domain,
+        s.topic,
+        s.level,
+        s.scenario_type,
+        s.title,
+        s.context,
+        s.role,
+        s.question,
+        s.question_type,
+        s.hint,
+        s.steps,
+        s.seed,
+        s.question_hash,
+        s.generated_at
+      FROM scenario_attempts sa
+      JOIN scenarios s ON s.id = sa.scenario_id
+     WHERE sa.id = $1 AND sa.user_id = $2
+     LIMIT 1`,
+    [attemptId, userId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+
+  const scenario = mapSingleScenarioRow({
+    id: row.scenario_id,
+    user_id: row.user_id,
+    domain: row.domain,
+    topic: row.topic,
+    level: row.level,
+    scenario_type: row.scenario_type,
+    title: row.title,
+    context: row.context,
+    role: row.role,
+    question: row.question,
+    question_type: row.question_type,
+    hint: row.hint,
+    steps: row.steps,
+    seed: row.seed,
+    question_hash: row.question_hash,
+    generated_at: row.generated_at,
+  });
+
+  const answerRow = await db.queryOne<{
+    user_answer: string;
+    feedback_payload: unknown;
+    updated_at: string;
+  }>(
+    `SELECT user_answer, feedback_payload, updated_at
+       FROM scenario_step_answers
+      WHERE attempt_id = $1
+      ORDER BY updated_at DESC
+      LIMIT 1`,
+    [attemptId],
+  );
+
+  const resultPayload = parseJsonRecord(row.result_payload);
+  const answer = String(answerRow?.user_answer ?? resultPayload.answer ?? '').trim();
+  const evaluationSource = answerRow && Object.keys(parseJsonRecord(answerRow.feedback_payload)).length
+    ? answerRow.feedback_payload
+    : resultPayload.evaluation;
+  const evaluation = evaluationSource ? normalizeSingleScenarioEvaluationPayload(evaluationSource) : null;
+  const computed = answer || evaluation ? buildScenarioResultsPayload(scenario, answer, evaluation) : null;
+  const storedScore = Number(resultPayload.score ?? row.score ?? 0);
+  const score = Number.isFinite(storedScore) && storedScore > 0
+    ? clampScore(storedScore, computed?.score ?? 5)
+    : (computed?.score ?? null);
+
+  return {
+    id: row.attempt_id,
+    scenario,
+    status: row.status,
+    startedAt: row.started_at,
+    durationMinutes: Number(row.duration_minutes ?? 30),
+    completedAt: row.completed_at,
+    score,
+    timeSpentSeconds: row.time_spent_seconds === null ? null : Number(row.time_spent_seconds),
+    answer,
+    evaluation: computed?.evaluation ?? null,
+    summary: String(resultPayload.summary ?? computed?.summary ?? ''),
+    focusAreas: Array.isArray(resultPayload.focusAreas) ? resultPayload.focusAreas.map(String) : (computed?.focusAreas ?? []),
+    nextSteps: Array.isArray(resultPayload.nextSteps) ? resultPayload.nextSteps.map(String) : (computed?.nextSteps ?? []),
+  } satisfies SingleScenarioAttempt;
+}
+
+function toStoredRoundAttemptFromSingleScenarioAttempt(attempt: SingleScenarioAttempt) {
+  const domainLabel = SCENARIO_DOMAIN_LABELS[attempt.scenario.domain];
+  const normalizedScore = (attempt.score ?? 0) * 10;
+  const questionId = `${attempt.scenario.id}:question`;
+
+  return {
+    id: attempt.id,
+    roundType: 'scenario-round',
+    questionType: 'scenario',
+    domain: attempt.scenario.domain,
+    status: attempt.status,
+    durationMinutes: attempt.durationMinutes,
+    totalQuestions: 1,
+    correctAnswers: normalizedScore >= 80 ? 1 : 0,
+    score: normalizedScore,
+    timeSpentSeconds: attempt.timeSpentSeconds,
+    startedAt: attempt.startedAt,
+    submittedAt: attempt.completedAt,
+    expiresAt: new Date(new Date(attempt.startedAt).getTime() + (attempt.durationMinutes * 60 * 1000)).toISOString(),
+    summary: attempt.summary,
+    focusAreas: attempt.focusAreas,
+    nextSteps: attempt.nextSteps,
+    questions: [{
+      id: questionId,
+      domain: attempt.scenario.domain,
+      domainLabel,
+      topic: attempt.scenario.topic,
+      type: 'scenario' as const,
+      difficulty: 2 as const,
+      questionText: attempt.scenario.question,
+      correctAnswer: attempt.evaluation?.seniorEngineerWouldSay ?? attempt.scenario.hint,
+      explanation: attempt.scenario.context,
+      tags: [attempt.scenario.topic, attempt.scenario.type, attempt.scenario.role],
+      timeLimitMinutes: attempt.durationMinutes,
+    }],
+    answers: [{
+      questionId,
+      selectedAnswer: attempt.answer || null,
+      notes: attempt.answer || null,
+    }],
+    results: [{
+      questionId,
+      topic: attempt.scenario.topic,
+      prompt: attempt.scenario.question,
+      submittedAnswer: attempt.answer || null,
+      correctAnswer: attempt.evaluation?.seniorEngineerWouldSay ?? attempt.scenario.hint,
+      explanation: [attempt.evaluation?.feedback, attempt.evaluation?.whatWorked, attempt.evaluation?.whatWasMissed].filter(Boolean).join(' '),
+      isCorrect: normalizedScore >= 80,
+      score: normalizedScore,
+      observations: [attempt.evaluation?.whatWorked, attempt.evaluation?.whatWasMissed].filter(Boolean) as string[],
+    }],
+  };
+}
+
+function toScenarioResultAttemptPayload(attempt: SingleScenarioAttempt) {
+  return {
+    ...toStoredRoundAttemptFromSingleScenarioAttempt(attempt),
+    scenario: {
+      id: attempt.scenario.id,
+      title: attempt.scenario.title,
+      topic: attempt.scenario.topic,
+      domain: attempt.scenario.domain,
+      domainLabel: SCENARIO_DOMAIN_LABELS[attempt.scenario.domain],
+      context: attempt.scenario.context,
+      role: attempt.scenario.role,
+      question: attempt.scenario.question,
+      type: attempt.scenario.type,
+      hint: attempt.scenario.hint,
+      score: attempt.score,
+      answer: attempt.answer,
+      feedback: attempt.evaluation?.feedback ?? '',
+      whatWorked: attempt.evaluation?.whatWorked ?? '',
+      whatWasMissed: attempt.evaluation?.whatWasMissed ?? '',
+      seniorEngineerWouldSay: attempt.evaluation?.seniorEngineerWouldSay ?? '',
+      startedAt: attempt.startedAt,
+      completedAt: attempt.completedAt,
+    },
+  };
+}
+
+async function getLatestSingleScenarioAttempt(userId: string, domain?: ScenarioDomainId) {
+  const params: unknown[] = [userId];
+  const domainClause = domain ? 'AND s.domain = $2' : '';
+  if (domain) params.push(domain);
+  const rows = await db.query<{ attempt_id: string }>(
+    `SELECT sa.id AS attempt_id
+       FROM scenario_attempts sa
+       JOIN scenarios s ON s.id = sa.scenario_id
+      WHERE sa.user_id = $1 ${domainClause}
+      ORDER BY COALESCE(sa.completed_at, sa.started_at) DESC, sa.started_at DESC
+      LIMIT 1`,
+    params,
+  );
+  return rows[0] ? loadSingleScenarioAttempt(userId, rows[0].attempt_id) : null;
+}
+
+async function listSingleScenarioOverview(userId: string, domain: ScenarioDomainId) {
+  const rows = await db.query<{
+    attempt_id: string;
+    scenario_id: string;
+    topic: string;
+    title: string;
+    status: string;
+    score: number;
+    generated_at: string;
+    completed_at: string | null;
+  }>(
+    `SELECT
+        sa.id AS attempt_id,
+        s.id AS scenario_id,
+        s.topic,
+        s.title,
+        sa.status,
+        sa.score,
+        s.generated_at,
+        sa.completed_at
+      FROM scenario_attempts sa
+      JOIN scenarios s ON s.id = sa.scenario_id
+     WHERE sa.user_id = $1 AND s.domain = $2
+     ORDER BY COALESCE(sa.completed_at, sa.started_at) DESC, sa.started_at DESC
+     LIMIT 12`,
+    [userId, domain],
+  );
+
+  return {
+    domain,
+    suggestedTopics: getScenarioTagCloud(domain),
+    history: rows.map((row) => ({
+      attemptId: row.attempt_id,
+      scenarioId: row.scenario_id,
+      topic: row.topic,
+      title: row.title,
+      status: row.status,
+      score: Number.isFinite(Number(row.score)) && Number(row.score) > 0 ? Number(row.score) : null,
+      generatedAt: row.generated_at,
+      completedAt: row.completed_at,
+    })),
+  };
+}
+
+async function generateSingleScenarioForTopic(params: {
+  userId: string;
+  domain: ScenarioDomainId;
+  topic: string;
+  level: string;
+  abortSignal?: AbortSignal;
+}) {
+  const seenRows = await db.query<{ question_hash: string; scenario_type: string }>(
+    `SELECT question_hash, scenario_type
+       FROM scenarios
+      WHERE user_id = $1 AND domain = $2 AND topic = $3
+      ORDER BY generated_at DESC
+      LIMIT 6`,
+    [params.userId, params.domain, params.topic],
+  );
+  const seenHashes = new Set(seenRows.map((row) => String(row.question_hash ?? '')).filter(Boolean));
+  const extraAvoidHashes: string[] = [];
+  const scenarioType = await pickScenarioAngle(params.userId, params.domain, params.topic, seenRows.length);
+  const repoContext = await getLatestRepoContext(params.userId);
+  let lastError = 'unknown';
+
+  for (let attempt = 1; attempt <= SCENARIO_GENERATION_MAX_ATTEMPTS; attempt += 1) {
+    await checkAiRateLimit(params.userId, 'scenario-generation', 1);
+    const seed = hashText(`${params.userId}:${params.topic}:${Date.now()}:single-scenario:${attempt}`).slice(0, 20);
+    try {
+      const generated = await callStructuredModel(
+        `You are a senior ${SCENARIO_DOMAIN_LABELS[params.domain]} engineer creating one realistic interview scenario question. Return only valid JSON starting with { and ending with }. No markdown fences. No preamble.`,
+        `Domain: ${SCENARIO_DOMAIN_LABELS[params.domain]}. Topic: ${params.topic}. Difficulty level: ${params.level}. Repo context: ${repoContext || 'none'}. Session seed: ${seed}. Scenario angle: ${scenarioType}. Previously seen scenario hashes: ${JSON.stringify([...seenHashes, ...extraAvoidHashes])}. Generate one interview-realistic scenario. Return JSON: { id: string, title: string, domain: string, topic: string, level: string, context: string, role: string, question: string, type: 'decision' | 'technical' | 'tradeoff' | 'communication', hint: string }. Rules: context must be specific to ${params.topic}. The question must be one substantive open-ended prompt that requires at least 150 words to answer well. Do not return steps. Do not split the prompt into parts. The hint must be brief and useful, not the full answer. If a similar hash appears in the seen list, generate a clearly different angle on the same topic.`,
+        (payload) => normalizeGeneratedSingleScenarioPayload(payload, params.domain, params.topic, params.level, scenarioType),
+        {
+          abortSignal: params.abortSignal,
+          maxTokens: SCENARIO_GENERATION_MAX_TOKENS,
+          timeoutMs: SCENARIO_GENERATION_TIMEOUT_MS,
+          model: SCENARIO_GENERATION_MODEL,
+          temperature: SCENARIO_GENERATION_TEMPERATURE,
+        },
+      );
+
+      const questionHash = buildScenarioQuestionHash(generated.result.context, generated.result.question);
+      if (seenHashes.has(questionHash) || extraAvoidHashes.includes(questionHash)) {
+        lastError = 'scenario_duplicate_hash';
+        extraAvoidHashes.push(questionHash);
+        continue;
+      }
+
+      const scenarioId = crypto.randomUUID();
+      await db.prepare(`
+        INSERT INTO scenarios (
+          id, user_id, domain, topic, level, scenario_type, title, context, role, question, question_type, hint, steps, seed, question_hash, status, generated_at, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]'::jsonb, ?, ?, 'active', NOW(), NOW(), NOW()
+        )
+      `).run(
+        scenarioId,
+        params.userId,
+        params.domain,
+        params.topic,
+        params.level,
+        scenarioType,
+        generated.result.title,
+        generated.result.context,
+        generated.result.role,
+        generated.result.question,
+        generated.result.type,
+        generated.result.hint,
+        seed,
+        questionHash,
+      );
+      await db.prepare(`
+        INSERT INTO question_history (id, user_id, domain, round_type, question_hash, question_text, seen_at)
+        VALUES (?, ?, ?, 'scenario-round', ?, ?, NOW())
+        ON CONFLICT (user_id, domain, round_type, question_hash) DO NOTHING
+      `).run(
+        crypto.randomUUID(),
+        params.userId,
+        params.domain,
+        questionHash,
+        `${generated.result.context}\n${generated.result.question}`,
+      );
+      await recordScenarioAngle(params.userId, params.domain, params.topic, scenarioType);
+
+      const scenario = await loadSingleScenarioById(params.userId, scenarioId);
+      if (!scenario) throw new Error('scenario_load_failed');
+      return scenario;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  throw new Error(`aiUnavailable: Unable to generate a fresh scenario right now. Last error: ${lastError}`);
+}
+
+type CodingDifficulty = 'easy' | 'medium' | 'hard';
+type CodingVerdict = 'pass' | 'needs-work' | 'fail';
+
+type CodingProblemExample = {
+  input: string;
+  output: string;
+  explanation: string;
+};
+
+type CodingProblemRecord = {
+  id: string;
+  userId: string | null;
+  domain: string;
+  difficulty: CodingDifficulty;
+  title: string;
+  language: 'typescript' | 'python' | 'sql';
+  starterCode: string;
+  problemStatement: string;
+  requirements: string[];
+  examples: CodingProblemExample[];
+  constraints: string[];
+  evaluationCriteria: string[];
+  questionHash: string;
+  generatedAt: string;
+};
+
+type CodingEvaluation = {
+  score: number;
+  verdict: CodingVerdict;
+  correctness: string;
+  codeQuality: string;
+  edgeCases: string;
+  improvements: string[];
+  modelSolutionSketch: string;
+};
+
+type CodingAttemptRecord = {
+  id: string;
+  problem: CodingProblemRecord;
+  status: string;
+  code: string;
+  notes: string;
+  language: 'typescript' | 'python' | 'sql';
+  startedAt: string;
+  durationMinutes: number;
+  submittedAt: string | null;
+  score: number | null;
+  timeSpentSeconds: number | null;
+  evaluation: CodingEvaluation | null;
+  summary: string;
+  focusAreas: string[];
+  nextSteps: string[];
+};
+
+function normalizeCodingDifficulty(value: unknown, fallback: CodingDifficulty = 'medium'): CodingDifficulty {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'easy' || normalized === 'medium' || normalized === 'hard') return normalized;
+  return fallback;
+}
+
+function normalizeCodingVerdict(value: unknown, fallback: CodingVerdict = 'needs-work'): CodingVerdict {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'pass' || normalized === 'needs-work' || normalized === 'fail') return normalized;
+  return fallback;
+}
+
+function normalizeCodingLanguage(value: unknown, fallback: 'typescript' | 'python' | 'sql'): 'typescript' | 'python' | 'sql' {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized.includes('python')) return 'python';
+  if (normalized.includes('sql')) return 'sql';
+  return fallback;
+}
+
+function getCodingLanguageForDomain(domain: string): 'typescript' | 'python' | 'sql' {
+  const normalized = String(domain ?? '').trim().toLowerCase();
+  if (normalized === 'data-science' || normalized === 'ai-ml') return 'python';
+  if (normalized === 'data-analytics') return 'sql';
+  if (normalized === 'cybersecurity') return 'python';
+  return 'typescript';
+}
+
+function getCodingDurationMinutes(difficulty: CodingDifficulty) {
+  if (difficulty === 'hard') return 50;
+  if (difficulty === 'easy') return 40;
+  return 45;
+}
+
+function parseJsonObjectList(value: unknown) {
+  if (Array.isArray(value)) return value.map((item) => parseJsonRecord(item));
+  if (typeof value === 'string') {
+    try {
+      return parseJsonObjectList(JSON.parse(value));
+    } catch {
+      return [] as Array<Record<string, unknown>>;
+    }
+  }
+  return [] as Array<Record<string, unknown>>;
+}
+
+function parseCodingExamples(value: unknown) {
+  return parseJsonObjectList(value)
+    .map((item) => ({
+      input: String(item.input ?? '').trim(),
+      output: String(item.output ?? '').trim(),
+      explanation: String(item.explanation ?? '').trim(),
+    }))
+    .filter((item) => item.input && item.output && item.explanation)
+    .slice(0, 3);
+}
+
+function codingDifficultyRank(difficulty: CodingDifficulty): 1 | 2 | 3 {
+  if (difficulty === 'hard') return 3;
+  if (difficulty === 'medium') return 2;
+  return 1;
+}
+
+function buildCodingProblemHash(title: string, problemStatement: string) {
+  return hashText(`${title.toLowerCase().trim()}::${problemStatement.toLowerCase().trim().slice(0, 80)}`);
+}
+
+function mapCodingProblemRow(row: {
+  id: string;
+  user_id: string | null;
+  domain: string;
+  difficulty: string;
+  title: string;
+  description: string;
+  starter_code: string;
+  language: string;
+  requirements: unknown;
+  examples: unknown;
+  constraints: unknown;
+  evaluation_criteria: unknown;
+  question_hash: string | null;
+  generated_at: string;
+}): CodingProblemRecord {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    domain: row.domain,
+    difficulty: normalizeCodingDifficulty(row.difficulty),
+    title: row.title,
+    language: normalizeCodingLanguage(row.language, getCodingLanguageForDomain(row.domain)),
+    starterCode: row.starter_code,
+    problemStatement: row.description,
+    requirements: parseJsonArray(row.requirements).slice(0, 5),
+    examples: parseCodingExamples(row.examples),
+    constraints: parseJsonArray(row.constraints).slice(0, 4),
+    evaluationCriteria: parseJsonArray(row.evaluation_criteria).slice(0, 5),
+    questionHash: row.question_hash ?? '',
+    generatedAt: row.generated_at,
+  };
+}
+
+function normalizeGeneratedCodingProblemPayload(payload: unknown, domain: string, difficulty: CodingDifficulty) {
+  const source = parseJsonRecord(payload);
+  const title = String(source.title ?? '').trim();
+  const problemStatement = String(source.problemStatement ?? source.description ?? '').trim();
+  const starterCode = String(source.starterCode ?? source.starter_code ?? '').trim();
+  const language = normalizeCodingLanguage(source.language, getCodingLanguageForDomain(domain));
+  const requirements = parseJsonArray(source.requirements).slice(0, 5);
+  const examples = parseCodingExamples(source.examples);
+  const constraints = parseJsonArray(source.constraints).slice(0, 4);
+  const evaluationCriteria = parseJsonArray(source.evaluationCriteria ?? source.evaluation_criteria).slice(0, 5);
+
+  if (!title) throw new Error('coding_problem_validation_failed:title');
+  if (!problemStatement || problemStatement.length < 80) throw new Error('coding_problem_validation_failed:problem_statement');
+  if (!starterCode || starterCode.length < 40) throw new Error('coding_problem_validation_failed:starter_code');
+  if (requirements.length < 3) throw new Error('coding_problem_validation_failed:requirements');
+  if (examples.length < 2) throw new Error('coding_problem_validation_failed:examples');
+  if (constraints.length < 2) throw new Error('coding_problem_validation_failed:constraints');
+  if (evaluationCriteria.length < 4) throw new Error('coding_problem_validation_failed:evaluation_criteria');
+
+  return {
+    title,
+    domain,
+    difficulty,
+    language,
+    starterCode,
+    problemStatement,
+    requirements,
+    examples,
+    constraints,
+    evaluationCriteria,
+  };
+}
+
+function fallbackCodingEvaluation(problem: CodingProblemRecord, code: string, notes: string): CodingEvaluation {
+  const codeLength = code.trim().length;
+  const score = codeLength >= 500 ? 7 : codeLength >= 250 ? 5 : codeLength >= 120 ? 4 : 2;
+  return {
+    score,
+    verdict: score >= 7 ? 'pass' : score >= 5 ? 'needs-work' : 'fail',
+    correctness: 'AI evaluation was unavailable. The draft was saved, but a strong answer here should clearly satisfy the stated requirements and explain how the core logic works.',
+    codeQuality: 'Use clearer structure, naming, and helper boundaries so an interviewer can scan the solution quickly.',
+    edgeCases: 'Call out the edge cases that matter for this prompt and make the handling visible either in code or notes.',
+    improvements: [
+      `Tie the implementation back to the concrete requirements for ${problem.title}.`,
+      'Use the notes field to explain the expected output for one example if execution is unavailable.',
+      'Make failure handling or boundary conditions more explicit.',
+    ],
+    modelSolutionSketch: notes.trim() || 'Start by mapping each requirement to one clear code path, then handle edge cases before the final return value.',
+  };
+}
+
+function normalizeCodingEvaluationPayload(payload: unknown): CodingEvaluation {
+  const source = parseJsonRecord(payload);
+  return {
+    score: clampScore(source.score, 5),
+    verdict: normalizeCodingVerdict(source.verdict),
+    correctness: String(source.correctness ?? 'No correctness review was returned.'),
+    codeQuality: String(source.codeQuality ?? source.code_quality ?? 'No code quality review was returned.'),
+    edgeCases: String(source.edgeCases ?? source.edge_cases ?? 'No edge case review was returned.'),
+    improvements: parseJsonArray(source.improvements).slice(0, 5),
+    modelSolutionSketch: String(source.modelSolutionSketch ?? source.model_solution_sketch ?? 'No model solution sketch was returned.'),
+  };
+}
+
+function buildCodingResultMeta(problem: CodingProblemRecord, evaluation: CodingEvaluation | null) {
+  const resolvedEvaluation = evaluation ?? fallbackCodingEvaluation(problem, '', '');
+  const focusAreas = resolvedEvaluation.improvements.slice(0, 3);
+  const nextSteps = resolvedEvaluation.improvements.slice(0, 3).map((item) => `Before the next problem, fix this: ${item}`);
+  return {
+    score: resolvedEvaluation.score,
+    summary: `Coding round on ${problem.title} scored ${resolvedEvaluation.score}/10.`,
+    focusAreas,
+    nextSteps,
+  };
+}
+
+async function loadCodingAttempt(userId: string, attemptId: string) {
+  const rows = await db.query<{
+    attempt_id: string;
+    status: string;
+    code_draft: string | null;
+    notes: string | null;
+    language: string;
+    started_at: string;
+    duration_minutes: number;
+    score: number;
+    time_spent_seconds: number | null;
+    submitted_at: string | null;
+    evaluation_payload: unknown;
+    problem_id: string;
+    problem_user_id: string | null;
+    domain: string;
+    difficulty: string;
+    title: string;
+    description: string;
+    starter_code: string;
+    requirements: unknown;
+    examples: unknown;
+    constraints: unknown;
+    evaluation_criteria: unknown;
+    question_hash: string | null;
+    generated_at: string;
+  }>(
+    `SELECT
+        ca.id AS attempt_id,
+        ca.status,
+        ca.code_draft,
+        ca.notes,
+        ca.language,
+        ca.started_at,
+        ca.duration_minutes,
+        ca.score,
+        ca.time_spent_seconds,
+        ca.submitted_at,
+        ca.evaluation_payload,
+        cp.id AS problem_id,
+        cp.user_id AS problem_user_id,
+        cp.domain,
+        cp.difficulty,
+        cp.title,
+        cp.description,
+        cp.starter_code,
+        cp.requirements,
+        cp.examples,
+        cp.constraints,
+        cp.evaluation_criteria,
+        cp.question_hash,
+        cp.generated_at
+      FROM coding_attempts ca
+      JOIN coding_problems cp ON cp.id = ca.problem_id
+     WHERE ca.id = $1 AND ca.user_id = $2
+     LIMIT 1`,
+    [attemptId, userId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+
+  const problem = mapCodingProblemRow({
+    id: row.problem_id,
+    user_id: row.problem_user_id,
+    domain: row.domain,
+    difficulty: row.difficulty,
+    title: row.title,
+    description: row.description,
+    starter_code: row.starter_code,
+    language: row.language,
+    requirements: row.requirements,
+    examples: row.examples,
+    constraints: row.constraints,
+    evaluation_criteria: row.evaluation_criteria,
+    question_hash: row.question_hash,
+    generated_at: row.generated_at,
+  });
+
+  const evaluationPayload = parseJsonRecord(row.evaluation_payload);
+  const evaluation = Object.keys(evaluationPayload).length ? normalizeCodingEvaluationPayload(evaluationPayload) : null;
+  const meta = buildCodingResultMeta(problem, evaluation);
+  const storedScore = Number(row.score ?? evaluationPayload.score ?? 0);
+
+  return {
+    id: row.attempt_id,
+    problem,
+    status: row.status,
+    code: String(row.code_draft ?? ''),
+    notes: String(row.notes ?? ''),
+    language: normalizeCodingLanguage(row.language, problem.language),
+    startedAt: row.started_at,
+    durationMinutes: Number(row.duration_minutes ?? getCodingDurationMinutes(problem.difficulty)),
+    submittedAt: row.submitted_at,
+    score: Number.isFinite(storedScore) && storedScore > 0 ? clampScore(storedScore, meta.score) : (evaluation ? meta.score : null),
+    timeSpentSeconds: row.time_spent_seconds === null ? null : Number(row.time_spent_seconds),
+    evaluation,
+    summary: String(evaluationPayload.summary ?? (evaluation ? meta.summary : '')),
+    focusAreas: Array.isArray(evaluationPayload.focusAreas) ? evaluationPayload.focusAreas.map(String) : (evaluation ? meta.focusAreas : []),
+    nextSteps: Array.isArray(evaluationPayload.nextSteps) ? evaluationPayload.nextSteps.map(String) : (evaluation ? meta.nextSteps : []),
+  } satisfies CodingAttemptRecord;
+}
+
+function toStoredRoundAttemptFromCodingAttempt(attempt: CodingAttemptRecord) {
+  const domainLabel = PRACTICE_DOMAIN_LABELS[toPracticeDomain(attempt.problem.domain) || 'frontend'];
+  const normalizedScore = (attempt.score ?? 0) * 10;
+  return {
+    id: attempt.id,
+    roundType: 'coding-round',
+    questionType: 'coding',
+    domain: attempt.problem.domain,
+    status: attempt.status,
+    durationMinutes: attempt.durationMinutes,
+    totalQuestions: 1,
+    correctAnswers: attempt.evaluation?.verdict === 'pass' ? 1 : 0,
+    score: normalizedScore,
+    timeSpentSeconds: attempt.timeSpentSeconds,
+    startedAt: attempt.startedAt,
+    submittedAt: attempt.submittedAt,
+    expiresAt: new Date(new Date(attempt.startedAt).getTime() + (attempt.durationMinutes * 60 * 1000)).toISOString(),
+    summary: attempt.summary,
+    focusAreas: attempt.focusAreas,
+    nextSteps: attempt.nextSteps,
+    questions: [{
+      id: attempt.problem.id,
+      domain: attempt.problem.domain,
+      domainLabel,
+      topic: attempt.problem.title,
+      type: 'coding' as const,
+      difficulty: codingDifficultyRank(attempt.problem.difficulty),
+      questionText: attempt.problem.problemStatement,
+      correctAnswer: attempt.evaluation?.modelSolutionSketch ?? '',
+      explanation: attempt.problem.requirements.join(' '),
+      codeSnippet: attempt.problem.starterCode,
+      tags: [attempt.problem.domain, attempt.problem.difficulty],
+      timeLimitMinutes: attempt.durationMinutes,
+    }],
+    answers: [{
+      questionId: attempt.problem.id,
+      codeAnswer: attempt.code || null,
+      notes: attempt.notes || null,
+    }],
+    results: [{
+      questionId: attempt.problem.id,
+      topic: attempt.problem.title,
+      prompt: attempt.problem.problemStatement,
+      submittedAnswer: attempt.code || null,
+      correctAnswer: attempt.evaluation?.modelSolutionSketch ?? '',
+      explanation: [attempt.evaluation?.correctness, attempt.evaluation?.codeQuality, attempt.evaluation?.edgeCases].filter(Boolean).join(' '),
+      isCorrect: attempt.evaluation?.verdict === 'pass',
+      score: normalizedScore,
+      observations: attempt.evaluation?.improvements ?? [],
+    }],
+  };
+}
+
+function toCodingResultAttemptPayload(attempt: CodingAttemptRecord) {
+  return {
+    ...toStoredRoundAttemptFromCodingAttempt(attempt),
+    coding: {
+      id: attempt.problem.id,
+      title: attempt.problem.title,
+      domain: attempt.problem.domain,
+      difficulty: attempt.problem.difficulty,
+      language: attempt.problem.language,
+      starterCode: attempt.problem.starterCode,
+      problemStatement: attempt.problem.problemStatement,
+      requirements: attempt.problem.requirements,
+      examples: attempt.problem.examples,
+      constraints: attempt.problem.constraints,
+      evaluationCriteria: attempt.problem.evaluationCriteria,
+      score: attempt.score,
+      verdict: attempt.evaluation?.verdict ?? 'needs-work',
+      correctness: attempt.evaluation?.correctness ?? '',
+      codeQuality: attempt.evaluation?.codeQuality ?? '',
+      edgeCases: attempt.evaluation?.edgeCases ?? '',
+      improvements: attempt.evaluation?.improvements ?? [],
+      modelSolutionSketch: attempt.evaluation?.modelSolutionSketch ?? '',
+      code: attempt.code,
+      notes: attempt.notes,
+      startedAt: attempt.startedAt,
+      submittedAt: attempt.submittedAt,
+    },
+  };
+}
+
+async function findActiveCodingAttempt(userId: string, domain: string) {
+  const rows = await db.query<{ attempt_id: string }>(
+    `SELECT ca.id AS attempt_id
+       FROM coding_attempts ca
+       JOIN coding_problems cp ON cp.id = ca.problem_id
+      WHERE ca.user_id = $1 AND cp.domain = $2 AND ca.status = 'started'
+      ORDER BY ca.started_at DESC
+      LIMIT 1`,
+    [userId, domain],
+  );
+  return rows[0] ? loadCodingAttempt(userId, rows[0].attempt_id) : null;
+}
+
+async function getLatestCodingAttempt(userId: string, domain?: string) {
+  const params: unknown[] = [userId];
+  const domainClause = domain ? 'AND cp.domain = $2' : '';
+  if (domain) params.push(domain);
+  const rows = await db.query<{ attempt_id: string }>(
+    `SELECT ca.id AS attempt_id
+       FROM coding_attempts ca
+       JOIN coding_problems cp ON cp.id = ca.problem_id
+      WHERE ca.user_id = $1 ${domainClause}
+      ORDER BY COALESCE(ca.submitted_at, ca.started_at) DESC, ca.started_at DESC
+      LIMIT 1`,
+    params,
+  );
+  return rows[0] ? loadCodingAttempt(userId, rows[0].attempt_id) : null;
+}
+
+async function buildCodingOverview(userId: string, domain: string) {
+  const activeAttempt = await findActiveCodingAttempt(userId, domain);
+  const rows = await db.query<{ difficulty: string; total: number }>(
+    `SELECT cp.difficulty, COUNT(*)::int AS total
+       FROM coding_attempts ca
+       JOIN coding_problems cp ON cp.id = ca.problem_id
+      WHERE ca.user_id = $1 AND cp.domain = $2 AND ca.status = 'submitted'
+      GROUP BY cp.difficulty`,
+    [userId, domain],
+  );
+  const counts = new Map(rows.map((row) => [normalizeCodingDifficulty(row.difficulty), Number(row.total)] as const));
+  let suggestedFromDifficulty: CodingDifficulty | null = null;
+  let suggestedDifficulty: CodingDifficulty | null = null;
+
+  if ((counts.get('easy') ?? 0) >= 5) {
+    suggestedFromDifficulty = 'easy';
+    suggestedDifficulty = 'medium';
+  } else if ((counts.get('medium') ?? 0) >= 5) {
+    suggestedFromDifficulty = 'medium';
+    suggestedDifficulty = 'hard';
+  }
+
+  return {
+    activeAttemptId: activeAttempt?.id ?? null,
+    suggestedFromDifficulty,
+    suggestedDifficulty,
+    suggestionMessage: suggestedFromDifficulty && suggestedDifficulty
+      ? `You've done 5 ${suggestedFromDifficulty[0].toUpperCase()}${suggestedFromDifficulty.slice(1)} problems - want to try ${suggestedDifficulty[0].toUpperCase()}${suggestedDifficulty.slice(1)}?`
+      : null,
+  };
+}
+
+async function generateCodingAttemptForUser(params: {
+  userId: string;
+  domain: string;
+  difficulty: CodingDifficulty;
+  abortSignal?: AbortSignal;
+}) {
+  const seenRows = await db.query<{ question_hash: string }>(
+    `SELECT question_hash
+       FROM question_history
+      WHERE user_id = $1 AND domain = $2 AND round_type = 'coding-round'
+      ORDER BY seen_at DESC
+      LIMIT 16`,
+    [params.userId, params.domain],
+  );
+  const seenHashes = new Set(seenRows.map((row) => String(row.question_hash ?? '')).filter(Boolean));
+  const extraAvoidHashes: string[] = [];
+  const repoContext = await getLatestRepoContext(params.userId);
+  const language = getCodingLanguageForDomain(params.domain);
+  let lastError = 'unknown';
+
+  for (let attempt = 1; attempt <= CODING_PROBLEM_GENERATION_MAX_ATTEMPTS; attempt += 1) {
+    await checkAiRateLimit(params.userId, 'coding-problem-generation', 1);
+    try {
+      const generated = await callStructuredModel(
+        `You are a senior ${PRACTICE_DOMAIN_LABELS[toPracticeDomain(params.domain) || 'frontend']} engineer creating a real interview coding problem. Return only valid JSON starting with { and ending with }. No markdown fences. No preamble.`,
+        `Domain: ${PRACTICE_DOMAIN_LABELS[toPracticeDomain(params.domain) || 'frontend']}. Difficulty: ${params.difficulty}. Generate one coding interview problem appropriate for a ${params.difficulty} ${PRACTICE_DOMAIN_LABELS[toPracticeDomain(params.domain) || 'frontend']} engineering interview. The problem must be practical, interview-realistic, and domain-specific - not a generic algorithm puzzle. Previously seen problem hashes for this user: ${JSON.stringify([...seenHashes, ...extraAvoidHashes])}. Return JSON: { id: string, title: string, difficulty: string, domain: string, language: string, starterCode: string, problemStatement: string, requirements: string[], examples: [ { input: string, output: string, explanation: string } ], constraints: string[], evaluationCriteria: string[] }. Rules: the language must align with this domain and should be ${language}. starterCode must be realistic starter code with TODO comments marking what to implement. problemStatement must be 3-5 clear sentences. Provide 3-5 requirements, 2-3 examples, 2-4 constraints, and 4-5 evaluation criteria. Repo context: ${repoContext || 'none'}.`,
+        (payload) => normalizeGeneratedCodingProblemPayload(payload, params.domain, params.difficulty),
+        {
+          abortSignal: params.abortSignal,
+          maxTokens: CODING_PROBLEM_GENERATION_MAX_TOKENS,
+          timeoutMs: CODING_PROBLEM_GENERATION_TIMEOUT_MS,
+          model: CODING_PROBLEM_GENERATION_MODEL,
+          temperature: 0.8,
+        },
+      );
+
+      const questionHash = buildCodingProblemHash(generated.result.title, generated.result.problemStatement);
+      if (seenHashes.has(questionHash) || extraAvoidHashes.includes(questionHash)) {
+        lastError = 'coding_problem_duplicate_hash';
+        extraAvoidHashes.push(questionHash);
+        continue;
+      }
+
+      const problemId = crypto.randomUUID();
+      await db.prepare(`
+        INSERT INTO coding_problems (
+          id, user_id, domain, difficulty, category, title, description, context, starter_code, language, question_hash, requirements, examples, constraints, evaluation_criteria, hints, status, generated_at, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb, '[]'::jsonb, 'active', NOW(), NOW(), NOW()
+        )
+      `).run(
+        problemId,
+        params.userId,
+        params.domain,
+        params.difficulty,
+        params.domain,
+        generated.result.title,
+        generated.result.problemStatement,
+        generated.result.starterCode,
+        generated.result.language,
+        questionHash,
+        JSON.stringify(generated.result.requirements),
+        JSON.stringify(generated.result.examples),
+        JSON.stringify(generated.result.constraints),
+        JSON.stringify(generated.result.evaluationCriteria),
+      );
+      await db.prepare(`
+        INSERT INTO question_history (id, user_id, domain, round_type, question_hash, question_text, seen_at)
+        VALUES (?, ?, ?, 'coding-round', ?, ?, NOW())
+        ON CONFLICT (user_id, domain, round_type, question_hash) DO NOTHING
+      `).run(
+        crypto.randomUUID(),
+        params.userId,
+        params.domain,
+        questionHash,
+        `${generated.result.title}\n${generated.result.problemStatement.slice(0, 180)}`,
+      );
+
+      const attemptId = crypto.randomUUID();
+      await db.prepare(`
+        INSERT INTO coding_attempts (
+          id, problem_id, user_id, status, code_draft, notes, language, started_at, duration_minutes, paused_ms, last_saved_at, score, time_spent_seconds, submitted_at, evaluation_payload
+        ) VALUES (
+          ?, ?, ?, 'started', ?, '', ?, NOW(), ?, 0, NOW(), 0, NULL, NULL, '{}'::jsonb
+        )
+      `).run(attemptId, problemId, params.userId, generated.result.starterCode, generated.result.language, getCodingDurationMinutes(params.difficulty));
+
+      const codingAttempt = await loadCodingAttempt(params.userId, attemptId);
+      if (!codingAttempt) throw new Error('coding_attempt_load_failed');
+      return codingAttempt;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  throw new Error(`aiUnavailable: Unable to generate a fresh coding problem right now. Last error: ${lastError}`);
+}
+
 async function generatePracticeSessionQuestions(params: {
   userId: string;
   domain: PracticeDomainId;
@@ -1459,83 +3487,208 @@ async function generatePracticeSessionQuestions(params: {
      LIMIT 24
   `, [params.userId, params.domain, roundType]);
   const seenHashes = new Set(seenRows.map((row) => String(row.question_hash ?? '')));
-  const seenQuestions = seenRows.map((row) => String(row.question_text ?? '')).filter(Boolean);
   const repoContext = await getLatestRepoContext(params.userId);
 
-  const generate = async (retry = false) => {
-    await checkAiRateLimit(params.userId, 'practice-session-generation', retry ? 3 : 5);
-    const sessionSeed = hashText(`${params.userId}:${params.topic}:${Date.now()}:${retry ? 'retry' : 'initial'}`).slice(0, 16);
-    let generatedQuestions: PracticeSessionQuestion[] = [];
+  const maxAttempts = 2;
+  const comprehensionPhaseTimeoutMs = 45_000;
+  const codeReadingSubphaseTimeoutMs = 40_000;
+  let questions: PracticeSessionQuestion[] = [];
+  let lastError: string | null = null;
+
+  const runPhaseWithTimeout = async <T,>(phaseLabel: string, timeoutMs: number, action: () => Promise<T>) => {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
-      const generated = await callStructuredModel(
-        `You are DeepSeek acting as a senior ${PRACTICE_DOMAIN_LABELS[params.domain]} engineer creating a 30-question practice session on ${params.topic}. Generate exactly 10 fill-in-the-blank questions, exactly 10 standard multiple choice questions, and exactly 10 hard multiple choice questions built around realistic coding paragraphs. The final 10 hard questions must each include a compact code snippet or pseudocode paragraph for this domain/topic and ask what will happen, what bug exists, or what the best fix is. Questions must test real engineering judgment, applied knowledge, and practical decision-making. Never generate trivia, memorization-only questions, or competitive programming problems. For fill-in-the-blank, the blank must be a meaningful technical term, decision, or short phrase. For multiple choice, provide exactly four options with one correct answer and three plausible distractors. Return only valid JSON.`,
-        JSON.stringify({
-          domain: PRACTICE_DOMAIN_LABELS[params.domain],
-          topic: params.topic,
-          userLevel: params.level || 'intermediate',
-          repoContext,
-          sessionSeed,
-          previouslySeenQuestionTexts: seenQuestions,
-          retry,
-          schema: {
-            topic: 'string',
-            domain: 'string',
-            totalQuestions: 30,
-            questions: [
-              {
-                id: 'string',
-                type: 'fill-blank or mcq',
-                question: 'string',
-                blank: 'string or null',
-                options: 'array of 4 strings or null',
-                correctAnswer: 'string',
-                explanation: 'string',
-                difficulty: 'easy or medium or hard',
-                tags: ['string'],
-              },
-            ],
-          },
+      return await Promise.race([
+        action(),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error(`practice_phase_timeout:${phaseLabel}`)), timeoutMs);
         }),
-        (payload) => {
-          const source = parseJsonRecord(payload);
-          const items = Array.isArray(source.questions) ? source.questions : [];
-          return items
-            .map((item, index) => normalizePracticeQuestionPayload(item, index, params.topic))
-            .filter((item): item is PracticeSessionQuestion => Boolean(item));
-        },
-        { maxTokens: 5600, timeoutMs: 65000, model: 'deepseek/deepseek-chat', temperature: 0.35 },
-      );
-      generatedQuestions = generated.result;
-    } catch (error) {
-      console.warn('Practice session model generation failed; using deterministic 30-question fallback.', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      ]);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
     }
-    const questions = ensurePracticeQuestionCount(generatedQuestions, {
-      domain: params.domain,
-      topic: params.topic,
-      targetCount: 30,
-    });
-    const questionHashes = questions.map((question) => hashText(`${question.question}:${question.correctAnswer}`));
-    const duplicateCount = questionHashes.length - new Set(questionHashes).size;
-    const repeatCount = questionHashes.filter((hash) => seenHashes.has(hash)).length;
-    if (!retry && (questions.length < 30 || duplicateCount > 0 || repeatCount > 4)) {
-      return generate(true);
-    }
-    return questions;
   };
 
-  const questions = ensurePracticeQuestionCount(await generate(false), {
-    domain: params.domain,
-    topic: params.topic,
-    targetCount: 30,
-  });
-  if (questions.length !== 30) {
-    throw new Error('Unable to generate a complete practice session right now.');
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    await checkAiRateLimit(params.userId, 'practice-session-generation', 5);
+    const sessionSeed = hashText(`${params.userId}:${params.topic}:${Date.now()}:attempt-${attempt}`).slice(0, 20);
+    const start = Date.now();
+    console.log('[practice-gen] start', { topic: params.topic, domain: params.domain, userId: params.userId });
+    try {
+      const generatePhase = async (phase: 'phase1' | 'phase2a' | 'phase2b', extraSeenHashes: string[] = []) => {
+        const isComprehensionPhase = phase === 'phase1';
+        const phaseLabel = phase;
+        const expectedCount = isComprehensionPhase ? 20 : 10;
+        const timeoutMs = isComprehensionPhase ? comprehensionPhaseTimeoutMs : codeReadingSubphaseTimeoutMs;
+        const maxTokens = isComprehensionPhase ? 7000 : 3500;
+        const phaseSeed = phase === 'phase1' ? 'phase-1' : phase === 'phase2a' ? 'phase-2a' : 'phase-2b';
+        const codeReadingBatch = phase === 'phase2b' ? '2 of 2' : '1 of 2';
+        const promptSeenHashes = JSON.stringify([...seenHashes, ...extraSeenHashes]);
+        const modelConfig = resolveModelConfig('deepseek/deepseek-chat');
+        const endpoint = modelConfig.provider === 'openai-compat'
+          ? `${modelConfig.baseUrl}/chat/completions`
+          : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelConfig.model)}:generateContent`;
+        console.log(`[practice-gen] ${phaseLabel} config:`, {
+          attempt,
+          provider: modelConfig.provider,
+          model: modelConfig.model,
+          endpoint,
+          stream: false,
+          timeoutMs,
+          maxTokens,
+        });
+        const systemPrompt = `You are a senior ${PRACTICE_DOMAIN_LABELS[params.domain]} engineer. Questions must test real engineering judgment. No trivia. No memorization-only questions. Return only valid JSON matching the schema. Your entire response must be a single JSON object. Start your response with { and end with }. Do not include any text before or after the JSON object. Do not use markdown code fences.`;
+        const userPrompt = isComprehensionPhase
+          ? `Domain: ${PRACTICE_DOMAIN_LABELS[params.domain]}. Topic: ${params.topic}. User level: ${params.level || 'intermediate'}. Repo context: ${repoContext || 'none'}. Session seed: ${sessionSeed}:${phaseSeed}. Previously seen question hashes: ${promptSeenHashes}. Generate exactly 20 questions: 10 MCQ and 10 fill-in-the-blank. Do not generate code-reading questions in this phase. Return JSON: { topic: string, domain: string, totalQuestions: 20, questions: [ { id: string, type: 'mcq' | 'fill-blank', question: string, codeBlock: null, blank: string | null, options: string[] | null, correctAnswer: string, explanation: string, difficulty: 'easy' | 'medium' | 'hard', tags: string[] } ] }. Rules: MCQ must have exactly 4 options. fill-blank must have a non-trivial blank - a technical term, pattern name, or decision, not a single letter. For MCQ and fill-blank questions, the question field must contain only plain prose. Never use markdown backtick fences inside the question string. If a question needs code to be shown, do not emit it in this phase; that question belongs in the code-reading phase where the code goes in codeBlock. Count the questions before returning. The questions array for this call must have length 20. Vary difficulty: roughly 30% easy, 50% medium, 20% hard.`
+          : `Domain: ${PRACTICE_DOMAIN_LABELS[params.domain]}. Topic: ${params.topic}. User level: ${params.level || 'intermediate'}. Repo context: ${repoContext || 'none'}. Session seed: ${sessionSeed}:${phaseSeed}. Previously seen question hashes: ${promptSeenHashes}. Code-reading batch: ${codeReadingBatch}. Generate exactly 10 code-reading questions. Each must include a realistic codeBlock of 10-25 lines. Your entire response is a single JSON object starting with { and ending with }. No markdown fences. No preamble. Return JSON: { topic: string, domain: string, totalQuestions: 10, questions: [ { id: string, type: 'code-reading', question: string, codeBlock: string, blank: string | null, options: string[] | null, correctAnswer: string, explanation: string, difficulty: 'easy' | 'medium' | 'hard', tags: string[] } ] }. Rules: The questions array for this call must have length 10. Each question must ask a specific judgment question about the code - what is wrong, what will happen, what should be changed, what pattern is this, or what is the output. The question field must contain only plain prose. Put code only in codeBlock. Never use markdown backtick fences inside the question string. If options are present, provide exactly 4 options; otherwise set options to null and use a short answer correctAnswer. Code snippets must be real-world patterns, not toy examples. Escape JSON strings correctly. Vary difficulty: roughly 30% easy, 50% medium, 20% hard.`;
+
+        const phaseStartedAt = Date.now();
+        try {
+          const generated = await runPhaseWithTimeout(phaseLabel, timeoutMs, () => callStructuredModel(
+            systemPrompt,
+            userPrompt,
+            (payload) => {
+              const source = payload && typeof payload === 'object' ? payload as { questions?: unknown } : {};
+              const rawQuestions = Array.isArray(source.questions) ? source.questions : [];
+              console.log(`[practice-gen] ${phaseLabel} raw count:`, rawQuestions.length);
+              const validation = validatePracticeSession(payload, expectedCount);
+              console.log('[practice-gen] after-validation count:', validation.validQuestions.length, {
+                phase: phaseLabel,
+                invalidCount: validation.invalidCount,
+              });
+              if (!validation.valid) {
+                console.warn('[practice-gen] validation-failed', {
+                  domain: params.domain,
+                  topic: params.topic,
+                  attempt,
+                  phase,
+                  invalidCount: validation.invalidCount,
+                  invalidIndexes: validation.invalidIndexes.slice(0, 12),
+                  invalidDetails: validation.invalidDetails.slice(0, 12),
+                });
+                if (validation.invalidCount > 4) {
+                  throw new Error(`practice_validation_failed:${phase}:${validation.invalidCount}`);
+                }
+              }
+              return validation.validQuestions
+                .map((item, index) => normalizePracticeQuestionPayload(item, index, params.topic))
+                .filter((item): item is PracticeSessionQuestion => Boolean(item));
+            },
+            {
+              maxTokens,
+              timeoutMs,
+              model: 'deepseek/deepseek-chat',
+              temperature: 0.7,
+            },
+          ));
+          console.log(`[practice-gen] ${phaseLabel} count:`, generated.result.length);
+          console.log(`[practice-gen] ${phaseLabel} rawLength:`, generated.rawLength);
+          return generated.result;
+        } finally {
+          console.log(`[practice-gen] ${phaseLabel} duration:`, Date.now() - phaseStartedAt, 'ms');
+        }
+      };
+
+      const comprehensionQuestions = await generatePhase('phase1');
+      const phase2aQuestions = await generatePhase('phase2a');
+      const phase2aHashes = phase2aQuestions.map((question) => practiceQuestionHistoryHash(question));
+      const phase2bQuestions = await generatePhase('phase2b', phase2aHashes);
+
+      console.log('[practice-gen] done', { topic: params.topic, domain: params.domain, durationMs: Date.now() - start });
+      const mcq = comprehensionQuestions.filter((question) => question.type === 'mcq').slice(0, 10);
+      const fillBlank = comprehensionQuestions.filter((question) => question.type === 'fill-blank').slice(0, 10);
+      const codeReading = [...phase2aQuestions, ...phase2bQuestions].filter((question) => question.type === 'code-reading').slice(0, 20);
+      questions = [...mcq, ...fillBlank, ...codeReading];
+      const mergedValidation = validatePracticeSession({ questions }, 40);
+      console.log('[practice-gen] merged after-validation count:', mergedValidation.validQuestions.length, {
+        invalidCount: mergedValidation.invalidCount,
+      });
+      if (!mergedValidation.valid) {
+        lastError = `practice_merged_validation_failed:${mergedValidation.invalidCount}`;
+        console.warn('[practice-gen] merged-validation-failed', {
+          domain: params.domain,
+          topic: params.topic,
+          attempt,
+          invalidCount: mergedValidation.invalidCount,
+          invalidIndexes: mergedValidation.invalidIndexes.slice(0, 12),
+          invalidDetails: mergedValidation.invalidDetails.slice(0, 12),
+        });
+        questions = [];
+        continue;
+      }
+      const questionHashes = questions.map((question) => practiceQuestionHistoryHash(question));
+      const duplicateCount = questionHashes.length - new Set(questionHashes).size;
+      const repeatCount = questionHashes.filter((hash) => seenHashes.has(hash)).length;
+      const hasCodeBlocksWithinTarget = codeReading.length === 20 && codeReading.every((question) => {
+        const lineCount = (question.codeBlock ?? '').split(/\r?\n/).filter(Boolean).length;
+        return lineCount >= 10 && lineCount <= 25;
+      });
+      if (mcq.length === 10 && fillBlank.length === 10 && codeReading.length === 20 && questions.length === 40 && duplicateCount === 0 && repeatCount <= 8) {
+        if (!hasCodeBlocksWithinTarget) {
+          console.warn('[practice-gen] code-block-line-target-missed', {
+            domain: params.domain,
+            topic: params.topic,
+            attempt,
+          });
+        }
+        break;
+      }
+      lastError = `quality_check_failed:length=${questions.length},mcq=${mcq.length},fill=${fillBlank.length},code=${codeReading.length},duplicates=${duplicateCount},repeats=${repeatCount},codeBlocks=${hasCodeBlocksWithinTarget}`;
+      console.warn('[practice-gen] quality-check-failed', {
+        domain: params.domain,
+        topic: params.topic,
+        attempt,
+        totalQuestions: questions.length,
+        mcq: mcq.length,
+        fillBlank: fillBlank.length,
+        codeReading: codeReading.length,
+        duplicateCount,
+        repeatCount,
+        hasCodeBlocks: hasCodeBlocksWithinTarget,
+      });
+      questions = [];
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      const rawText = typeof (error as { rawResponse?: unknown }).rawResponse === 'string'
+        ? String((error as { rawResponse?: unknown }).rawResponse)
+        : '';
+      if (/phase2a|phase2b/i.test(lastError)) {
+        console.warn('[practice-gen] phase2 failure rawLength:', rawText.length, {
+          domain: params.domain,
+          topic: params.topic,
+          attempt,
+          error: lastError,
+        });
+      }
+      if (rawText) {
+        console.error('[practice-gen] parse-failed', {
+          domain: params.domain,
+          topic: params.topic,
+          attempt,
+          rawLength: rawText.length,
+          rawPreview: rawText.slice(0, 500),
+          rawTail: rawText.slice(-200),
+          error: lastError,
+        });
+      }
+      console.warn('Practice session model generation attempt failed.', {
+        domain: params.domain,
+        topic: params.topic,
+        attempt,
+        error: lastError,
+      });
+      if (/^(analysis_timeout|practice_phase_timeout:)/.test(lastError)) {
+        break;
+      }
+    }
+  }
+
+  if (questions.length !== 40) {
+    throw new Error(`aiUnavailable: Unable to generate 40 practice questions right now. Last error: ${lastError ?? 'unknown'}`);
   }
 
   for (const question of questions) {
-    const questionHash = hashText(`${question.question}:${question.correctAnswer}`);
+    const questionHash = practiceQuestionHistoryHash(question);
     await db.prepare(`
       INSERT INTO question_history (id, user_id, domain, round_type, question_hash, question_text, seen_at)
       VALUES (?, ?, ?, ?, ?, ?, NOW())
@@ -1550,13 +3703,14 @@ async function callStructuredModel<T>(
   systemPrompt: string,
   userPrompt: string,
   normalize: (payload: unknown) => T,
-  options: { maxTokens?: number; timeoutMs?: number; model?: string; temperature?: number; topP?: number } = {},
-): Promise<{ result: T; provider: string; model: string }> {
+  options: { maxTokens?: number; timeoutMs?: number; model?: string; temperature?: number; topP?: number; abortSignal?: AbortSignal } = {},
+): Promise<{ result: T; provider: string; model: string; rawLength: number }> {
   const config = resolveModelConfig(options.model);
   const abortController = new AbortController();
   const timeout = options.timeoutMs
     ? setTimeout(() => abortController.abort(new Error('analysis_timeout')), options.timeoutMs)
     : null;
+  const unlinkAbortSignal = linkAbortSignal(abortController, options.abortSignal);
 
   let rawText = '';
   try {
@@ -1645,23 +3799,149 @@ async function callStructuredModel<T>(
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(extractJsonPayload(rawText));
+      parsed = parseStructuredPayload(rawText);
     } catch (parseError) {
       const error = new Error('model_json_parse_failed') as Error & { rawResponse?: string };
       error.rawResponse = rawText;
       throw error;
     }
+    let result: T;
+    try {
+      result = normalize(parsed);
+    } catch (normalizeError) {
+      if (normalizeError instanceof Error) {
+        (normalizeError as Error & { rawResponse?: string }).rawResponse = rawText;
+      }
+      throw normalizeError;
+    }
     return {
-      result: normalize(parsed),
+      result,
       provider: config.provider,
       model: config.model,
+      rawLength: rawText.length,
     };
   } catch (error) {
     if (abortController.signal.aborted) {
-      throw new Error('analysis_timeout');
+      const reason = abortController.signal.reason;
+      if (reason instanceof Error) throw reason;
+      throw new Error(String(reason ?? 'analysis_timeout'));
     }
     throw error;
   } finally {
+    unlinkAbortSignal();
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function callTextModel(
+  systemPrompt: string,
+  userPrompt: string,
+  options: { maxTokens?: number; timeoutMs?: number; model?: string; temperature?: number; topP?: number; abortSignal?: AbortSignal } = {},
+): Promise<{ text: string; provider: string; model: string; rawLength: number }> {
+  const config = resolveModelConfig(options.model);
+  const abortController = new AbortController();
+  const timeout = options.timeoutMs
+    ? setTimeout(() => abortController.abort(new Error('analysis_timeout')), options.timeoutMs)
+    : null;
+  const unlinkAbortSignal = linkAbortSignal(abortController, options.abortSignal);
+
+  try {
+    let rawText = '';
+    if (config.provider === 'openai-compat') {
+      const response = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: 'POST',
+        signal: abortController.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: config.model,
+          temperature: options.temperature ?? 0,
+          top_p: options.topP ?? undefined,
+          max_tokens: options.maxTokens ?? 100,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+        }),
+      });
+
+      const responseText = await response.text();
+      const data = (() => {
+        try {
+          return JSON.parse(responseText) as {
+            error?: { message?: string };
+            choices?: Array<{ message?: { content?: unknown } }>;
+          };
+        } catch {
+          return { error: { message: responseText } };
+        }
+      })();
+      if (!response.ok) {
+        throw new Error(`model_http_${response.status}: ${String(data.error?.message ?? (responseText || 'Text model request failed.'))}`);
+      }
+
+      rawText = readMessageText(data.choices?.[0]?.message?.content).trim();
+    } else {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.model)}:generateContent?key=${encodeURIComponent(config.apiKey)}`,
+        {
+          method: 'POST',
+          signal: abortController.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: systemPrompt }],
+            },
+            contents: [{ parts: [{ text: userPrompt }] }],
+            generationConfig: {
+              temperature: options.temperature ?? 0,
+              topP: options.topP ?? undefined,
+              responseMimeType: 'text/plain',
+              maxOutputTokens: options.maxTokens ?? 100,
+            },
+          }),
+        },
+      );
+
+      const responseText = await response.text();
+      const data = (() => {
+        try {
+          return JSON.parse(responseText) as {
+            error?: { message?: string };
+            candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+          };
+        } catch {
+          return { error: { message: responseText } };
+        }
+      })();
+      if (!response.ok) {
+        throw new Error(`model_http_${response.status}: ${String(data.error?.message ?? (responseText || 'Gemini text request failed.'))}`);
+      }
+
+      rawText = String(data.candidates?.[0]?.content?.parts?.[0]?.text ?? '').trim();
+    }
+
+    if (!rawText) {
+      throw new Error('model_empty_response');
+    }
+
+    return {
+      text: rawText,
+      provider: config.provider,
+      model: config.model,
+      rawLength: rawText.length,
+    };
+  } catch (error) {
+    if (abortController.signal.aborted) {
+      const reason = abortController.signal.reason;
+      if (reason instanceof Error) throw reason;
+      throw new Error(String(reason ?? 'analysis_timeout'));
+    }
+    throw error;
+  } finally {
+    unlinkAbortSignal();
     if (timeout) clearTimeout(timeout);
   }
 }
@@ -3158,8 +5438,6 @@ function getPeriodEnd(interval: BillingInterval) {
   const date = new Date();
   if (interval === 'annual') {
     date.setFullYear(date.getFullYear() + 1);
-  } else if (interval === 'semiannual') {
-    date.setMonth(date.getMonth() + 6);
   } else {
     date.setMonth(date.getMonth() + 1);
   }
@@ -3270,20 +5548,18 @@ async function getEntitlement(userId: string, feature: string) {
 
   if (feature === 'mock-interview') {
     usage.mockInterviewsThisMonth = await getMonthlyRoundUsage(userId, 'mock-interview');
-    const limit = limits.mockInterviewsPerMonth;
-    hasAccess = limit === 'unlimited' || usage.mockInterviewsThisMonth < limit;
-    reason = hasAccess ? null : 'Mock interviews are not included in your current plan or your monthly limit is used.';
-    suggestedPlan = plan === 'free' ? 'pro' : 'team';
+    hasAccess = true;
+    reason = null;
+    suggestedPlan = null;
   } else if (feature === 'coding-round') {
     usage.codingRoundsThisMonth = await getMonthlyRoundUsage(userId, 'coding-round');
-    const limit = limits.codingRoundsPerMonth;
-    hasAccess = limit === 'unlimited' || usage.codingRoundsThisMonth < limit;
-    reason = hasAccess ? null : 'Coding rounds are not included in your current plan or your monthly limit is used.';
-    suggestedPlan = plan === 'free' ? 'pro' : 'team';
+    hasAccess = true;
+    reason = null;
+    suggestedPlan = null;
   } else if (feature === 'scenario-round') {
-    hasAccess = limits.scenarioRounds === 'unlimited';
-    reason = hasAccess ? null : 'Scenario rounds are available on Pro and Team.';
-    suggestedPlan = 'pro';
+    hasAccess = true;
+    reason = null;
+    suggestedPlan = null;
   } else if (feature === 'github-scan') {
     usage.githubRepos = await getGithubRepoUsage(userId);
     const limit = limits.githubRepos;
@@ -3327,8 +5603,19 @@ function verifyRazorpaySignature(orderId: string, paymentId: string, signature: 
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
 }
 
+async function ensureRuntimeSchemaReady() {
+  if (!runtimeSchemaReadyPromise) {
+    runtimeSchemaReadyPromise = db.execute(DATABASE_SCHEMA_SQL).then(() => undefined).catch((error) => {
+      runtimeSchemaReadyPromise = null;
+      throw error;
+    });
+  }
+  await runtimeSchemaReadyPromise;
+}
+
 export async function createApp(options: { listen?: boolean } = {}) {
   const listen = options.listen ?? true;
+  await ensureRuntimeSchemaReady();
   const app = express();
   app.disable('x-powered-by');
   app.use(cors({ origin: true, credentials: true }));
@@ -3364,23 +5651,20 @@ export async function createApp(options: { listen?: boolean } = {}) {
           plan: 'free',
           name: 'Free',
           monthly: { amountPaise: 0, displayPrice: '₹0' },
-          semiannual: { amountPaise: 0, displayPrice: '₹0' },
           annual: { amountPaise: 0, displayPrice: '₹0' },
           limits: PLAN_LIMITS.free,
         },
         pro: {
           plan: 'pro',
-          name: 'Pro',
+          name: 'Monthly',
           monthly: PLAN_PRICING.pro.monthly,
-          semiannual: PLAN_PRICING.pro.semiannual,
           annual: PLAN_PRICING.pro.annual,
           limits: PLAN_LIMITS.pro,
         },
         team: {
           plan: 'team',
-          name: 'Long-Term',
+          name: 'Yearly',
           monthly: PLAN_PRICING.team.monthly,
-          semiannual: PLAN_PRICING.team.semiannual,
           annual: PLAN_PRICING.team.annual,
           limits: PLAN_LIMITS.team,
         },
@@ -3605,6 +5889,9 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
   app.post('/api/practice/search', requireUser, async (request, response) => {
     try {
+      const practiceSearchTimeoutMs = 130_000;
+      request.setTimeout(practiceSearchTimeoutMs);
+      response.setTimeout(practiceSearchTimeoutMs);
       const user = (request as AuthedRequest).user!;
       const selectedDomain = await getUserSelectedDomain(user.id);
       if (!selectedDomain) {
@@ -3639,15 +5926,20 @@ export async function createApp(options: { listen?: boolean } = {}) {
       const sessionId = crypto.randomUUID();
       await db.prepare(`
         INSERT INTO open_practice_sessions (
-          id, user_id, domain, topic, status, questions, answers, generated_at, created_at, updated_at
+          id, user_id, domain, topic, status, questions, question_type_breakdown, answers, generated_at, created_at, updated_at
         ) VALUES (
-          ?, ?, ?, ?, 'in-progress', ?::jsonb, '[]'::jsonb, NOW(), NOW(), NOW()
+          ?, ?, ?, ?, 'in-progress', ?::jsonb, ?::jsonb, '[]'::jsonb, NOW(), NOW(), NOW()
         )
-      `).run(sessionId, user.id, domain, topic, JSON.stringify(questions));
+      `).run(sessionId, user.id, domain, topic, JSON.stringify(questions), JSON.stringify({ mcq: 10, 'fill-blank': 10, 'code-reading': 20 }));
       const session = await loadPracticeSession(sessionId, user.id);
       response.status(201).json({ session });
     } catch (error) {
-      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to generate a practice session.' });
+      const message = error instanceof Error ? error.message : 'Unable to generate a practice session.';
+      if (message.startsWith('aiUnavailable:')) {
+        response.status(503).json({ aiUnavailable: true, error: message.replace(/^aiUnavailable:\s*/, '') });
+        return;
+      }
+      response.status(500).json({ error: message });
     }
   });
 
@@ -3728,7 +6020,6 @@ export async function createApp(options: { listen?: boolean } = {}) {
         timeSpentSeconds ?? null,
         JSON.stringify({
           performanceLabel: report.performanceLabel,
-          coveredTags: report.coveredTags,
           weakTags: report.weakTags,
           results: report.results,
         }),
@@ -3866,25 +6157,127 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
+  app.get('/api/scenarios/overview', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      const selectedScenarioDomain = toScenarioDomain(selectedDomain || '');
+      const domain = toScenarioDomain(String(request.query.domain ?? selectedDomain ?? ''));
+      if (!selectedScenarioDomain || !domain || domain !== selectedScenarioDomain) {
+        response.status(400).json({ error: 'Scenario rounds must use your selected domain. Change it in Settings first.' });
+        return;
+      }
+      response.json(await listSingleScenarioOverview(user.id, domain));
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load scenario overview.' });
+    }
+  });
+
   app.get('/api/scenarios', requireUser, async (request, response) => {
     try {
       const user = (request as AuthedRequest).user!;
       const selectedDomain = await getUserSelectedDomain(user.id);
-      const domain = normalizeDomain(request.query.domain, selectedDomain);
-      const result = await listQuestions({ domain, type: 'scenario', limit: 12, offset: 0 });
-      response.json({
-        scenarios: result.questions.map((question) => ({
-          id: question.id,
-          domain: question.domain,
-          title: question.topic,
-          context: question.questionText,
-          level: question.difficulty === 3 ? 'senior' : question.difficulty === 2 ? 'mid' : 'junior',
-          type: question.tags.find((tag) => tag.startsWith('round:'))?.replace('round:', '') || 'scenario',
-          estimatedMinutes: question.timeLimitMinutes,
-        })),
-      });
+      const selectedScenarioDomain = toScenarioDomain(selectedDomain || '');
+      const domain = toScenarioDomain(String(request.query.domain ?? selectedDomain ?? ''));
+      if (!selectedScenarioDomain || !domain || domain !== selectedScenarioDomain) {
+        response.status(400).json({ error: 'Scenario rounds must use your selected domain. Change it in Settings first.' });
+        return;
+      }
+      response.json(await listSingleScenarioOverview(user.id, domain));
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load scenarios.' });
+    }
+  });
+
+  app.post('/api/scenarios/generate', requireUser, async (request, response) => {
+    const requestAbortHandle = createRequestAbortHandle(request, response);
+    try {
+      const scenarioGenerationTimeoutMs = SCENARIO_GENERATION_ROUTE_TIMEOUT_MS;
+      request.setTimeout(scenarioGenerationTimeoutMs);
+      response.setTimeout(scenarioGenerationTimeoutMs);
+
+      const user = (request as AuthedRequest).user!;
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      const selectedScenarioDomain = toScenarioDomain(selectedDomain || '');
+      const domain = toScenarioDomain(String(request.body?.domain ?? selectedDomain ?? ''));
+      if (!selectedScenarioDomain || !domain || domain !== selectedScenarioDomain) {
+        response.status(400).json({ error: 'Scenario rounds must use your selected domain. Change it in Settings first.' });
+        return;
+      }
+
+      const topic = String(request.body?.topic ?? '').trim();
+      if (!topic) {
+        response.status(400).json({ error: 'Topic is required.' });
+        return;
+      }
+
+      const validation = await validateScenarioTopicForDomain(user.id, topic, domain);
+      if (!validation.valid) {
+        response.status(400).json({
+          error: validation.error,
+          suggestedDomain: validation.suggestedDomain,
+        });
+        return;
+      }
+
+      const level = String(request.body?.level ?? '').trim().toLowerCase() || 'intermediate';
+      const scenario = await withOperationTimeout('scenario_generation', scenarioGenerationTimeoutMs, () => generateSingleScenarioForTopic({
+        userId: user.id,
+        domain,
+        topic,
+        level,
+        abortSignal: requestAbortHandle.signal,
+      }));
+      if (requestAbortHandle.signal.aborted || request.aborted || response.destroyed) {
+        return;
+      }
+      response.status(201).json({ scenario });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to generate scenario.';
+      if (message === 'request_aborted') {
+        return;
+      }
+      if (message === 'scenario_generation_timeout' || message === 'analysis_timeout') {
+        response.status(504).json({ error: 'Scenario generation timed out. Please retry with a more specific topic.' });
+        return;
+      }
+      if (message.startsWith('aiUnavailable:')) {
+        response.status(503).json({ aiUnavailable: true, error: message.replace(/^aiUnavailable:\s*/, '') });
+        return;
+      }
+      response.status(500).json({ error: message });
+    } finally {
+      requestAbortHandle.cleanup();
+    }
+  });
+
+  app.get('/api/scenarios/attempts/:attemptId', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      const attempt = await loadSingleScenarioAttempt(user.id, attemptId);
+      if (!attempt) {
+        response.status(404).json({ error: 'Scenario attempt not found.' });
+        return;
+      }
+      response.json({ attempt });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load scenario attempt.' });
+    }
+  });
+
+  app.get('/api/scenarios/:scenarioId', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const scenarioId = String(request.params.scenarioId ?? '').trim();
+      const scenario = await loadSingleScenarioById(user.id, scenarioId);
+      if (!scenario) {
+        response.status(404).json({ error: 'Scenario not found.' });
+        return;
+      }
+      response.json({ scenario });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load scenario.' });
     }
   });
 
@@ -3896,19 +6289,298 @@ export async function createApp(options: { listen?: boolean } = {}) {
         response.status(403).json({ error: entitlement.upgradeMessage ?? 'Upgrade required.', ...entitlement });
         return;
       }
+
       const selectedDomain = await getUserSelectedDomain(user.id);
-      const domain = normalizeDomain(request.body?.domain, selectedDomain);
-      const attempt = await createRoundAttempt({
-        userId: user.id,
-        roundType: 'scenario-round',
-        questionType: 'scenario',
-        domain,
-        limit: Number(request.body?.limit ?? 5),
-        durationMinutes: Number(request.body?.durationMinutes ?? 30),
-      });
+      const selectedScenarioDomain = toScenarioDomain(selectedDomain || '');
+      const scenarioId = String(request.params.scenarioId ?? '').trim();
+      const scenario = await loadSingleScenarioById(user.id, scenarioId);
+      if (!scenario) {
+        response.status(404).json({ error: 'Scenario not found.' });
+        return;
+      }
+      if (!selectedScenarioDomain || scenario.domain !== selectedScenarioDomain) {
+        response.status(400).json({ error: 'Scenario rounds must use your selected domain. Change it in Settings first.' });
+        return;
+      }
+
+      const existingRows = await db.query<{ id: string }>(
+        `SELECT id
+           FROM scenario_attempts
+          WHERE user_id = $1 AND scenario_id = $2 AND status = 'started'
+          ORDER BY started_at DESC
+          LIMIT 1`,
+        [user.id, scenario.id],
+      );
+      if (existingRows[0]?.id) {
+        const existingAttempt = await loadSingleScenarioAttempt(user.id, existingRows[0].id);
+        if (existingAttempt) {
+          response.json({ attempt: existingAttempt });
+          return;
+        }
+      }
+
+      const attemptId = crypto.randomUUID();
+      await db.prepare(`
+        INSERT INTO scenario_attempts (
+          id, scenario_id, user_id, status, started_at, duration_minutes, paused_ms, last_saved_at, score, time_spent_seconds, completed_at, result_payload
+        ) VALUES (
+          ?, ?, ?, 'started', NOW(), 30, 0, NOW(), 0, NULL, NULL, '{}'::jsonb
+        )
+      `).run(attemptId, scenario.id, user.id);
+
+      const attempt = await loadSingleScenarioAttempt(user.id, attemptId);
       response.status(201).json({ attempt });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to start scenario.' });
+    }
+  });
+
+  app.post('/api/scenarios/:scenarioId/attempts/:attemptId/step', requireUser, async (request, response) => {
+    response.status(410).json({ error: 'Scenario rounds now use one question and one submission. Submit the full answer with the /submit endpoint.' });
+  });
+
+  app.post('/api/scenarios/:scenarioId/attempts/:attemptId/submit', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    try {
+      const scenarioId = String(request.params.scenarioId ?? '').trim();
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      const timeSpentSeconds = Number.isFinite(Number(request.body?.timeSpentSeconds))
+        ? Math.max(0, Math.round(Number(request.body?.timeSpentSeconds)))
+        : null;
+
+      const attempt = await loadSingleScenarioAttempt(user.id, attemptId);
+      if (!attempt || attempt.scenario.id !== scenarioId) {
+        response.status(404).json({ error: 'Scenario attempt not found.' });
+        return;
+      }
+
+      const answer = String(request.body?.answer ?? attempt.answer ?? '').trim();
+      let evaluation = answer ? fallbackSingleScenarioEvaluation(answer, attempt.scenario) : null;
+
+      if (answer) {
+        try {
+          await checkAiRateLimit(user.id, 'scenario-answer-evaluation', 1);
+          const ai = await callStructuredModel(
+            `You are a senior ${SCENARIO_DOMAIN_LABELS[attempt.scenario.domain]} engineer evaluating one scenario interview answer. Return only valid JSON starting with { and ending with }. No markdown. No preamble. The candidate's answer may be a voice transcription. Evaluate the technical content and reasoning only. Do not penalize for filler words or speech-to-text artifacts.`,
+            `Scenario context: ${attempt.scenario.context}. Role: ${attempt.scenario.role}. Topic: ${attempt.scenario.topic}. Question type: ${attempt.scenario.type}. Question: ${attempt.scenario.question}. Candidate answer: ${answer}. Return JSON: { score: number (1-10), feedback: string, whatWorked: string, whatWasMissed: string, seniorEngineerWouldSay: string }. The response must be specific to this exact topic and question, not generic interview advice.`,
+            (payload) => normalizeSingleScenarioEvaluationPayload(payload),
+            {
+              maxTokens: 500,
+              timeoutMs: 20000,
+              model: SCENARIO_STEP_EVALUATION_MODEL,
+              temperature: 0.7,
+            },
+          );
+          evaluation = ai.result;
+        } catch (error) {
+          if ((error as Error & { statusCode?: number }).statusCode === 429) {
+            response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
+            return;
+          }
+        }
+      }
+
+      const computed = buildScenarioResultsPayload(attempt.scenario, answer, evaluation);
+      await db.prepare(`
+        INSERT INTO scenario_step_answers (id, attempt_id, step_number, user_answer, feedback_payload, created_at, updated_at)
+        VALUES (?, ?, 1, ?, ?::jsonb, NOW(), NOW())
+        ON CONFLICT (attempt_id, step_number)
+        DO UPDATE SET user_answer = EXCLUDED.user_answer, feedback_payload = EXCLUDED.feedback_payload, updated_at = NOW()
+      `).run(crypto.randomUUID(), attemptId, answer, JSON.stringify(computed.evaluation));
+      await db.prepare(`
+        UPDATE scenario_attempts
+           SET status = 'completed',
+               score = ?,
+               time_spent_seconds = ?,
+               completed_at = NOW(),
+               last_saved_at = NOW(),
+               result_payload = ?::jsonb
+         WHERE id = ? AND user_id = ?
+      `).run(
+        computed.score,
+        timeSpentSeconds,
+        JSON.stringify({
+          summary: computed.summary,
+          focusAreas: computed.focusAreas,
+          nextSteps: computed.nextSteps,
+          evaluation: computed.evaluation,
+          answer,
+          score: computed.score,
+        }),
+        attemptId,
+        user.id,
+      );
+
+      const submittedAttempt = await loadSingleScenarioAttempt(user.id, attemptId);
+      response.json({ attempt: submittedAttempt });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to submit scenario attempt.' });
+    }
+  });
+
+  app.get('/api/coding/overview', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      if (!selectedDomain) {
+        response.status(400).json({ error: 'Choose your interview domain in onboarding before opening the coding round.' });
+        return;
+      }
+      const domain = normalizeDomain(request.query.domain, selectedDomain);
+      if (!domain || domain !== selectedDomain) {
+        response.status(400).json({ error: 'Coding rounds must use your selected domain. Change it in Settings first.' });
+        return;
+      }
+      response.json(await buildCodingOverview(user.id, domain));
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load coding overview.' });
+    }
+  });
+
+  app.post('/api/coding/generate', requireUser, async (request, response) => {
+    const requestAbortHandle = createRequestAbortHandle(request, response);
+    try {
+      const routeTimeoutMs = CODING_PROBLEM_GENERATION_TIMEOUT_MS + 4_000;
+      request.setTimeout(routeTimeoutMs);
+      response.setTimeout(routeTimeoutMs);
+
+      const user = (request as AuthedRequest).user!;
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      if (!selectedDomain) {
+        response.status(400).json({ error: 'Choose your interview domain in onboarding before starting the coding round.' });
+        return;
+      }
+
+      const domain = normalizeDomain(request.body?.domain, selectedDomain);
+      if (!domain || domain !== selectedDomain) {
+        response.status(400).json({ error: 'Coding rounds must use your selected domain. Change it in Settings first.' });
+        return;
+      }
+
+      const difficulty = normalizeCodingDifficulty(request.body?.difficulty);
+      const entitlement = await getEntitlement(user.id, 'coding-round');
+      if (!entitlement.hasAccess) {
+        response.status(403).json({ error: entitlement.upgradeMessage ?? 'Upgrade required.', ...entitlement });
+        return;
+      }
+
+      const activeAttempt = await findActiveCodingAttempt(user.id, domain);
+      if (activeAttempt) {
+        response.json({ attempt: activeAttempt, resumed: true });
+        return;
+      }
+
+      const attempt = await generateCodingAttemptForUser({
+        userId: user.id,
+        domain,
+        difficulty,
+        abortSignal: requestAbortHandle.signal,
+      });
+      if (requestAbortHandle.signal.aborted || request.aborted || response.destroyed) {
+        return;
+      }
+      response.status(201).json({ attempt });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to generate coding problem.';
+      if (message === 'request_aborted') {
+        return;
+      }
+      if (message === 'analysis_timeout' || message.startsWith('aiUnavailable:')) {
+        response.status(503).json({ error: message.replace(/^aiUnavailable:\s*/, 'Unable to generate a fresh coding problem right now.') });
+        return;
+      }
+      response.status(500).json({ error: message });
+    } finally {
+      requestAbortHandle.cleanup();
+    }
+  });
+
+  app.get('/api/coding/attempts/:attemptId', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      const attempt = await loadCodingAttempt(user.id, attemptId);
+      if (!attempt) {
+        response.status(404).json({ error: 'Coding attempt not found.' });
+        return;
+      }
+      response.json({ attempt });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load coding attempt.' });
+    }
+  });
+
+  app.post('/api/coding/:attemptId/submit', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      const attempt = await loadCodingAttempt(user.id, attemptId);
+      if (!attempt) {
+        response.status(404).json({ error: 'Coding attempt not found.' });
+        return;
+      }
+
+      const code = String(request.body?.code ?? attempt.code ?? '').trimEnd();
+      const notes = String(request.body?.notes ?? '').trim();
+      const timeSpentSeconds = Number.isFinite(Number(request.body?.timeSpentSeconds))
+        ? Math.max(0, Math.round(Number(request.body?.timeSpentSeconds)))
+        : null;
+
+      let evaluation = fallbackCodingEvaluation(attempt.problem, code, notes);
+      if (code.trim()) {
+        try {
+          await checkAiRateLimit(user.id, 'coding-answer-evaluation', 1);
+          const ai = await callStructuredModel(
+            `You are a senior ${PRACTICE_DOMAIN_LABELS[toPracticeDomain(attempt.problem.domain) || 'frontend']} engineer doing a technical code review as part of an interview evaluation. Be specific and honest. Return only valid JSON.`,
+            `Problem: ${attempt.problem.title}. Difficulty: ${attempt.problem.difficulty}. Problem statement: ${attempt.problem.problemStatement}. Requirements: ${JSON.stringify(attempt.problem.requirements)}. Evaluation criteria: ${JSON.stringify(attempt.problem.evaluationCriteria)}. Candidate's ${attempt.problem.language} code: ${code}. Candidate's notes: ${notes || 'none'}. Evaluate thoroughly. Return JSON: { score: number (1-10), verdict: 'pass' | 'needs-work' | 'fail', correctness: string, codeQuality: string, edgeCases: string, improvements: string[] (3-5 items), modelSolutionSketch: string }.`,
+            (payload) => normalizeCodingEvaluationPayload(payload),
+            {
+              maxTokens: 700,
+              timeoutMs: 20_000,
+              model: CODING_EVALUATION_MODEL,
+              temperature: 0.7,
+            },
+          );
+          evaluation = ai.result;
+        } catch (error) {
+          if ((error as Error & { statusCode?: number }).statusCode === 429) {
+            response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
+            return;
+          }
+        }
+      }
+
+      const meta = buildCodingResultMeta(attempt.problem, evaluation);
+      await db.prepare(`
+        UPDATE coding_attempts
+           SET status = 'submitted',
+               code_draft = ?,
+               notes = ?,
+               score = ?,
+               time_spent_seconds = ?,
+               submitted_at = NOW(),
+               last_saved_at = NOW(),
+               evaluation_payload = ?::jsonb
+         WHERE id = ? AND user_id = ?
+      `).run(
+        code,
+        notes,
+        evaluation.score,
+        timeSpentSeconds,
+        JSON.stringify({
+          ...evaluation,
+          summary: meta.summary,
+          focusAreas: meta.focusAreas,
+          nextSteps: meta.nextSteps,
+        }),
+        attemptId,
+        user.id,
+      );
+
+      const submittedAttempt = await loadCodingAttempt(user.id, attemptId);
+      response.json({ attempt: submittedAttempt });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to submit coding attempt.' });
     }
   });
 
@@ -4158,32 +6830,60 @@ export async function createApp(options: { listen?: boolean } = {}) {
       try {
         await checkAiRateLimit(user.id, mode === 'mock' ? 'persona-response' : 'answer-evaluation', 1);
         const repoContext = await getLatestRepoContext(user.id);
+        const evaluationStartedAt = Date.now();
         const systemPrompt = mode === 'mock'
-          ? `You are ${persona}, a realistic technical interviewer. Respond conversationally in 1-3 sentences, score internally, and return only JSON.`
-          : 'You are a senior engineer evaluating one step of a realistic scenario interview. Be direct, fair, and specific. Return only JSON.';
+          ? 'Return one JSON object only.'
+          : 'Evaluate one scenario answer. Return one JSON object only.';
         const userPrompt = mode === 'mock'
-          ? `Domain: ${question.domain_label}. Repo context: ${repoContext}. Question: "${question.question_text}". What we are looking for: "${question.correct_answer}". Candidate answer: "${answer}". Return JSON: { "spokenResponse": string, "followUpQuestion": string|null, "internalScore": number, "internalFlags": string[], "strengthSignal": string|null, "feedback": string, "whatWorked": string, "whatWasMissed": string }.`
-          : `Scenario context: "${question.question_text}". Topic: "${question.topic}". Repo context: ${repoContext}. Candidate answer: "${answer}". If the answer is under 80 characters, factor brevity into the score. Evaluate this step. Return JSON: { "score": number, "feedback": string, "whatWorked": string, "whatWasMissed": string, "seniorEngineerWouldHaveSaid": string }.`;
+          ? `Interviewer persona: ${persona}. Domain: ${question.domain_label}. Topic: ${question.topic}. Repo context: ${repoContext}. Question: "${question.question_text}". What we are looking for: "${question.correct_answer}". Candidate answer: "${answer}". Return a single JSON object. Start with { and end with }. Do not use markdown fences. Do not add prose before or after the JSON. Schema: { "spokenResponse": string, "followUpQuestion": string|null, "internalScore": number, "internalFlags": string[], "strengthSignal": string|null, "feedback": string, "whatWorked": string, "whatWasMissed": string }.`
+          : `Domain: ${question.domain_label}. Topic: ${question.topic}. Scenario context: "${question.question_text}". Expected answer shape: "${question.correct_answer}". Repo context: ${repoContext}. Candidate answer: "${answer}". If the answer is under 80 characters, penalize brevity. Return a single JSON object. Start with { and end with }. Do not use markdown fences. Do not add prose before or after the JSON. Schema: { "score": number, "feedback": string, "whatWorked": string, "whatWasMissed": string, "seniorEngineerWouldHaveSaid": string }.`;
         const ai = await callStructuredModel(
           systemPrompt,
           userPrompt,
           (payload) => normalizeRoundFeedbackPayload(mode, payload),
           {
-            maxTokens: 900,
-            timeoutMs: 25000,
+            maxTokens: 400,
+            timeoutMs: 20000,
             model: process.env.CODE_EVALUATION_MODEL?.trim() || 'deepseek/deepseek-chat',
             temperature: 0.2,
           },
         );
+        console.log('[round-feedback] duration:', Date.now() - evaluationStartedAt, 'ms', {
+          attemptId,
+          questionId,
+          mode,
+        });
         feedback = ai.result;
       } catch (error) {
         if ((error as Error & { statusCode?: number }).statusCode === 429) {
           response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
           return;
         }
+        const rawText = typeof (error as { rawResponse?: unknown }).rawResponse === 'string'
+          ? String((error as { rawResponse?: unknown }).rawResponse)
+          : '';
+        const message = error instanceof Error ? error.message : 'AI evaluation failed after fallback.';
+        if (rawText) {
+          console.error('[round-feedback] parse-failed', {
+            attemptId,
+            questionId,
+            mode,
+            rawLength: rawText.length,
+            rawPreview: rawText.slice(0, 500),
+            rawTail: rawText.slice(-200),
+            error: message,
+          });
+        } else {
+          console.warn('[round-feedback] failed', {
+            attemptId,
+            questionId,
+            mode,
+            error: message,
+          });
+        }
         feedback = fallbackRoundFeedback(mode, answer);
         await queueAiRetryJob(user.id, mode, attemptId, { questionId, answer, mode, persona });
-        await markAiRetryJobsFailed(user.id, mode, attemptId, error instanceof Error ? error.message : 'AI evaluation failed after fallback.');
+        await markAiRetryJobsFailed(user.id, mode, attemptId, message);
       }
 
       const payload = parseJsonRecord(attempt.answer_payload);
@@ -4210,6 +6910,28 @@ export async function createApp(options: { listen?: boolean } = {}) {
         return;
       }
 
+      if (roundType === 'scenario-round') {
+        const domain = request.query.domain ? toScenarioDomain(String(request.query.domain)) || undefined : undefined;
+        const scenarioAttempt = await getLatestSingleScenarioAttempt(user.id, domain);
+        if (!scenarioAttempt) {
+          response.status(404).json({ error: 'No round attempt found for this round type yet.' });
+          return;
+        }
+        response.json({ attempt: toStoredRoundAttemptFromSingleScenarioAttempt(scenarioAttempt) });
+        return;
+      }
+
+      if (roundType === 'coding-round') {
+        const domain = request.query.domain ? normalizeDomain(request.query.domain) : undefined;
+        const codingAttempt = await getLatestCodingAttempt(user.id, domain);
+        if (!codingAttempt) {
+          response.status(404).json({ error: 'No round attempt found for this round type yet.' });
+          return;
+        }
+        response.json({ attempt: toStoredRoundAttemptFromCodingAttempt(codingAttempt) });
+        return;
+      }
+
       const domain = request.query.domain ? normalizeDomain(request.query.domain) : undefined;
       const attempt = await getLatestRoundAttempt(user.id, roundType, domain);
       if (!attempt) {
@@ -4225,12 +6947,49 @@ export async function createApp(options: { listen?: boolean } = {}) {
   app.get('/api/round-attempts/latest-summary', requireUser, async (request, response) => {
     try {
       const user = (request as AuthedRequest).user!;
-      const domain = request.query.domain ? normalizeDomain(request.query.domain) : undefined;
-      const roundTypes = ['coding-round', 'scenario-round', 'mock-interview'];
-      const attempts = await Promise.all(roundTypes.map((roundType) => getLatestRoundAttempt(user.id, roundType, domain)));
+      const normalizedDomain = request.query.domain ? normalizeDomain(request.query.domain) : undefined;
+      const scenarioDomain = request.query.domain ? toScenarioDomain(String(request.query.domain)) || undefined : undefined;
+      const attempts = await Promise.all([
+        getLatestCodingAttempt(user.id, normalizedDomain).then((attempt) => (attempt ? toStoredRoundAttemptFromCodingAttempt(attempt) : null)),
+        getLatestSingleScenarioAttempt(user.id, scenarioDomain).then((attempt) => (attempt ? toStoredRoundAttemptFromSingleScenarioAttempt(attempt) : null)),
+        getLatestRoundAttempt(user.id, 'mock-interview', normalizedDomain),
+      ]);
       response.json({ attempts: attempts.filter(Boolean) });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load round attempt summary.' });
+    }
+  });
+
+  app.get('/api/round-attempts/by-id/:attemptId', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      if (!attemptId) {
+        response.status(400).json({ error: 'attemptId is required.' });
+        return;
+      }
+
+      const storedAttempt = await getRoundAttemptById(user.id, attemptId);
+      if (storedAttempt) {
+        response.json({ attempt: storedAttempt });
+        return;
+      }
+
+      const scenarioAttempt = await loadSingleScenarioAttempt(user.id, attemptId);
+      if (scenarioAttempt) {
+        response.json({ attempt: toScenarioResultAttemptPayload(scenarioAttempt) });
+        return;
+      }
+
+      const codingAttempt = await loadCodingAttempt(user.id, attemptId);
+      if (codingAttempt) {
+        response.json({ attempt: toCodingResultAttemptPayload(codingAttempt) });
+        return;
+      }
+
+      response.status(404).json({ error: 'Round attempt not found.' });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load this round attempt.' });
     }
   });
 
@@ -4992,7 +7751,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
       }
       response.sendFile(path.join(distPath, 'index.html'));
     });
-  } else {
+  } else if (EMBED_VITE_DEV_SERVER) {
     const requestedHmrPort = readPort('VITE_HMR_PORT', 24679);
     const hmrPort = process.env.DISABLE_HMR === 'true'
       ? requestedHmrPort
@@ -5025,15 +7784,47 @@ export async function createApp(options: { listen?: boolean } = {}) {
         next(error);
       }
     });
+  } else {
+    app.get('*', (request, response) => {
+      if (request.originalUrl.startsWith('/api')) {
+        response.status(404).json({ error: 'Not found.' });
+        return;
+      }
+      response.status(503).send('Frontend dev server is disabled for this process. Start the client with `npm run dev:client`.');
+    });
   }
+
+  app.use((error: unknown, request: express.Request, response: express.Response, next: express.NextFunction) => {
+    if (isRequestAbortedError(error) || request.aborted || response.destroyed) {
+      if (!response.headersSent && !response.writableEnded && !response.destroyed) {
+        response.status(499).json({ error: 'Request aborted.' });
+      }
+      return;
+    }
+
+    if (response.headersSent) {
+      next(error as Error);
+      return;
+    }
+
+    const status = Number((error as { status?: unknown; statusCode?: unknown })?.status ?? (error as { statusCode?: unknown })?.statusCode ?? 500);
+    const message = String((error as { message?: unknown })?.message ?? 'Internal server error.');
+    if (status >= 500) {
+      console.error('Unhandled request error', error);
+    }
+    response.status(Number.isFinite(status) ? status : 500).json({
+      error: status >= 500 ? 'Internal server error.' : message,
+    });
+  });
 
   if (listen) {
     const requestedPort = readPort('PORT', 3000);
-    const port = process.env.NODE_ENV === 'development'
+    const shouldAutoSelectPort = process.env.NODE_ENV === 'development' && EMBED_VITE_DEV_SERVER;
+    const port = shouldAutoSelectPort
       ? await findAvailablePort(requestedPort)
       : requestedPort;
 
-    if (process.env.NODE_ENV === 'development' && port !== requestedPort) {
+    if (shouldAutoSelectPort && port !== requestedPort) {
       console.warn(`Port ${requestedPort} is in use. Falling back to ${port}.`);
     }
 

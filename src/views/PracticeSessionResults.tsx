@@ -110,19 +110,19 @@ export default function PracticeSessionResults() {
           {error ? <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-body-md text-red-700">{error}</p> : null}
 
           <div className="mt-6 grid gap-4 lg:grid-cols-4">
-            <div className="rounded-2xl border border-blueprint-line bg-[#fbf9f9] p-4">
+            <div className="rounded-2xl border border-blueprint-line bg-blueprint-bg p-4">
               <p className="text-ui-label text-blueprint-muted">Score</p>
               <p className="mt-2 text-headline-md text-primary not-italic">{scoreFraction(session)}</p>
             </div>
-            <div className="rounded-2xl border border-blueprint-line bg-[#fbf9f9] p-4">
+            <div className="rounded-2xl border border-blueprint-line bg-blueprint-bg p-4">
               <p className="text-ui-label text-blueprint-muted">Percentage</p>
               <p className="mt-2 text-headline-md text-primary not-italic">{session.score ?? 0}%</p>
             </div>
-            <div className="rounded-2xl border border-blueprint-line bg-[#fbf9f9] p-4">
+            <div className="rounded-2xl border border-blueprint-line bg-blueprint-bg p-4">
               <p className="text-ui-label text-blueprint-muted">Performance</p>
               <p className="mt-2 text-headline-md text-primary not-italic">{session.performanceLabel ?? 'Needs Review'}</p>
             </div>
-            <div className="rounded-2xl border border-blueprint-line bg-[#fbf9f9] p-4">
+            <div className="rounded-2xl border border-blueprint-line bg-blueprint-bg p-4">
               <p className="text-ui-label text-blueprint-muted">Time Taken</p>
               <p className="mt-2 text-headline-md text-primary not-italic">{formatPracticeDuration(session.timeSpentSeconds)}</p>
             </div>
@@ -135,32 +135,22 @@ export default function PracticeSessionResults() {
               <p className="text-ui-label text-blueprint-muted">Tag Review</p>
               <h2 className="mt-1 text-headline-md text-primary not-italic">What to practice next</h2>
             </div>
+          </div>
+
+          <div className="mt-5">
+            <p className="text-ui-label text-blueprint-muted">Weak Tags</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {session.weakTags.length ? session.weakTags.map((tag) => (
+                <span key={tag} className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-ui-label text-amber-950 dark:border-amber-300/50 dark:bg-amber-500/20 dark:text-amber-100">{tag}</span>
+              )) : <span className="text-body-md text-blueprint-muted">No weak tags detected in this session.</span>}
+            </div>
             <button
               type="button"
               onClick={() => navigate(`/practice-tracks?search=${encodeURIComponent(session.weakTags[0] ?? session.topic)}`)}
-              className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white"
+              className="mt-5 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white"
             >
-              <RotateCcw size={16} /> Practice Weakest Tag Again
+              <RotateCcw size={16} /> Practice These Tags Again
             </button>
-          </div>
-
-          <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            <div>
-              <p className="text-ui-label text-blueprint-muted">Covered Tags</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {session.coveredTags.length ? session.coveredTags.map((tag) => (
-                  <span key={tag} className="rounded-full border border-blueprint-line bg-[#f5f3f3] px-3 py-1 text-ui-label text-primary">{tag}</span>
-                )) : <span className="text-body-md text-blueprint-muted">No tags recorded.</span>}
-              </div>
-            </div>
-            <div>
-              <p className="text-ui-label text-blueprint-muted">Weak Tags</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {session.weakTags.length ? session.weakTags.map((tag) => (
-                  <span key={tag} className="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-ui-label text-amber-950 dark:border-amber-300/50 dark:bg-amber-500/20 dark:text-amber-100">{tag}</span>
-                )) : <span className="text-body-md text-blueprint-muted">No weak tags detected in this session.</span>}
-              </div>
-            </div>
           </div>
         </section>
 
@@ -171,14 +161,14 @@ export default function PracticeSessionResults() {
           </div>
           <div className="mt-5 space-y-4">
             {session.results.map((result, index) => (
-              <details key={result.questionId} className="rounded-2xl border border-blueprint-line bg-[#fbf9f9] p-4" open={index === 0}>
+              <details key={result.questionId} className="rounded-2xl border border-blueprint-line bg-blueprint-bg p-4" open={index === 0}>
                 <summary className="cursor-pointer list-none">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
+                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                    <div className="min-w-0">
                       <p className="text-ui-label text-blueprint-muted">Question {index + 1}</p>
                       <p className="mt-1 text-body-md font-medium text-primary">{result.question}</p>
                     </div>
-                    <span className={`rounded-full px-3 py-1 text-ui-label ${result.isCorrect ? 'bg-emerald-600 text-white' : 'bg-amber-600 text-white'}`}>
+                    <span className={`justify-self-end rounded-full px-3 py-1 text-ui-label ${result.isCorrect ? 'bg-emerald-600 text-white' : 'bg-amber-600 text-white'}`}>
                       {result.isCorrect ? 'Correct' : 'Incorrect'}
                     </span>
                   </div>

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, Layers3, LogOut, Menu, MoonStar, Settings as SettingsIcon, SunMedium } from 'lucide-react';
 import { clearSessionState, getStoredUser } from '../lib/session';
+import { fetchSubscription, type BillingPlan } from '../lib/billing';
 import { View } from '../App';
 import { cn } from '../lib/utils';
 import DomainPickerDialog from './DomainPickerDialog';
@@ -24,6 +25,12 @@ function getInitials(name?: string, email?: string) {
   return 'U';
 }
 
+function planLabel(plan?: BillingPlan) {
+  if (plan === 'pro') return '₹99 monthly';
+  if (plan === 'team') return '₹299 yearly';
+  return 'Free tier';
+}
+
 export default function Header({ view, title, onViewChange, onMenuToggle }: HeaderProps) {
   const user = getStoredUser();
   const workspace = usePrepWorkspace();
@@ -33,6 +40,7 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
   const [domainDialogOpen, setDomainDialogOpen] = useState(false);
   const [domainError, setDomainError] = useState<string | null>(null);
   const [savingDomain, setSavingDomain] = useState(false);
+  const [currentPlan, setCurrentPlan] = useState<BillingPlan>('free');
   const dropdownRef = useRef<HTMLDivElement>(null);
   const isDarkMode = shouldUseDarkTheme(themePreference);
 
@@ -47,10 +55,21 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
     return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, []);
 
+  useEffect(() => {
+    if (!user?.loggedIn) return;
+    let ignore = false;
+    void fetchSubscription().then((result) => {
+      if (!ignore && result.ok) setCurrentPlan(result.data.plan);
+    }).catch(() => undefined);
+    return () => {
+      ignore = true;
+    };
+  }, [user?.loggedIn]);
+
   const handleLogout = async () => {
     await clearSessionState();
     setDropdownOpen(false);
-    window.location.assign('/');
+    window.location.replace('/');
   };
 
   const handleThemeToggle = async () => {
@@ -124,7 +143,10 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
             <div className="absolute right-0 top-12 min-w-[220px] rounded-2xl border border-blueprint-line bg-card py-2 shadow-[0_18px_40px_rgba(0,0,0,0.14)] dark:shadow-[0_18px_40px_rgba(0,0,0,0.32)]">
               {user?.name ? <p className="px-4 py-1 text-sm font-semibold text-primary">{user.name}</p> : null}
               {user?.email ? <p className="px-4 pb-1 text-xs text-blueprint-muted">{user.email}</p> : null}
-              <p className="border-b border-blueprint-line px-4 pb-2 text-xs font-medium text-primary">{roleLabel}</p>
+              <div className="border-b border-blueprint-line px-4 pb-2">
+                <p className="text-xs font-medium text-primary">{roleLabel}</p>
+                <p className="mt-1 text-xs text-blueprint-muted">Plan: {planLabel(currentPlan)}</p>
+              </div>
               <button type="button" onClick={() => { setDropdownOpen(false); setDomainDialogOpen(true); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-sm text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5 sm:hidden">
                 <Layers3 size={14} className="text-blueprint-muted" /> Change domain
               </button>

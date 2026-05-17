@@ -1,38 +1,43 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BrowserRouter, Navigate, Route, Routes, matchPath, useLocation, useNavigate, useParams } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import PageProgress from './components/PageProgress';
-import Dashboard from './views/Dashboard';
-import Builder from './views/Builder';
-import TerminalPage from './views/TerminalPage';
-import Editor from './views/Editor';
-import Registry from './views/Registry';
-import Analytics from './views/Analytics';
-import Workflows from './views/Workflows';
-import Pulse from './views/Pulse';
-import Landing from './views/Landing';
-import Auth from './views/Auth';
-import Pricing from './views/Pricing';
-import WorkflowDetail from './views/WorkflowDetail';
-import Settings from './views/Settings';
-import QuestionBank from './views/QuestionBank';
-import ResultsPage from './views/ResultsPage';
-import PracticeRound from './views/PracticeRound';
-import PracticeSessionResults from './views/PracticeSessionResults';
-import GithubRepos from './views/GithubRepos';
-import GithubProjectQuestions from './views/GithubProjectQuestions';
-import { Contact, Privacy, SecurityPage, Terms } from './views/Legal';
 import { fetchCurrentUser, getStoredUser, persistSessionUser, SessionUser } from './lib/session';
 import { getStoredPrepWorkspace, isOnboardingComplete, updatePrepWorkspace } from './lib/prep';
 import { applyThemePreference, normalizeThemePreference } from './lib/theme';
 import { fetchUserPreferences } from './lib/userPreferences';
 
+const Dashboard = lazy(() => import('./views/Dashboard'));
+const Builder = lazy(() => import('./views/Builder'));
+const TerminalPage = lazy(() => import('./views/TerminalPage'));
+const Editor = lazy(() => import('./views/Editor'));
+const Registry = lazy(() => import('./views/Registry'));
+const Workflows = lazy(() => import('./views/Workflows'));
+const Landing = lazy(() => import('./views/Landing'));
+const Auth = lazy(() => import('./views/Auth'));
+const Pricing = lazy(() => import('./views/Pricing'));
+const WorkflowDetail = lazy(() => import('./views/WorkflowDetail'));
+const Settings = lazy(() => import('./views/Settings'));
+const QuestionBank = lazy(() => import('./views/QuestionBank'));
+const ResultsPage = lazy(() => import('./views/ResultsPage'));
+const ScenarioResultsPage = lazy(() => import('./views/ScenarioResultsPage'));
+const CodingResultsPage = lazy(() => import('./views/CodingResultsPage'));
+const PracticeRound = lazy(() => import('./views/PracticeRound'));
+const PracticeSessionResults = lazy(() => import('./views/PracticeSessionResults'));
+const GithubRepos = lazy(() => import('./views/GithubRepos'));
+const GithubProjectQuestions = lazy(() => import('./views/GithubProjectQuestions'));
+const SavedSessions = lazy(() => import('./views/SavedSessions'));
+const Privacy = lazy(() => import('./views/Legal').then((module) => ({ default: module.Privacy })));
+const Terms = lazy(() => import('./views/Legal').then((module) => ({ default: module.Terms })));
+const SecurityPage = lazy(() => import('./views/Legal').then((module) => ({ default: module.SecurityPage })));
+const Contact = lazy(() => import('./views/Legal').then((module) => ({ default: module.Contact })));
+
 export type View =
   | 'landing' | 'dashboard' | 'builder' | 'terminal' | 'editor' | 'registry' | 'analytics'
   | 'workflows' | 'questionBank' | 'pulse' | 'docs' | 'settings' | 'auth' | 'signup'
-  | 'pricing' | 'privacy' | 'terms' | 'security' | 'contact';
+  | 'saved' | 'pricing' | 'privacy' | 'terms' | 'security' | 'contact';
 
 function ProtectedRoute({
   children,
@@ -80,6 +85,14 @@ function PricingGate() {
   );
 }
 
+function RouteFallback() {
+  return (
+    <div className="flex min-h-full items-center justify-center bg-background px-4 py-10">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-blueprint-line border-t-primary" aria-label="Loading page" />
+    </div>
+  );
+}
+
 function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -88,6 +101,7 @@ function AppShell() {
   const [user, setUser] = useState<SessionUser | null>(() => getStoredUser());
   const [sessionChecked, setSessionChecked] = useState(() => Boolean(getStoredUser()));
   const [onboardingComplete, setOnboardingComplete] = useState(() => isOnboardingComplete());
+  const [blockedPracticeId, setBlockedPracticeId] = useState<string | null>(null);
 
   useEffect(() => {
     let ignore = false;
@@ -114,7 +128,10 @@ function AppShell() {
     };
   }, []);
 
-  const isResultsPath = Boolean(matchPath('/results/:roundType', location.pathname)) || Boolean(matchPath('/results/practice/:sessionId', location.pathname));
+  const isResultsPath = Boolean(matchPath('/results/:roundType', location.pathname))
+    || Boolean(matchPath('/results/practice/:sessionId', location.pathname))
+    || Boolean(matchPath('/results/scenario/:attemptId', location.pathname))
+    || Boolean(matchPath('/results/coding/:attemptId', location.pathname));
   const isRoundPath = Boolean(matchPath('/round/*', location.pathname));
   const isLiveRoundPath = ['/scenario-round', '/coding-round', '/mock-interview'].includes(location.pathname);
   const isSettingsPath = location.pathname === '/settings' || location.pathname.startsWith('/settings/');
@@ -142,6 +159,7 @@ function AppShell() {
     '/question-bank': 'questionBank',
     '/results': 'pulse',
     '/pulse': 'pulse',
+    '/saved': 'saved',
     '/settings': 'settings',
     '/pricing': 'pricing',
     '/privacy': 'privacy',
@@ -165,6 +183,7 @@ function AppShell() {
     questionBank: 'Question Bank',
     pulse: 'Results',
     settings: 'Settings',
+    saved: 'Saved',
     pricing: 'Pricing',
     privacy: 'Privacy',
     terms: 'Terms',
@@ -186,6 +205,7 @@ function AppShell() {
       analytics: '/dashboard',
       questionBank: '/question-bank',
       pulse: '/results/practice-tracks',
+      saved: '/saved',
       settings: '/settings/profile',
       docs: '/',
       pricing: '/pricing',
@@ -234,6 +254,22 @@ function AppShell() {
 
   const hasCompletedOnboarding = onboardingComplete || isOnboardingComplete();
 
+  useEffect(() => {
+    if (!user?.loggedIn) return;
+    let activePracticeId: string | null = null;
+    try {
+      activePracticeId = window.localStorage.getItem('repoid-active-practice-session');
+    } catch {
+      activePracticeId = null;
+    }
+    if (!activePracticeId) return;
+    const expectedPath = `/round/practice/${activePracticeId}`;
+    if (location.pathname !== expectedPath) {
+      setBlockedPracticeId(activePracticeId);
+      navigate(expectedPath, { replace: true });
+    }
+  }, [location.pathname, navigate, user?.loggedIn]);
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">
       <PageProgress />
@@ -248,7 +284,7 @@ function AppShell() {
             {isMobileSidebarOpen ? (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 md:hidden">
                 <div className="absolute inset-0 bg-black/40" onClick={() => setIsMobileSidebarOpen(false)} />
-                <motion.div initial={{ x: -320 }} animate={{ x: 0 }} exit={{ x: -320 }} transition={{ duration: 0.24, ease: 'easeOut' }} className="absolute inset-y-0 left-0 w-[280px]">
+                <motion.div initial={{ x: -320 }} animate={{ x: 0 }} exit={{ x: -320 }} transition={{ duration: 0.24, ease: 'easeOut' }} className="absolute inset-y-0 left-0 w-70">
                   <Sidebar currentView={currentView} onViewChange={handleViewChange} isCollapsed={false} onToggle={() => setIsMobileSidebarOpen(false)} />
                 </motion.div>
               </motion.div>
@@ -260,11 +296,12 @@ function AppShell() {
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {showAppChrome ? <Header view={currentView} title={headerTitle} onViewChange={handleViewChange} onMenuToggle={() => setIsMobileSidebarOpen(true)} /> : null}
         <main className="flex-1 overflow-y-auto overflow-x-hidden">
-          <Routes>
-            <Route path="/" element={user?.loggedIn ? <Navigate to={hasCompletedOnboarding ? '/dashboard' : '/onboarding'} replace /> : <Landing onStart={() => navigate('/signup')} onViewDocs={() => navigate('/dashboard')} onViewChange={handleViewChange} />} />
-            <Route path="/signin" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="login" onAuthSuccess={() => { setUser(getStoredUser()); setOnboardingComplete(isOnboardingComplete()); navigate('/dashboard'); }} onBackToLanding={() => navigate('/')} />} />
+          <Suspense fallback={<RouteFallback />}>
+            <Routes>
+              <Route path="/" element={user?.loggedIn ? <Navigate to={hasCompletedOnboarding ? '/dashboard' : '/onboarding'} replace /> : <Landing onStart={() => navigate('/signup')} onViewDocs={() => navigate('/dashboard')} onViewChange={handleViewChange} />} />
+            <Route path="/signin" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="login" onAuthSuccess={() => { setUser(getStoredUser()); setOnboardingComplete(isOnboardingComplete()); navigate('/dashboard', { replace: true }); }} onBackToLanding={() => navigate('/', { replace: true })} />} />
             <Route path="/login" element={<Navigate to="/signin" replace />} />
-            <Route path="/signup" element={user?.loggedIn ? <Navigate to={hasCompletedOnboarding ? '/dashboard' : '/onboarding'} replace /> : <Auth initialMode="signup" onAuthSuccess={() => { setUser(getStoredUser()); setOnboardingComplete(false); navigate('/onboarding'); }} onBackToLanding={() => navigate('/')} />} />
+            <Route path="/signup" element={user?.loggedIn ? <Navigate to={hasCompletedOnboarding ? '/dashboard' : '/onboarding'} replace /> : <Auth initialMode="signup" onAuthSuccess={() => { setUser(getStoredUser()); setOnboardingComplete(false); navigate('/onboarding', { replace: true }); }} onBackToLanding={() => navigate('/', { replace: true })} />} />
 
             <Route path="/dashboard" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}>{hasCompletedOnboarding ? <Dashboard /> : <Navigate to="/onboarding" replace />}</ProtectedRoute>} />
             <Route path="/onboarding" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Builder onViewChange={handleViewChange} /></ProtectedRoute>} />
@@ -276,8 +313,8 @@ function AppShell() {
             <Route path="/scenario-round" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Registry /></ProtectedRoute>} />
             <Route path="/round/scenario/:attemptId?" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Registry /></ProtectedRoute>} />
             <Route path="/registry" element={<Navigate to="/scenario-round" replace />} />
-            <Route path="/coding-round" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Editor workflow={null} onSave={() => undefined} /></ProtectedRoute>} />
-            <Route path="/round/coding/:attemptId?" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Editor workflow={null} onSave={() => undefined} /></ProtectedRoute>} />
+            <Route path="/coding-round" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Editor /></ProtectedRoute>} />
+            <Route path="/round/coding/:attemptId?" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Editor /></ProtectedRoute>} />
             <Route path="/editor" element={<Navigate to="/coding-round" replace />} />
             <Route path="/mock-interview" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><TerminalPage onViewChange={handleViewChange} /></ProtectedRoute>} />
             <Route path="/round/mock/:interviewId?" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><TerminalPage onViewChange={handleViewChange} /></ProtectedRoute>} />
@@ -292,6 +329,9 @@ function AppShell() {
             <Route path="/results" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><ResultsPage /></ProtectedRoute>} />
             <Route path="/results/practice/:sessionId" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><PracticeSessionResults /></ProtectedRoute>} />
             <Route path="/results/:roundType" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><ResultsPage /></ProtectedRoute>} />
+            <Route path="/results/scenario/:attemptId" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><ScenarioResultsPage /></ProtectedRoute>} />
+            <Route path="/results/coding/:attemptId" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><CodingResultsPage /></ProtectedRoute>} />
+            <Route path="/saved" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><SavedSessions /></ProtectedRoute>} />
             <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
             <Route path="/settings/:tab" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><SettingsRoute onViewChange={handleViewChange} /></ProtectedRoute>} />
 
@@ -305,10 +345,34 @@ function AppShell() {
             <Route path="/legal/terms" element={<Navigate to="/terms" replace />} />
             <Route path="/legal/security" element={<Navigate to="/security" replace />} />
             <Route path="/w/:token" element={<Navigate to="/dashboard" replace />} />
-            <Route path="*" element={<Navigate to={user?.loggedIn ? '/dashboard' : '/'} replace />} />
-          </Routes>
+              <Route path="*" element={<Navigate to={user?.loggedIn ? '/dashboard' : '/'} replace />} />
+            </Routes>
+          </Suspense>
         </main>
       </div>
+
+      {blockedPracticeId ? (
+        <div className="fixed inset-0 z-120 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-red-200 bg-[#fff5f5] p-6 text-center shadow-2xl dark:border-red-500/50 dark:bg-[#2a1010]">
+            <p className="text-ui-label text-red-700 dark:text-red-200">Practice session active</p>
+            <h2 className="mt-2 text-headline-md text-red-950 not-italic dark:text-red-50">Complete your practice session first.</h2>
+            <p className="mt-3 text-body-md text-red-800 dark:text-red-100">
+              Navigation is locked while your practice round is running. Finish or submit the session before opening another page.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                const id = blockedPracticeId;
+                setBlockedPracticeId(null);
+                navigate(`/round/practice/${id}`, { replace: true });
+              }}
+              className="mt-6 rounded-full bg-red-700 px-5 py-2.5 text-ui-label text-white transition-colors hover:bg-red-800 dark:bg-red-200 dark:text-red-950 dark:hover:bg-red-100"
+            >
+              Go back to session
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

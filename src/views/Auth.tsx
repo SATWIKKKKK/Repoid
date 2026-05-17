@@ -40,7 +40,7 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
   }, [location.search]);
 
   const handleSocialClick = (provider: 'GitHub' | 'Google') => {
-    window.location.assign(`/api/auth/oauth/${provider.toLowerCase()}`);
+    window.location.replace(`/api/auth/oauth/${provider.toLowerCase()}`);
   };
 
   const handleSubmit = async (event: React.FormEvent) => {

@@ -8,11 +8,13 @@ export default function LazyCodeEditor({
   value,
   language,
   editable,
+  height = '360px',
   onChange,
 }: {
   value: string;
   language: EditorLanguage;
   editable: boolean;
+  height?: string;
   onChange: (value: string) => void;
 }) {
   const [extensions, setExtensions] = useState<Extension[]>([]);
@@ -42,7 +44,7 @@ export default function LazyCodeEditor({
   return (
     <CodeMirror
       value={value}
-      height="360px"
+      height={height}
       theme="dark"
       extensions={extensions}
       editable={editable}

@@ -1,9 +1,10 @@
-export type PracticeQuestionType = 'fill-blank' | 'mcq';
+export type PracticeQuestionType = 'fill-blank' | 'mcq' | 'code-reading';
 
 export type PracticeSessionQuestion = {
   id: string;
   type: PracticeQuestionType;
   question: string;
+  codeBlock: string | null;
   blank: string | null;
   options: string[] | null;
   correctAnswer: string;
@@ -22,6 +23,7 @@ export type PracticeSessionResult = {
   questionId: string;
   type: PracticeQuestionType;
   question: string;
+  codeBlock?: string | null;
   userAnswer: string;
   correctAnswer: string;
   explanation: string;
@@ -45,7 +47,6 @@ export type PracticeSession = {
   completedAt: string | null;
   savedAt: string | null;
   performanceLabel: string | null;
-  coveredTags: string[];
   weakTags: string[];
   results: PracticeSessionResult[];
 };
@@ -63,7 +64,7 @@ export type PracticeOverview = {
 
 type ApiResult<T> =
   | { ok: true; data: T }
-  | { ok: false; error: string; suggestedDomain?: string };
+  | { ok: false; error: string; suggestedDomain?: string; aiUnavailable?: boolean };
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   try {
@@ -75,13 +76,14 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<ApiResu
       },
       ...init,
     });
-    const data = (await response.json().catch(() => ({}))) as T & { error?: string; suggestedDomain?: string };
+    const data = (await response.json().catch(() => ({}))) as T & { error?: string; suggestedDomain?: string; aiUnavailable?: boolean };
     if (!response.ok) {
       return {
-        ok: false,
-        error: String(data.error ?? 'Request failed.'),
-        suggestedDomain: data.suggestedDomain ? String(data.suggestedDomain) : undefined,
-      };
+            ok: false,
+            error: String(data.error ?? 'Request failed.'),
+            suggestedDomain: data.suggestedDomain ? String(data.suggestedDomain) : undefined,
+            aiUnavailable: Boolean(data.aiUnavailable),
+          };
     }
     return { ok: true, data };
   } catch (error) {

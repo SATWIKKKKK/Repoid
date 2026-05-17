@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, Bookmark, BookmarkCheck, History, LoaderCircle, Search, Sparkles } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowRight, Bookmark, BookmarkCheck, History, LoaderCircle, Search } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { DOMAIN_LABELS, updatePrepWorkspace } from '../lib/prep';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
@@ -10,6 +10,11 @@ import {
   type PracticeSessionSummary,
 } from '../lib/practiceSessions';
 import { updateUserPreferences } from '../lib/userPreferences';
+
+const PENDING_PRACTICE_KEY = 'repoid-pending-practice-generation';
+const PRACTICE_GENERATION_ESTIMATED_TOTAL_SECONDS = 70;
+const PRACTICE_GENERATION_PHASE_ONE_SECONDS = 22;
+const PRACTICE_GENERATION_PHASE_TWO_SECONDS = 46;
 
 function formatSessionDate(value: string | null) {
   if (!value) return 'Not saved';
@@ -33,24 +38,79 @@ export default function Workflows() {
   const [loading, setLoading] = useState(false);
   const [submittingTopic, setSubmittingTopic] = useState<string | null>(null);
   const [suggestionOffset, setSuggestionOffset] = useState(0);
-  const [error, setError] = useState<{ message: string; suggestedDomain?: string } | null>(null);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
+  const [error, setError] = useState<{ message: string; suggestedDomain?: string; retryTopic?: string } | null>(null);
+  const [pendingRetry, setPendingRetry] = useState<{ domain: string; topic: string; level: string } | null>(null);
+  const generationStartedAt = useRef<number | null>(null);
+  const generationPhaseRef = useRef<HTMLParagraphElement | null>(null);
+  const elapsedRef = useRef<HTMLSpanElement | null>(null);
+  const remainingRef = useRef<HTMLSpanElement | null>(null);
 
   const displayedSuggestions = useMemo(() => {
     const suggestions = overview?.suggestedTopics ?? [];
     if (!suggestions.length) return [];
     const offset = suggestionOffset % suggestions.length;
-    return [...suggestions.slice(offset), ...suggestions.slice(0, offset)];
+    return [...suggestions.slice(offset), ...suggestions.slice(0, offset)].slice(0, 6);
   }, [overview?.suggestedTopics, suggestionOffset]);
+
+  const filteredSuggestions = useMemo(() => {
+    const query = topic.trim().toLowerCase();
+    if (!query) return [];
+    return (overview?.suggestedTopics ?? [])
+      .filter((suggestion) => suggestion.toLowerCase().includes(query))
+      .slice(0, 8);
+  }, [overview?.suggestedTopics, topic]);
 
   useEffect(() => {
     setTopic(initialSearch);
   }, [initialSearch]);
 
   useEffect(() => {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(PENDING_PRACTICE_KEY) || 'null') as { domain?: string; topic?: string; level?: string } | null;
+      if (parsed?.domain && parsed?.topic) setPendingRetry({ domain: parsed.domain, topic: parsed.topic, level: parsed.level || 'intermediate' });
+    } catch {
+      setPendingRetry(null);
+    }
+  }, []);
+
+  useEffect(() => {
     if (!displayedSuggestions.length) return undefined;
-    const timer = window.setInterval(() => setSuggestionOffset((current) => current + 3), 4500);
+    const timer = window.setInterval(() => setSuggestionOffset((current) => current + 6), 4500);
     return () => window.clearInterval(timer);
   }, [displayedSuggestions.length]);
+
+  useEffect(() => {
+    const count = overview?.suggestedTopics.length ?? 0;
+    if (count > 0) setSuggestionOffset(Math.floor(Math.random() * count));
+  }, [overview?.suggestedTopics]);
+
+  useEffect(() => {
+    setActiveSuggestionIndex(0);
+  }, [topic]);
+
+  useEffect(() => {
+    if (!submittingTopic) return undefined;
+    generationStartedAt.current = Date.now();
+    const writeCountdown = () => {
+      const elapsed = Math.max(0, Math.floor((Date.now() - (generationStartedAt.current ?? Date.now())) / 1000));
+      if (generationPhaseRef.current) {
+        generationPhaseRef.current.textContent = elapsed < PRACTICE_GENERATION_PHASE_ONE_SECONDS
+          ? 'Generating comprehension questions... (1/3)'
+          : elapsed < PRACTICE_GENERATION_PHASE_TWO_SECONDS
+            ? 'Generating code questions part 1... (2/3)'
+            : 'Generating code questions part 2... (3/3)';
+      }
+      if (elapsedRef.current) elapsedRef.current.textContent = `${elapsed}s`;
+      if (remainingRef.current) remainingRef.current.textContent = `${Math.max(0, PRACTICE_GENERATION_ESTIMATED_TOTAL_SECONDS - elapsed)}s`;
+    };
+    writeCountdown();
+    const timer = window.setInterval(writeCountdown, 1000);
+    return () => {
+      window.clearInterval(timer);
+      generationStartedAt.current = null;
+    };
+  }, [submittingTopic]);
 
   useEffect(() => {
     if (!domain) {
@@ -79,17 +139,37 @@ export default function Workflows() {
   const launchTopic = async (rawTopic?: string) => {
     const nextTopic = (rawTopic ?? topic).trim();
     if (!nextTopic || !domain) return;
-    setSubmittingTopic(nextTopic);
-    setError(null);
-    const result = await searchPracticeSession({
+    const pendingPayload = {
       domain,
       topic: nextTopic,
       level: workspace.selections.experienceLevel || 'intermediate',
-    });
+    };
+    generationStartedAt.current = Date.now();
+    setSubmittingTopic(nextTopic);
+    setError(null);
+    setPendingRetry(null);
+    try {
+      window.localStorage.setItem(PENDING_PRACTICE_KEY, JSON.stringify(pendingPayload));
+    } catch {
+      // Retry recovery is a local convenience.
+    }
+    const result = await searchPracticeSession(pendingPayload);
     setSubmittingTopic(null);
     if (result.ok === false) {
-      setError({ message: result.error, suggestedDomain: result.suggestedDomain });
+      setError({
+        message: result.aiUnavailable
+          ? 'Generation failed before a complete session could be created. Please try again.'
+          : result.error,
+        suggestedDomain: result.suggestedDomain,
+        retryTopic: result.aiUnavailable ? nextTopic : undefined,
+      });
+      if (result.aiUnavailable) setPendingRetry(pendingPayload);
       return;
+    }
+    try {
+      window.localStorage.removeItem(PENDING_PRACTICE_KEY);
+    } catch {
+      // Ignore local cleanup failures.
     }
     navigate(`/round/practice/${result.data.id}`);
   };
@@ -117,6 +197,17 @@ export default function Workflows() {
   return (
     <div className="min-h-full bg-background px-4 py-8 sm:px-6 lg:px-10 xl:px-14">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
+      {submittingTopic ? (
+        <div className="fixed inset-0 z-120 flex items-center justify-center bg-background text-primary">
+          <div className="rounded-2xl border border-blueprint-line bg-card px-6 py-5 text-center shadow-2xl">
+            <LoaderCircle size={24} className="mx-auto animate-spin text-primary" />
+            <p ref={generationPhaseRef} className="mt-4 text-body-lg text-primary">Generating comprehension questions... (1/3)</p>
+            <p className="mt-2 text-body-md text-blueprint-muted">Elapsed: <span ref={elapsedRef}>0s</span></p>
+            <p className="mt-1 text-body-md text-blueprint-muted">Estimated total: ~{PRACTICE_GENERATION_ESTIMATED_TOTAL_SECONDS}s</p>
+            <p className="mt-1 text-body-md text-blueprint-muted">Estimated time remaining: <span ref={remainingRef}>{PRACTICE_GENERATION_ESTIMATED_TOTAL_SECONDS}s</span></p>
+          </div>
+        </div>
+      ) : null}
       <main className="relative z-10 mx-auto w-full max-w-360 space-y-6">
         <section className="rounded-[28px] border border-blueprint-line bg-card p-6 shadow-[0_24px_48px_rgba(0,0,0,0.06)] sm:p-8">
           <div className="flex flex-col gap-5 border-b border-blueprint-line pb-6 lg:flex-row lg:items-end lg:justify-between">
@@ -124,27 +215,65 @@ export default function Workflows() {
               <p className="text-ui-label text-blueprint-muted">Practice Tracks</p>
               <h1 className="mt-2 font-serif text-[clamp(2.2rem,4vw,4rem)] leading-tight text-primary">{domainLabel}</h1>
               <p className="mt-3 max-w-3xl text-body-lg text-blueprint-muted">
-                Search any topic, validate it against your selected domain, and generate a fresh 30-question session on demand.
+                Search any topic, validate it against your selected domain, and generate a fresh 40-question session on demand.
               </p>
             </div>
           </div>
 
           <form
-            className="mt-6 rounded-[24px] border border-blueprint-line bg-[#fbf9f9] p-4 sm:p-5"
+            className="mt-6 rounded-[24px] border border-blueprint-line bg-blueprint-bg p-4 sm:p-5"
             onSubmit={(event) => {
               event.preventDefault();
               void launchTopic();
             }}
           >
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-              <div className="flex flex-1 items-center gap-3 rounded-2xl border border-blueprint-line bg-white px-4 py-3">
-                <Search size={18} className="text-blueprint-muted" />
-                <input
-                  value={topic}
-                  onChange={(event) => setTopic(event.target.value)}
-                  placeholder={`Search a ${domainLabel.toLowerCase()} topic like "${overview?.suggestedTopics?.[0] ?? 'React Hooks'}"`}
-                  className="w-full border-0 bg-transparent text-body-lg text-primary outline-none"
-                />
+              <div className="relative flex-1">
+                <div className="flex items-center gap-3 rounded-2xl border border-blueprint-line bg-white px-4 py-3">
+                  <Search size={18} className="text-blueprint-muted" />
+                  <input
+                    value={topic}
+                    onChange={(event) => setTopic(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (!filteredSuggestions.length) return;
+                      if (event.key === 'ArrowDown') {
+                        event.preventDefault();
+                        setActiveSuggestionIndex((current) => Math.min(filteredSuggestions.length - 1, current + 1));
+                      }
+                      if (event.key === 'ArrowUp') {
+                        event.preventDefault();
+                        setActiveSuggestionIndex((current) => Math.max(0, current - 1));
+                      }
+                      if (event.key === 'Enter' && filteredSuggestions[activeSuggestionIndex]) {
+                        event.preventDefault();
+                        void launchTopic(filteredSuggestions[activeSuggestionIndex]);
+                      }
+                    }}
+                    placeholder={`Search a ${domainLabel.toLowerCase()} topic like "${overview?.suggestedTopics?.[0] ?? 'React Hooks'}"`}
+                    className="w-full border-0 bg-transparent text-body-lg text-primary outline-none"
+                    role="combobox"
+                    aria-expanded={filteredSuggestions.length > 0}
+                    aria-controls="practice-topic-suggestions"
+                  />
+                </div>
+                {filteredSuggestions.length ? (
+                  <div id="practice-topic-suggestions" className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 overflow-hidden rounded-2xl border border-blueprint-line bg-white shadow-xl">
+                    {filteredSuggestions.map((suggestion, index) => (
+                      <button
+                        key={suggestion}
+                        type="button"
+                        onMouseEnter={() => setActiveSuggestionIndex(index)}
+                        onClick={() => {
+                          setTopic(suggestion);
+                          void launchTopic(suggestion);
+                        }}
+                        className={`block w-full px-4 py-3 text-left text-body-md ${index === activeSuggestionIndex ? 'bg-[#f5f3f3] text-primary' : 'text-primary'}`}
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
               <button
                 type="submit"
@@ -179,16 +308,46 @@ export default function Workflows() {
                   >
                     Search something else
                   </button>
+                  {error.retryTopic ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTopic(error.retryTopic ?? '');
+                        setError(null);
+                        void launchTopic(error.retryTopic);
+                      }}
+                      className="rounded-full bg-red-700 px-4 py-2 text-ui-label text-white"
+                    >
+                      Retry generation
+                    </button>
+                  ) : null}
                 </div>
+              </div>
+            ) : null}
+
+            {pendingRetry ? (
+              <div className="mt-4 rounded-2xl border border-blueprint-line bg-white px-4 py-4 text-body-md text-primary">
+                <p className="font-medium">A question load was interrupted.</p>
+                <p className="mt-1 text-blueprint-muted">Retry {pendingRetry.topic} to generate the session again.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTopic(pendingRetry.topic);
+                    void launchTopic(pendingRetry.topic);
+                  }}
+                  className="mt-3 rounded-full bg-primary px-4 py-2 text-ui-label text-white"
+                >
+                  Retry Topic
+                </button>
               </div>
             ) : null}
           </form>
 
           <div className="mt-6">
             <div className="flex items-center gap-2 text-ui-label text-blueprint-muted">
-              <Sparkles size={15} /> Suggested topics for {domainLabel}
+              Featured topics for {domainLabel}
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-3 flex gap-2 overflow-x-auto pb-2 lg:grid lg:grid-cols-6 lg:overflow-visible lg:pb-0">
               {displayedSuggestions.map((suggestion) => (
                 <button
                   key={suggestion}
@@ -197,7 +356,7 @@ export default function Workflows() {
                     setTopic(suggestion);
                     void launchTopic(suggestion);
                   }}
-                  className="rounded-full border border-blueprint-line bg-white px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]"
+                  className="shrink-0 rounded-full border border-blueprint-line bg-white px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]"
                 >
                   {suggestion}
                 </button>
@@ -220,7 +379,7 @@ export default function Workflows() {
           {overview?.history?.length ? (
             <div className="mt-5 grid gap-4 lg:grid-cols-2">
               {overview.history.map((session) => (
-                <article key={session.id} className="rounded-2xl border border-blueprint-line bg-[#fbf9f9] p-4">
+                <article key={session.id} className="rounded-2xl border border-blueprint-line bg-blueprint-bg p-4">
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <p className="text-ui-label text-blueprint-muted">{formatSessionDate(session.generatedAt)}</p>
@@ -276,7 +435,7 @@ export default function Workflows() {
               ))}
             </div>
           ) : (
-            <div className="mt-5 rounded-2xl border border-dashed border-blueprint-line bg-[#fbf9f9] p-5">
+            <div className="mt-5 rounded-2xl border border-dashed border-blueprint-line bg-blueprint-bg p-5">
               <p className="text-body-md font-medium text-primary">No topic sessions yet.</p>
               <p className="mt-2 text-body-md text-blueprint-muted">Search a topic above and your generated sessions will appear here with score, save toggle, and retry controls.</p>
             </div>

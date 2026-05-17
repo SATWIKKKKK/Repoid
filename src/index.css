@@ -70,8 +70,8 @@
 
   .blueprint-grid {
     background-image: 
-      linear-gradient(to right, rgba(26, 26, 26, 0.075) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(26, 26, 26, 0.075) 1px, transparent 1px);
+      linear-gradient(to right, rgba(26, 26, 26, 0.12) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(26, 26, 26, 0.12) 1px, transparent 1px);
     background-size: 48px 48px;
     background-position: center top;
   }
@@ -79,8 +79,8 @@
   .bg-technical-grid {
     background-size: 64px 64px;
     background-image: 
-        linear-gradient(to right, rgba(26, 26, 26, 0.075) 1px, transparent 1px),
-        linear-gradient(to bottom, rgba(26, 26, 26, 0.075) 1px, transparent 1px);
+        linear-gradient(to right, rgba(26, 26, 26, 0.12) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(26, 26, 26, 0.12) 1px, transparent 1px);
   }
 
   /* Custom Scrollbar */
@@ -369,16 +369,53 @@ nav {
   background-color: #101010 !important;
 }
 
-.dark .bg-primary {
+.dark .bg-\[\#fbfafa\],
+.dark .bg-\[\#fbfafa\]\/95 {
   background-color: #101010 !important;
 }
 
+.dark .bg-amber-50 {
+  background-color: #2b1d08 !important;
+}
+
+.dark .text-amber-950,
+.dark .text-amber-900,
+.dark .text-amber-800,
+.dark .text-amber-700 {
+  color: #ffe4b5 !important;
+}
+
+.dark .bg-emerald-50 {
+  background-color: #08261b !important;
+}
+
+.dark .text-emerald-900,
+.dark .text-emerald-700 {
+  color: #b8f7d7 !important;
+}
+
+.dark .bg-red-50 {
+  background-color: #2a1010 !important;
+}
+
+.dark .text-red-700 {
+  color: #fecaca !important;
+}
+
+.dark .bg-\[\#1a1a1a\] {
+  background-color: #f3ecec !important;
+}
+
+.dark .bg-primary {
+  background-color: #f3ecec !important;
+}
+
 .dark .text-white {
-  color: #f4f4f4 !important;
+  color: #111111 !important;
 }
 
 .dark .border-primary {
-  border-color: #f4f4f4 !important;
+  border-color: #f3ecec !important;
 }
 
 .dark .hover\:bg-\[\#f5f3f3\]:hover,
@@ -387,10 +424,14 @@ nav {
   background-color: #181818 !important;
 }
 
+.dark .hover\:bg-\[\#303031\]:hover {
+  background-color: #e9dddd !important;
+}
+
 .dark .blueprint-grid {
   background-image:
-    linear-gradient(to right, rgba(255, 255, 255, 0.055) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+    linear-gradient(to right, rgba(255, 255, 255, 0.095) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.095) 1px, transparent 1px);
 }
 
 .dark .surface-card,

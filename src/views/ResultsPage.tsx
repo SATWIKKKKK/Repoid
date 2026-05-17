@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { DOMAIN_LABELS } from '../lib/prep';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
-import { fetchLatestRoundAttempt, fetchRoundFocusSummary, type RoundAttemptDetail, type StoredRoundAttempt } from '../lib/questionBankApi';
+import { fetchLatestRoundAttempt, fetchRoundAttemptById, fetchRoundFocusSummary, type RoundAttemptDetail, type StoredRoundAttempt } from '../lib/questionBankApi';
+import { getRoundEntryPath } from '../lib/roundNavigation';
 import { getRoundResult } from '../lib/roundResults';
 
 const ROUND_LABELS: Record<string, string> = {
@@ -15,9 +16,11 @@ const ROUND_LABELS: Record<string, string> = {
 
 export default function ResultsPage() {
   const navigate = useNavigate();
-  const params = useParams<{ roundType?: string }>();
+  const params = useParams<{ roundType?: string; attemptId?: string }>();
   const workspace = usePrepWorkspace();
-  const roundType = params.roundType ?? 'practice-tracks';
+  const scenarioAttemptId = params.attemptId?.trim() ?? '';
+  const roundType = scenarioAttemptId ? 'scenario-round' : (params.roundType ?? 'practice-tracks');
+  const nextSessionPath = getRoundEntryPath(roundType);
   const [attempt, setAttempt] = useState<StoredRoundAttempt | null>(null);
   const [loadingAttempt, setLoadingAttempt] = useState(true);
   const [focusEvents, setFocusEvents] = useState<Array<{ type: string; total: number }>>([]);
@@ -58,15 +61,19 @@ export default function ResultsPage() {
   useEffect(() => {
     let ignore = false;
     setLoadingAttempt(true);
-    void fetchLatestRoundAttempt(roundType).then((result) => {
+    const request = scenarioAttemptId
+      ? fetchRoundAttemptById(scenarioAttemptId)
+      : fetchLatestRoundAttempt(roundType);
+    void request.then((result) => {
       if (ignore) return;
       if (result.ok) setAttempt(result.data);
+      else setAttempt(null);
       setLoadingAttempt(false);
     });
     return () => {
       ignore = true;
     };
-  }, [roundType]);
+  }, [roundType, scenarioAttemptId]);
 
   useEffect(() => {
     if (!attempt?.id) return;
@@ -88,10 +95,10 @@ export default function ResultsPage() {
             <p className="text-ui-label text-blueprint-muted">{domainLabel} analysis</p>
             <h1 className="mt-2 text-display-xl text-primary">{title}</h1>
             <p className="mt-3 max-w-3xl text-body-lg text-blueprint-muted">
-              {attempt?.summary || storedResult?.roundName ? 'Here is the latest saved round-level breakdown.' : 'No saved result exists for this round yet. Finish a round to generate this page.'}
+              {attempt?.summary || storedResult?.roundName ? scenarioAttemptId ? 'Here is the saved breakdown for this scenario attempt.' : 'Here is the latest saved round-level breakdown.' : 'No saved result exists for this round yet. Finish a round to generate this page.'}
             </p>
           </div>
-          <button type="button" onClick={() => navigate('/practice-tracks')} className="rounded-full bg-primary px-6 py-3 text-ui-label text-white transition-colors hover:bg-[#303031]">
+          <button type="button" onClick={() => navigate(nextSessionPath)} className="rounded-full bg-primary px-6 py-3 text-ui-label text-white transition-colors hover:bg-[#303031]">
             Start Next Session
           </button>
         </header>

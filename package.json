@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "cross-env NODE_ENV=development tsx server.ts",
+    "dev:server": "cross-env NODE_ENV=development EMBED_VITE_DEV_SERVER=false PORT=3110 tsx server.ts",
+    "dev:client": "cross-env VITE_API_PROXY_TARGET=http://127.0.0.1:3110 vite --port 3109",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
@@ -34,6 +36,7 @@
     "dotenv": "^17.4.2",
     "express": "^4.22.1",
     "framer-motion": "^12.38.0",
+    "jsonrepair": "^3.14.0",
     "lucide-react": "^0.546.0",
     "mini-svg-data-uri": "^1.4.4",
     "motion": "^12.38.0",

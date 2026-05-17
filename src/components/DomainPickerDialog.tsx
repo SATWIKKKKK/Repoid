@@ -65,7 +65,7 @@ export default function DomainPickerDialog({
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-body-md font-semibold">{option.label}</p>
-                    <p className={cn('mt-2 text-sm leading-6', selected ? 'text-white/78' : 'text-blueprint-muted')}>
+                    <p className={cn('mt-2 text-sm leading-6', selected ? 'text-gray-300' : 'text-gray-700 dark:text-gray-300')}>
                       {option.description}
                     </p>
                   </div>

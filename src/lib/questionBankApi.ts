@@ -185,6 +185,12 @@ export async function fetchLatestRoundAttempt(roundType: string, domain?: string
   return { ok: true, data: result.data.attempt };
 }
 
+export async function fetchRoundAttemptById(attemptId: string) {
+  const result = await requestJson<{ attempt: StoredRoundAttempt }>(`/api/round-attempts/by-id/${encodeURIComponent(attemptId)}`);
+  if ('error' in result) return { ok: false, error: result.error };
+  return { ok: true, data: result.data.attempt };
+}
+
 export async function fetchLatestRoundAttemptSummary(domain?: string) {
   const params = new URLSearchParams();
   if (domain) params.set('domain', domain);
