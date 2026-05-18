@@ -157,6 +157,15 @@ export default function SavedSessions() {
                     >
                       <RotateCcw size={14} /> Open Round
                     </button>
+                    {session.roundType === 'coding' && completed ? (
+                      <button
+                        type="button"
+                        onClick={() => navigate(`${session.resultsPath}?showNotes=1`)}
+                        className="rounded-full border border-blueprint-line bg-card px-5 py-2.5 text-ui-label text-primary"
+                      >
+                        See Notes
+                      </button>
+                    ) : null}
                   </div>
                 </article>
               );

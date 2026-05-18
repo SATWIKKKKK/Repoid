@@ -1,6 +1,6 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { EditorView } from '@codemirror/view';
-import { Bookmark, BookmarkCheck, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, NotebookPen, Play, Shuffle, X } from 'lucide-react';
+import { Bookmark, BookmarkCheck, ChevronDown, ChevronLeft, ChevronRight, History, LoaderCircle, NotebookPen, Play, Shuffle, X } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import RoundShell from '../components/RoundShell';
 import RoundDomainGate from '../components/RoundDomainGate';
@@ -125,6 +125,26 @@ function getPrimaryCodingLanguage(domain: string): CodingLanguage {
   return getDomainLanguageOptions(domain)[0]?.value ?? 'typescript';
 }
 
+function formatAttemptDate(value: string | null | undefined) {
+  if (!value) return 'Not saved';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Saved recently';
+  return parsed.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function codingScoreLabel(attempt: CodingAttempt) {
+  if (attempt.score === null) {
+    if (attempt.status === 'submitted') return 'Submitted';
+    return 'In progress';
+  }
+  return `${attempt.score}/10`;
+}
+
+function codingStatusLabel(attempt: CodingAttempt) {
+  if (attempt.status === 'submitted') return 'completed';
+  return 'in-progress';
+}
+
 export default function CodingRoundPage() {
   const navigate = useNavigate();
   const params = useParams<{ attemptId?: string }>();
@@ -142,22 +162,28 @@ export default function CodingRoundPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState<CodingAttempt | null>(null);
+  const [activeAttemptId, setActiveAttemptId] = useState<string | null>(null);
+  const [historyItems, setHistoryItems] = useState<CodingAttempt[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historySaveId, setHistorySaveId] = useState<string | null>(null);
   const [selectedLanguage, setSelectedLanguage] = useState<CodingLanguage>(getPrimaryCodingLanguage(domain));
   const [code, setCode] = useState('');
-  const [notes, setNotes] = useState('');
-  const [scratchNotes, setScratchNotes] = useState('');
-  const [scratchOpen, setScratchOpen] = useState(false);
+  const [savedNotes, setSavedNotes] = useState('');
+  const [notesDraft, setNotesDraft] = useState('');
+  const [notesSurfaceOpen, setNotesSurfaceOpen] = useState(false);
+  const [savingNotes, setSavingNotes] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [savingAttempt, setSavingAttempt] = useState(false);
   const [starterLoading, setStarterLoading] = useState(false);
   const [starterError, setStarterError] = useState<string | null>(null);
-  const [notesOpen, setNotesOpen] = useState(true);
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [runningCode, setRunningCode] = useState(false);
   const [runStatus, setRunStatus] = useState<string | null>(null);
   const [runOutput, setRunOutput] = useState<RunPanelOutput>({ stdout: [], stderr: [], notices: [] });
   const [clockNow, setClockNow] = useState(Date.now());
   const [expiring, setExpiring] = useState(false);
+  const [launchFlowStarted, setLaunchFlowStarted] = useState(Boolean(attemptId));
+  const [navigationState, setNavigationState] = useState<'previous' | 'next' | null>(null);
 
   const generationStartedAtRef = useRef<number | null>(null);
   const generationPhaseRef = useRef<HTMLParagraphElement | null>(null);
@@ -166,6 +192,7 @@ export default function CodingRoundPage() {
   const autoSubmitHandledRef = useRef(false);
   const codeRef = useRef('');
   const editorViewRef = useRef<EditorView | null>(null);
+  const notesTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const elapsedSeconds = attempt
     ? Math.max(0, Math.floor((clockNow - new Date(attempt.startedAt).getTime()) / 1000))
@@ -177,25 +204,88 @@ export default function CodingRoundPage() {
     if (!selectedDifficulty || generating) return;
     setGenerating(true);
     setError(null);
-    const result = await generateCodingAttempt({ domain, difficulty: selectedDifficulty });
+    const result = await generateCodingAttempt({ domain, difficulty: selectedDifficulty, forceNew: Boolean(activeAttemptId) });
     setGenerating(false);
     if (result.ok === false) {
       setError(result.error);
       return;
     }
     navigate(`/round/coding/${encodeURIComponent(result.data.id)}`, { replace: true });
-  }, [domain, generating, navigate, selectedDifficulty]);
+  }, [activeAttemptId, domain, generating, navigate, selectedDifficulty]);
 
   const handleSaveAttempt = useCallback(async () => {
     if (!attempt || savingAttempt) return;
     setSavingAttempt(true);
-    const result = await saveCodingAttempt(attempt.id, { saved: !savedAt, scratchNotes });
+    const result = await saveCodingAttempt(attempt.id, { saved: true });
     setSavingAttempt(false);
     if (result.ok) {
       setSavedAt(result.data.savedAt);
-      setScratchNotes(result.data.scratchNotes ?? scratchNotes);
+      setHistoryItems((current) => current.map((item) => item.id === attempt.id ? { ...item, savedAt: result.data.savedAt } : item));
+      return;
     }
-  }, [attempt, savedAt, savingAttempt, scratchNotes]);
+    setError(result.error);
+  }, [attempt, savingAttempt]);
+
+  const openNotesSurface = useCallback(() => {
+    setNotesDraft(savedNotes);
+    setNotesSurfaceOpen(true);
+    window.requestAnimationFrame(() => {
+      notesTextareaRef.current?.focus();
+      notesTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }, [savedNotes]);
+
+  const closeNotesSurface = useCallback(() => {
+    setNotesDraft(savedNotes);
+    setNotesSurfaceOpen(false);
+  }, [savedNotes]);
+
+  const handleSaveNotes = useCallback(async () => {
+    if (!attempt || savingNotes) return;
+    const nextNotes = notesDraft;
+    setSavingNotes(true);
+    saveLocalDraft('coding-round', attempt.id, {
+      code: codeRef.current,
+      notes: nextNotes,
+      language: selectedLanguage,
+      savedAt: new Date().toISOString(),
+    });
+    const result = await saveServerDraft('coding-round', attempt.id, {
+      code: codeRef.current,
+      notes: nextNotes,
+      language: selectedLanguage,
+      savedAt: new Date().toISOString(),
+    });
+    setSavingNotes(false);
+    setSavedNotes(nextNotes);
+    setNotesSurfaceOpen(false);
+    if (result.ok === false) {
+      setError(result.error);
+    }
+  }, [attempt, notesDraft, savingNotes, selectedLanguage]);
+
+  const handleHistorySave = useCallback(async (historyAttempt: CodingAttempt) => {
+    if (historySaveId === historyAttempt.id) return;
+    setHistorySaveId(historyAttempt.id);
+    const result = await saveCodingAttempt(historyAttempt.id, { saved: true });
+    setHistorySaveId(null);
+    if (result.ok === false) {
+      setError(result.error);
+      return;
+    }
+    setHistoryItems((current) => current.map((item) => item.id === historyAttempt.id ? { ...item, savedAt: result.data.savedAt } : item));
+    if (attempt?.id === historyAttempt.id) {
+      setSavedAt(result.data.savedAt);
+    }
+  }, [attempt?.id, historySaveId]);
+
+  const openHistoryAttempt = useCallback((historyAttempt: CodingAttempt) => {
+    if (historyAttempt.status === 'submitted') {
+      navigate(`/results/coding/${encodeURIComponent(historyAttempt.id)}`);
+      return;
+    }
+    navigate(`/round/coding/${encodeURIComponent(historyAttempt.id)}`);
+  }, [navigate]);
 
   const replaceEditorCode = useCallback((nextCode: string) => {
     const editor = editorViewRef.current;
@@ -221,23 +311,39 @@ export default function CodingRoundPage() {
       return;
     }
     replaceEditorCode(result.data);
-    saveLocalDraft('coding-round', attempt.id, { code: result.data, notes, language: nextLanguage, savedAt: new Date().toISOString() });
-  }, [attempt, notes, replaceEditorCode, selectedLanguage, starterLoading]);
+    saveLocalDraft('coding-round', attempt.id, { code: result.data, notes: savedNotes, language: nextLanguage, savedAt: new Date().toISOString() });
+  }, [attempt, replaceEditorCode, savedNotes, selectedLanguage, starterLoading]);
 
   const handlePreviousProblem = useCallback(async () => {
     if (!attempt) return;
+    setNavigationState('previous');
     const history = await fetchCodingHistory(attempt.problem.domain, attempt.problem.difficulty);
-    if (!history.ok) return;
+    if (!history.ok) {
+      setNavigationState(null);
+      setError(history.error);
+      return;
+    }
     const previous = history.data.find((item) => item.id !== attempt.id);
-    if (previous) navigate(`/round/coding/${encodeURIComponent(previous.id)}`);
+    if (previous) {
+      navigate(`/round/coding/${encodeURIComponent(previous.id)}`);
+      return;
+    }
+    setNavigationState(null);
+    setError('No previous coding problem was found for this difficulty yet.');
   }, [attempt, navigate]);
 
   const handleNewProblem = useCallback(async () => {
     if (!attempt || generating) return;
+    setNavigationState('next');
     setGenerating(true);
     const result = await generateCodingAttempt({ domain: attempt.problem.domain, difficulty: attempt.problem.difficulty, forceNew: true });
     setGenerating(false);
-    if (result.ok) navigate(`/round/coding/${encodeURIComponent(result.data.id)}`, { replace: true });
+    if (result.ok) {
+      navigate(`/round/coding/${encodeURIComponent(result.data.id)}`, { replace: true });
+      return;
+    }
+    setNavigationState(null);
+    setError(result.error);
   }, [attempt, generating, navigate]);
 
   const finalizeRound = useCallback(async (options: { autoSubmitted?: boolean; navigateOnComplete?: boolean } = {}) => {
@@ -246,7 +352,7 @@ export default function CodingRoundPage() {
     setSubmitting(true);
     const result = await submitCodingAttempt(attempt.id, {
       code: codeRef.current || code,
-      notes,
+      notes: savedNotes,
       timeSpentSeconds: Math.min(elapsedSeconds, attempt.durationMinutes * 60),
       difficulty: attempt.problem.difficulty,
       domain: attempt.problem.domain,
@@ -271,7 +377,7 @@ export default function CodingRoundPage() {
       navigate(`/results/coding/${encodeURIComponent(result.data.id)}`, options.autoSubmitted ? { replace: true } : undefined);
     }
     return result.data;
-  }, [attempt, code, elapsedSeconds, navigate, notes, selectedLanguage, submitting]);
+  }, [attempt, code, elapsedSeconds, navigate, savedNotes, selectedLanguage, submitting]);
 
   const handleRunCode = useCallback(async () => {
     if (!attempt || runningCode) return;
@@ -319,21 +425,42 @@ export default function CodingRoundPage() {
         return;
       }
       setSuggestionMessage(result.data.suggestionMessage);
-      if (result.data.activeAttemptId) {
-        navigate(`/round/coding/${encodeURIComponent(result.data.activeAttemptId)}`, { replace: true });
-      }
+      setActiveAttemptId(result.data.activeAttemptId ?? null);
     });
     return () => {
       ignore = true;
     };
-  }, [attemptId, domain, navigate]);
+  }, [attemptId, domain]);
+
+  useEffect(() => {
+    if (attemptId || !domain) return undefined;
+    let ignore = false;
+    setHistoryLoading(true);
+    void fetchCodingHistory(domain).then((result) => {
+      if (ignore) return;
+      setHistoryLoading(false);
+      if (result.ok === false) {
+        setError(result.error);
+        setHistoryItems([]);
+        return;
+      }
+      setHistoryItems(result.data);
+    });
+    return () => {
+      ignore = true;
+    };
+  }, [attemptId, domain]);
 
   useEffect(() => {
     if (!attemptId) {
       setAttempt(null);
+      setActiveAttemptId(null);
       setSelectedLanguage(getPrimaryCodingLanguage(domain));
       setCode('');
-      setNotes('');
+      setSavedNotes('');
+      setNotesDraft('');
+      setNotesSurfaceOpen(false);
+      setNavigationState(null);
       return undefined;
     }
     let ignore = false;
@@ -375,10 +502,12 @@ export default function CodingRoundPage() {
       }
       setCode(restoredCode);
       codeRef.current = restoredCode;
-      setNotes(restoredNotes);
+      setSavedNotes(restoredNotes);
+      setNotesDraft(restoredNotes);
+      setNotesSurfaceOpen(false);
       setSelectedLanguage(restoredLanguage);
-      setScratchNotes(result.data.scratchNotes ?? '');
       setSavedAt(result.data.savedAt ?? null);
+      setNavigationState(null);
     });
     return () => {
       ignore = true;
@@ -390,9 +519,13 @@ export default function CodingRoundPage() {
   }, [attemptId, domain]);
 
   useEffect(() => {
+    if (attemptId) setLaunchFlowStarted(true);
+  }, [attemptId]);
+
+  useEffect(() => {
     if (!attempt) return undefined;
     const save = () => {
-      const payload = { code: codeRef.current, notes, language: selectedLanguage, savedAt: new Date().toISOString() };
+      const payload = { code: codeRef.current, notes: savedNotes, language: selectedLanguage, savedAt: new Date().toISOString() };
       saveLocalDraft('coding-round', attempt.id, payload);
       void saveServerDraft('coding-round', attempt.id, payload);
     };
@@ -405,18 +538,7 @@ export default function CodingRoundPage() {
       window.clearInterval(interval);
       document.removeEventListener('visibilitychange', onHidden);
     };
-  }, [attempt, notes, selectedLanguage]);
-
-  useEffect(() => {
-    if (!attempt) return undefined;
-    const save = () => {
-      void saveCodingAttempt(attempt.id, { saved: Boolean(savedAt), scratchNotes }).then((result) => {
-        if (result.ok) setSavedAt(result.data.savedAt);
-      });
-    };
-    const interval = window.setInterval(save, 30_000);
-    return () => window.clearInterval(interval);
-  }, [attempt, savedAt, scratchNotes]);
+  }, [attempt, savedNotes, selectedLanguage]);
 
   useEffect(() => {
     if (!attempt) return undefined;
@@ -476,49 +598,144 @@ export default function CodingRoundPage() {
             </div>
           </div>
         ) : null}
-        {!domainConfirmed ? (
+          {launchFlowStarted && !domainConfirmed ? (
           <RoundDomainGate roundTitle="CODING ROUND" domain={domain} subject="coding problems" onConfirmed={() => setDomainConfirmed(true)} />
         ) : null}
-        {domainConfirmed ? <div className="fixed inset-0 z-70 flex items-center justify-center px-4">
-          <div className="relative w-full max-w-4xl rounded-[32px] border border-[#2d2d31] bg-[#111113] p-8 text-[#f6efe3] shadow-[0_32px_90px_rgba(0,0,0,0.45)]">
-            <p className="text-ui-label tracking-[0.22em] text-[#9f9a92]">CODING ROUND</p>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <h1 className="text-headline-lg text-[#fbf7f0]">Pick your difficulty before the timer starts.</h1>
-              <span className="rounded-full border border-[#34343a] bg-[#1a1a1d] px-3 py-1 text-ui-label text-[#f0e5d0]">{domainLabel}</span>
-            </div>
-            <p className="mt-3 max-w-3xl text-body-lg text-[#b3aca2]">
-              You will get one domain-specific coding problem, realistic starter code, and one submission. The language is fixed by your domain.
-            </p>
-            {suggestionMessage ? <p className="mt-4 text-body-md text-[#e6c77e]">{suggestionMessage}</p> : null}
-            {error ? <p className="mt-4 rounded-xl border border-red-500/40 bg-red-950/30 px-4 py-3 text-body-md text-red-200">{error}</p> : null}
-            {checkingOverview ? <p className="mt-4 text-body-md text-[#b3aca2]">Checking for active coding rounds...</p> : null}
-            <div className="mt-8 grid gap-4 lg:grid-cols-3">
-              {([
-                ['easy', 'Foundational patterns, standard implementations'],
-                ['medium', 'Real interview complexity, edge cases required'],
-                ['hard', 'Senior-level problems, optimal solutions expected'],
-              ] as Array<[CodingDifficulty, string]>).map(([difficulty, description]) => (
+          {launchFlowStarted && domainConfirmed ? <div className="fixed inset-0 z-70 flex items-center justify-center bg-[#0d0d0f]/96 px-4 backdrop-blur-sm">
+            <div className="relative w-full max-w-4xl rounded-[32px] border border-[#2d2d31] bg-[#111113] p-8 text-[#f6efe3] shadow-[0_32px_90px_rgba(0,0,0,0.45)]">
+              <p className="text-ui-label tracking-[0.22em] text-[#9f9a92]">CODING ROUND</p>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <h1 className="text-headline-lg text-[#fbf7f0]">Pick your difficulty before the timer starts.</h1>
+                <span className="rounded-full border border-[#34343a] bg-[#1a1a1d] px-3 py-1 text-ui-label text-[#f0e5d0]">{domainLabel}</span>
+              </div>
+              <p className="mt-3 max-w-3xl text-body-lg text-[#b3aca2]">
+                You will get one domain-specific coding problem, realistic starter code, and one submission. The language is fixed by your domain.
+              </p>
+              {suggestionMessage ? <p className="mt-4 text-body-md text-[#e6c77e]">{suggestionMessage}</p> : null}
+              {error ? <p className="mt-4 rounded-xl border border-red-500/40 bg-red-950/30 px-4 py-3 text-body-md text-red-200">{error}</p> : null}
+              {checkingOverview ? <p className="mt-4 text-body-md text-[#b3aca2]">Checking for active coding rounds...</p> : null}
+              <div className="mt-8 grid gap-4 lg:grid-cols-3">
+                {([
+                  ['easy', 'Foundational patterns, standard implementations'],
+                  ['medium', 'Real interview complexity, edge cases required'],
+                  ['hard', 'Senior-level problems, optimal solutions expected'],
+                ] as Array<[CodingDifficulty, string]>).map(([difficulty, description]) => (
+                  <button
+                    key={difficulty}
+                    type="button"
+                    onClick={() => setSelectedDifficulty(difficulty)}
+                    className={`rounded-3xl border p-5 text-left transition-colors ${difficultyCardClasses(difficulty, selectedDifficulty === difficulty)}`}
+                  >
+                    <p className="text-headline-sm capitalize">{difficulty}</p>
+                    <p className="mt-3 text-body-md">{description}</p>
+                  </button>
+                ))}
+              </div>
+              <div className="mt-8 flex flex-wrap gap-3">
                 <button
-                  key={difficulty}
                   type="button"
-                  onClick={() => setSelectedDifficulty(difficulty)}
-                  className={`rounded-3xl border p-5 text-left transition-colors ${difficultyCardClasses(difficulty, selectedDifficulty === difficulty)}`}
+                  disabled={!selectedDifficulty || generating || checkingOverview}
+                  onClick={() => { void startCodingRound(); }}
+                  className="rounded-full bg-[#f3e7d0] px-6 py-3 text-ui-label text-[#111113] transition-colors hover:bg-[#e8d8ba] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <p className="text-headline-sm capitalize">{difficulty}</p>
-                  <p className="mt-3 text-body-md">{description}</p>
+                  {generating ? 'Generating...' : activeAttemptId ? 'Start New Coding Round' : 'Start Coding Round'}
                 </button>
-              ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLaunchFlowStarted(false);
+                    setDomainConfirmed(false);
+                  }}
+                  className="rounded-full border border-[#34343a] px-6 py-3 text-ui-label text-[#f6efe3] hover:bg-[#1a1a1d]"
+                >
+                  Back
+                </button>
+              </div>
             </div>
-            <button
-              type="button"
-              disabled={!selectedDifficulty || generating || checkingOverview}
-              onClick={() => { void startCodingRound(); }}
-              className="mt-8 rounded-full bg-[#f3e7d0] px-6 py-3 text-ui-label text-[#111113] transition-colors hover:bg-[#e8d8ba] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {generating ? 'Generating...' : 'Start Coding Round'}
-            </button>
-          </div>
-        </div> : null}
+          </div> : null}
+          {!launchFlowStarted || !domainConfirmed ? <main className="relative z-10 mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-8 lg:px-16">
+            <section className="rounded-[28px] border border-blueprint-line bg-card p-6 shadow-[0_24px_48px_rgba(0,0,0,0.06)] sm:p-8">
+              <p className="text-ui-label text-blueprint-muted">Coding Round</p>
+              <h1 className="mt-3 text-display-xl text-primary">Practice one timed coding round for {domainLabel}.</h1>
+              <p className="mt-3 max-w-3xl text-body-lg text-blueprint-muted">
+                Start from a clean coding round landing page, then continue into the usual confirmation and difficulty flow when you are ready.
+              </p>
+              {suggestionMessage ? <p className="mt-4 text-body-md text-[#7a5d18]">{suggestionMessage}</p> : null}
+              {error ? <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-body-md text-red-700">{error}</p> : null}
+              {checkingOverview ? <p className="mt-4 text-body-md text-blueprint-muted">Checking for active coding rounds...</p> : null}
+              <div className="mt-6 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLaunchFlowStarted(true);
+                    setError(null);
+                  }}
+                  className="rounded-full bg-primary px-6 py-3 text-ui-label text-white hover:bg-[#303031]"
+                >
+                  {activeAttemptId ? 'Start New Coding Round' : 'Start Coding Round'}
+                </button>
+                {activeAttemptId ? (
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/round/coding/${encodeURIComponent(activeAttemptId)}`)}
+                    className="rounded-full border border-blueprint-line px-6 py-3 text-ui-label text-primary hover:bg-[#f5f3f3]"
+                  >
+                    Resume Active Round
+                  </button>
+                ) : null}
+              </div>
+            </section>
+
+            <section className="surface-card">
+              <div className="flex items-center gap-3">
+                <History size={18} className="text-blueprint-muted" />
+                <div>
+                  <p className="text-ui-label text-blueprint-muted">Session History</p>
+                  <h2 className="text-headline-md text-primary">Recent coding attempts</h2>
+                </div>
+              </div>
+              {historyLoading ? <p className="mt-4 text-body-md text-blueprint-muted">Loading coding history...</p> : null}
+              {!historyLoading && historyItems.length === 0 ? <p className="mt-4 text-body-md text-blueprint-muted">No coding attempts yet. Start your first round to build history here.</p> : null}
+              <div className="mt-6 grid gap-4 lg:grid-cols-2">
+                {historyItems.map((item) => (
+                  <article key={item.id} className="rounded-2xl border border-blueprint-line bg-blueprint-bg p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-ui-label text-blueprint-muted">{formatAttemptDate(item.submittedAt ?? item.startedAt)}</p>
+                        <h3 className="mt-2 text-headline-md text-primary">
+                          <button type="button" onClick={() => openHistoryAttempt(item)} className="text-left hover:underline">
+                            {item.problem.title}
+                          </button>
+                        </h3>
+                        <p className="mt-1 text-body-md text-blueprint-muted">{formatLanguageLabel(item.language)} · {item.problem.difficulty} · {codingStatusLabel(item)}</p>
+                      </div>
+                      <span className="rounded-full border border-blueprint-line bg-white px-3 py-1 text-ui-label text-primary">{codingScoreLabel(item)}</span>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => { void handleHistorySave(item); }}
+                        disabled={historySaveId === item.id}
+                        className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3] disabled:opacity-60"
+                      >
+                        {historySaveId === item.id ? <LoaderCircle size={15} className="animate-spin" /> : item.savedAt ? <BookmarkCheck size={15} /> : <Bookmark size={15} />}
+                        {historySaveId === item.id ? 'Saving...' : item.savedAt ? 'Saved' : 'Save'}
+                      </button>
+                      {item.status === 'submitted' ? (
+                        <button type="button" onClick={() => navigate(`/results/coding/${encodeURIComponent(item.id)}`)} className="rounded-full bg-primary px-4 py-2 text-ui-label text-white hover:bg-[#303031]">
+                          View Results
+                        </button>
+                      ) : (
+                        <button type="button" onClick={() => navigate(`/round/coding/${encodeURIComponent(item.id)}`)} className="rounded-full bg-primary px-4 py-2 text-ui-label text-white hover:bg-[#303031]">
+                          Resume
+                        </button>
+                      )}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          </main> : null}
       </div>
     );
   }
@@ -547,6 +764,14 @@ export default function CodingRoundPage() {
             </div>
           </div>
         ) : null}
+        {navigationState ? (
+          <div className="fixed inset-0 z-95 flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm">
+            <div className="rounded-2xl border border-[#2d2d31] bg-[#151516] px-6 py-5 text-center shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
+              <LoaderCircle size={22} className="mx-auto animate-spin text-[#f7f2e8]" />
+              <p className="mt-4 text-body-lg text-[#f7f2e8]">{navigationState === 'previous' ? 'Loading previous problem...' : 'Loading next problem...'}</p>
+            </div>
+          </div>
+        ) : null}
         <main className="relative z-10 mx-auto flex h-[calc(100vh-72px)] w-full max-w-400 overflow-hidden px-4 py-4 sm:px-6 lg:px-8">
           {loadingAttempt ? <p className="text-body-md text-[#b3aca2]">Loading coding attempt...</p> : null}
           {error && !attempt ? <p className="text-body-md text-red-300">{error}</p> : null}
@@ -559,14 +784,16 @@ export default function CodingRoundPage() {
                     <span className="rounded-full border border-[#333338] bg-[#1d1d21] px-3 py-1 text-ui-label text-[#f1e5d0]">{domainLabel}</span>
                   </div>
                   <div className="flex shrink-0 gap-2">
-                    <button type="button" onClick={() => { void handleSaveAttempt(); }} className="rounded-full border border-[#333338] p-2 text-[#f6efe3] hover:bg-[#202025]" aria-label="Save coding attempt">
-                      {savedAt ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}
+                    <button type="button" onClick={() => { void handleSaveAttempt(); }} disabled={savingAttempt} className="inline-flex items-center gap-2 rounded-full border border-[#333338] px-4 py-2 text-[#f6efe3] hover:bg-[#202025] disabled:opacity-60" aria-label="Save coding attempt">
+                      {savingAttempt ? <LoaderCircle size={16} className="animate-spin" /> : savedAt ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}
+                      <span className="text-ui-label">{savingAttempt ? 'Saving...' : savedAt ? 'Saved' : 'Save'}</span>
                     </button>
-                    <button type="button" onClick={() => setScratchOpen((current) => !current)} className="rounded-full border border-[#333338] p-2 text-[#f6efe3] hover:bg-[#202025]" aria-label="Toggle scratch notes">
+                    <button type="button" onClick={openNotesSurface} className="rounded-full border border-[#333338] p-2 text-[#f6efe3] hover:bg-[#202025]" aria-label="Open notes workspace">
                       <NotebookPen size={17} />
                     </button>
                   </div>
                 </div>
+                <p className="mt-3 text-ui-label text-[#9f9a92]">{savedAt ? `Saved ${formatAttemptDate(savedAt)}` : 'Not saved yet'}</p>
                 <div className="mt-5 flex items-start justify-between gap-3">
                   <h1 className="text-headline-lg text-[#fbf7f0]">{attempt.problem.title}</h1>
                   <div className="flex shrink-0 gap-2">
@@ -612,136 +839,147 @@ export default function CodingRoundPage() {
                     ))}
                   </ul>
                 </section>
-                {scratchOpen ? (
-                  <section className="mb-4 rounded-2xl border border-[#2a2a2f] bg-[#101013] p-4">
-                    <h2 className="text-ui-label tracking-[0.18em] text-[#9f9a92]">Scratch Notes</h2>
-                    <textarea
-                      value={scratchNotes}
-                      onChange={(event) => setScratchNotes(event.target.value)}
-                      className="mt-3 h-36 w-full resize-none rounded-xl border border-[#2a2a2f] bg-[#151517] p-3 text-body-md text-[#f2ede4] outline-none"
-                      placeholder="Approach notes, pseudocode, edge cases, observations."
-                    />
-                    <p className="mt-2 text-ui-label text-[#9f9a92]">Autosaves every 30 seconds.</p>
-                  </section>
-                ) : null}
               </aside>
 
               <section className="relative flex h-full w-full min-w-0 flex-col bg-[#0f0f10] lg:w-3/5">
-                <div className="flex items-center justify-between border-b border-[#242427] bg-[#141416] px-5 py-4">
-                  <div className="relative">
-                    <select
-                      value={selectedLanguage}
-                      onChange={(event) => { void handleLanguageChange(normalizeClientCodingLanguage(event.target.value, getPrimaryCodingLanguage(attempt.problem.domain))); }}
-                      disabled={languageOptions.length <= 1}
-                      className="appearance-none rounded-full border border-[#2e2e33] bg-[#1b1b20] px-3 py-1 pr-9 text-ui-label text-[#f6efe3] outline-none transition-colors hover:border-[#4a4a50] disabled:cursor-default disabled:opacity-90"
-                    >
-                      {languageOptions.map((option) => (
-                        <option key={option.value} value={option.value} className="bg-[#111113] text-[#f6efe3]">
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#9f9a92]" />
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => { void handleRunCode(); }}
-                      className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-2.5 text-ui-label text-white hover:bg-emerald-500"
-                    >
-                      <Play size={16} /> {runningCode ? 'Running...' : 'Run Code'}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={submitting || expiring}
-                      onClick={() => { void finalizeRound(); }}
-                      className="rounded-full bg-sky-600 px-5 py-2.5 text-ui-label text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {submitting ? 'Submitting...' : 'Submit'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="border-b border-[#242427] px-4 py-4">
-                  <Suspense fallback={<div className="h-full animate-pulse rounded-2xl border border-[#2a2a2f] bg-[#111114]" />}>
-                    <div className="relative overflow-hidden rounded-2xl border border-[#2a2a2f] bg-[#111114]" style={{ height: 'calc(100vh - 180px)', overflow: 'hidden' }}>
-                      <div className={starterLoading ? 'h-full opacity-45 transition-opacity' : 'h-full transition-opacity'}>
-                      <LazyCodeEditor
-                        value={code}
-                        language={selectedLanguage}
-                        editable={!submitting && !expiring && !starterLoading}
-                        height="100%"
-                        onEditorReady={(view) => {
-                          editorViewRef.current = view;
-                        }}
-                        onChange={(value) => {
-                          codeRef.current = value;
-                          setCode(value);
-                          saveLocalDraft('coding-round', attempt.id, { code: value, notes, language: selectedLanguage, savedAt: new Date().toISOString() });
-                        }}
-                      />
+                {notesSurfaceOpen ? (
+                  <>
+                    <div className="flex items-center justify-between border-b border-[#242427] bg-[#141416] px-5 py-4">
+                      <div>
+                        <p className="text-ui-label tracking-[0.18em] text-[#9f9a92]">NOTES WORKSPACE</p>
+                        <h2 className="mt-2 text-headline-md text-[#f6efe3]">Save notes separately from the coding editor.</h2>
                       </div>
-                      {starterLoading ? (
-                        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/15">
-                          <span className="inline-flex items-center gap-2 rounded-full border border-[#333338] bg-[#141416] px-4 py-2 text-ui-label text-[#f6efe3] shadow-xl">
-                            <LoaderCircle size={16} className="animate-spin" /> Loading starter code...
-                          </span>
-                        </div>
-                      ) : null}
-                      {starterError ? <p className="absolute left-4 top-4 z-30 rounded-full border border-red-500/40 bg-red-950/80 px-4 py-2 text-ui-label text-red-100">{starterError}</p> : null}
-                      <div className={`pointer-events-none absolute inset-x-4 bottom-4 z-20 transition-all duration-200 ${runPanelOpen ? 'translate-y-0 opacity-100' : 'translate-y-6 opacity-0'}`}>
-                        <div className="pointer-events-auto h-[200px] overflow-hidden rounded-2xl border border-[#284535] bg-[rgba(8,12,10,0.94)] shadow-[0_-12px_40px_rgba(0,0,0,0.35)] backdrop-blur-sm">
-                          <div className="flex items-center justify-between border-b border-[#1e3227] px-4 py-3">
-                            <p className="font-mono text-xs tracking-[0.24em] text-[#8bcf9f]">OUTPUT</p>
-                            <button
-                              type="button"
-                              onClick={() => setRunPanelOpen(false)}
-                              className="rounded-full border border-[#335341] p-2 text-[#d8f5de] hover:bg-[#173024]"
-                            >
-                              <X size={16} />
-                            </button>
-                          </div>
-                          <div className="h-[152px] overflow-y-auto px-4 py-3 font-mono text-sm">
-                            {runningCode && runStatus ? <p className="text-[#facc15]">{runStatus}</p> : null}
-                            {runOutput.notices.map((line) => (
-                              <p key={`notice-${line}`} className="text-[#facc15]">{line}</p>
-                            ))}
-                            {runOutput.stdout.map((line, index) => (
-                              <p key={`stdout-${index}-${line}`} className="text-[#86efac]">{line}</p>
-                            ))}
-                            {runOutput.stderr.map((line, index) => (
-                              <p key={`stderr-${index}-${line}`} className="whitespace-pre-wrap text-[#f87171]">{line}</p>
-                            ))}
-                            {!runningCode && !runOutput.stdout.length && !runOutput.stderr.length && !runOutput.notices.length ? (
-                              <p className="text-[#6ee7b7]">Run your code to inspect stdout and runtime errors here.</p>
-                            ) : null}
-                          </div>
-                        </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => { void handleSaveNotes(); }}
+                          disabled={savingNotes}
+                          className="rounded-full bg-emerald-600 px-5 py-2.5 text-ui-label text-white hover:bg-emerald-500 disabled:opacity-60"
+                        >
+                          {savingNotes ? 'Saving Notes...' : 'Save Notes'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={closeNotesSurface}
+                          className="rounded-full border border-[#333338] px-5 py-2.5 text-ui-label text-[#f6efe3] hover:bg-[#202025]"
+                        >
+                          Go Back To Coding Area
+                        </button>
                       </div>
                     </div>
-                  </Suspense>
-                </div>
-
-                <div className="border-b border-[#242427] bg-[#141416]">
-                  <button
-                    type="button"
-                    onClick={() => setNotesOpen((current) => !current)}
-                    className="flex w-full items-center justify-between px-5 py-4 text-left"
-                  >
-                    <span className="text-ui-label text-[#f6efe3]">Notes</span>
-                    <ChevronDown size={16} className={`text-[#9f9a92] transition-transform ${notesOpen ? 'rotate-180' : ''}`} />
-                  </button>
-                  {notesOpen ? (
-                    <div className="px-5 pb-5">
-                      <textarea
-                        value={notes}
-                        onChange={(event) => setNotes(event.target.value)}
-                        className="h-28 w-full resize-none rounded-2xl border border-[#2a2a2f] bg-[#101013] p-4 text-body-md text-[#f2ede4] outline-none"
-                        placeholder="Explain tradeoffs, edge cases, or your intended output here."
-                      />
+                    <div className="flex h-full flex-col overflow-hidden px-5 py-5">
+                      <div className="rounded-2xl border border-[#2a2a2f] bg-[#101013] px-4 py-3 text-body-md text-[#b8b0a4]">
+                        Unsaved notes are cleared when you leave this workspace. Reopening notes starts from your last saved version only.
+                      </div>
+                      <div className="mt-5 flex-1 rounded-2xl border border-[#2a2a2f] bg-[#111114] p-4">
+                        <textarea
+                          ref={notesTextareaRef}
+                          value={notesDraft}
+                          onChange={(event) => setNotesDraft(event.target.value)}
+                          className="h-full min-h-[calc(100vh-240px)] w-full resize-none rounded-2xl border border-[#2a2a2f] bg-[#101013] p-5 text-body-md text-[#f2ede4] outline-none"
+                          placeholder="Write the tradeoffs, edge cases, validation plan, or intended output you want to keep with this coding round."
+                        />
+                      </div>
                     </div>
-                  ) : null}
-                </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between border-b border-[#242427] bg-[#141416] px-5 py-4">
+                      <div className="relative">
+                        <select
+                          value={selectedLanguage}
+                          onChange={(event) => { void handleLanguageChange(normalizeClientCodingLanguage(event.target.value, getPrimaryCodingLanguage(attempt.problem.domain))); }}
+                          disabled={languageOptions.length <= 1}
+                          className="appearance-none rounded-full border border-[#2e2e33] bg-[#1b1b20] px-3 py-1 pr-9 text-ui-label text-[#f6efe3] outline-none transition-colors hover:border-[#4a4a50] disabled:cursor-default disabled:opacity-90"
+                        >
+                          {languageOptions.map((option) => (
+                            <option key={option.value} value={option.value} className="bg-[#111113] text-[#f6efe3]">
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#9f9a92]" />
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => { void handleRunCode(); }}
+                          className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-2.5 text-ui-label text-white hover:bg-emerald-500"
+                        >
+                          <Play size={16} /> {runningCode ? 'Running...' : 'Run Code'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={submitting || expiring}
+                          onClick={() => { void finalizeRound(); }}
+                          className="rounded-full bg-sky-600 px-5 py-2.5 text-ui-label text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {submitting ? 'Submitting...' : 'Submit'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="border-b border-[#242427] px-4 py-4">
+                      <Suspense fallback={<div className="h-full animate-pulse rounded-2xl border border-[#2a2a2f] bg-[#111114]" />}>
+                        <div className="relative overflow-hidden rounded-2xl border border-[#2a2a2f] bg-[#111114]" style={{ height: 'calc(100vh - 180px)', overflow: 'hidden' }}>
+                          <div className={starterLoading ? 'h-full opacity-45 transition-opacity' : 'h-full transition-opacity'}>
+                          <LazyCodeEditor
+                            value={code}
+                            language={selectedLanguage}
+                            editable={!submitting && !expiring && !starterLoading}
+                            height="100%"
+                            onEditorReady={(view) => {
+                              editorViewRef.current = view;
+                            }}
+                            onChange={(value) => {
+                              codeRef.current = value;
+                              setCode(value);
+                              saveLocalDraft('coding-round', attempt.id, { code: value, notes: savedNotes, language: selectedLanguage, savedAt: new Date().toISOString() });
+                            }}
+                          />
+                          </div>
+                          {starterLoading ? (
+                            <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/15">
+                              <span className="inline-flex items-center gap-2 rounded-full border border-[#333338] bg-[#141416] px-4 py-2 text-ui-label text-[#f6efe3] shadow-xl">
+                                <LoaderCircle size={16} className="animate-spin" /> Loading starter code...
+                              </span>
+                            </div>
+                          ) : null}
+                          {starterError ? <p className="absolute left-4 top-4 z-30 rounded-full border border-red-500/40 bg-red-950/80 px-4 py-2 text-ui-label text-red-100">{starterError}</p> : null}
+                          <div className={`pointer-events-none absolute inset-x-4 bottom-4 z-20 transition-all duration-200 ${runPanelOpen ? 'translate-y-0 opacity-100' : 'translate-y-6 opacity-0'}`}>
+                            <div className="pointer-events-auto h-50 overflow-hidden rounded-2xl border border-[#284535] bg-[rgba(8,12,10,0.94)] shadow-[0_-12px_40px_rgba(0,0,0,0.35)] backdrop-blur-sm">
+                              <div className="flex items-center justify-between border-b border-[#1e3227] px-4 py-3">
+                                <p className="font-mono text-xs tracking-[0.24em] text-[#8bcf9f]">OUTPUT</p>
+                                <button
+                                  type="button"
+                                  onClick={() => setRunPanelOpen(false)}
+                                  className="rounded-full border border-[#335341] p-2 text-[#d8f5de] hover:bg-[#173024]"
+                                >
+                                  <X size={16} />
+                                </button>
+                              </div>
+                              <div className="h-38 overflow-y-auto px-4 py-3 font-mono text-sm">
+                                {runningCode && runStatus ? <p className="text-[#facc15]">{runStatus}</p> : null}
+                                {runOutput.notices.map((line) => (
+                                  <p key={`notice-${line}`} className="text-[#facc15]">{line}</p>
+                                ))}
+                                {runOutput.stdout.map((line, index) => (
+                                  <p key={`stdout-${index}-${line}`} className="text-[#86efac]">{line}</p>
+                                ))}
+                                {runOutput.stderr.map((line, index) => (
+                                  <p key={`stderr-${index}-${line}`} className="whitespace-pre-wrap text-[#f87171]">{line}</p>
+                                ))}
+                                {!runningCode && !runOutput.stdout.length && !runOutput.stderr.length && !runOutput.notices.length ? (
+                                  <p className="text-[#6ee7b7]">Run your code to inspect stdout and runtime errors here.</p>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </Suspense>
+                    </div>
+                  </>
+                )}
 
               </section>
             </section>

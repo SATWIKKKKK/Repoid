@@ -78,6 +78,13 @@ const CODING_PROBLEM_GENERATION_MODEL = process.env.CODING_PROBLEM_GENERATION_MO
 const CODING_PROBLEM_GENERATION_TIMEOUT_MS = Math.max(10_000, Number(process.env.CODING_PROBLEM_GENERATION_TIMEOUT_MS ?? 20_000));
 const CODING_PROBLEM_GENERATION_MAX_TOKENS = Math.max(1_200, Number(process.env.CODING_PROBLEM_GENERATION_MAX_TOKENS ?? 2_000));
 const CODING_PROBLEM_GENERATION_MAX_ATTEMPTS = Math.min(2, Math.max(1, Number(process.env.CODING_PROBLEM_GENERATION_MAX_ATTEMPTS ?? 2)));
+const CODING_PROBLEM_GENERATION_ROUTE_TIMEOUT_MS = Math.max(
+  (CODING_PROBLEM_GENERATION_TIMEOUT_MS * CODING_PROBLEM_GENERATION_MAX_ATTEMPTS) + 8_000,
+  Number(
+    process.env.CODING_PROBLEM_GENERATION_ROUTE_TIMEOUT_MS
+      ?? ((CODING_PROBLEM_GENERATION_TIMEOUT_MS * CODING_PROBLEM_GENERATION_MAX_ATTEMPTS) + 8_000),
+  ),
+);
 const CODING_EVALUATION_MODEL = 'deepseek/deepseek-chat';
 const oauthStates = new Map<string, { provider: 'google' | 'github'; createdAt: number; nextPath?: string }>();
 const activeGithubScanRequests = new Map<string, string>();
@@ -3447,7 +3454,10 @@ async function findActiveCodingAttempt(userId: string, domain: string) {
     `SELECT ca.id AS attempt_id
        FROM coding_attempts ca
        JOIN coding_problems cp ON cp.id = ca.problem_id
-      WHERE ca.user_id = $1 AND cp.domain = $2 AND ca.status = 'started'
+      WHERE ca.user_id = $1
+        AND cp.domain = $2
+        AND ca.status = 'started'
+        AND NOW() < (ca.started_at + (ca.duration_minutes * INTERVAL '1 minute'))
       ORDER BY ca.started_at DESC
       LIMIT 1`,
     [userId, domain],
@@ -3836,7 +3846,10 @@ async function getLatestMockInterview(userId: string, domain?: string) {
 async function findActiveMockInterview(userId: string, domain: string) {
   const rows = await db.query<{ id: string }>(`
     SELECT id FROM mock_interviews
-     WHERE user_id = $1 AND domain = $2 AND status = 'started'
+     WHERE user_id = $1
+       AND domain = $2
+       AND status = 'started'
+       AND NOW() < (started_at + (duration_minutes * INTERVAL '1 minute'))
      ORDER BY started_at DESC
      LIMIT 1
   `, [userId, domain]);
@@ -7038,7 +7051,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
   app.post('/api/coding/generate', requireUser, async (request, response) => {
     const requestAbortHandle = createRequestAbortHandle(request, response);
     try {
-      const routeTimeoutMs = CODING_PROBLEM_GENERATION_TIMEOUT_MS + 4_000;
+      const routeTimeoutMs = CODING_PROBLEM_GENERATION_ROUTE_TIMEOUT_MS;
       request.setTimeout(routeTimeoutMs);
       response.setTimeout(routeTimeoutMs);
 
@@ -7205,7 +7218,10 @@ export async function createApp(options: { listen?: boolean } = {}) {
         SELECT ca.id AS attempt_id
           FROM coding_attempts ca
           JOIN coding_problems cp ON cp.id = ca.problem_id
-         WHERE ca.user_id = $1 AND cp.domain = $2 ${difficultyClause}
+         WHERE ca.user_id = $1
+           AND cp.domain = $2
+           ${difficultyClause}
+           AND (ca.status <> 'started' OR NOW() < (ca.started_at + (ca.duration_minutes * INTERVAL '1 minute')))
          ORDER BY ca.started_at DESC
          LIMIT 20
       `, params);
@@ -7300,6 +7316,42 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
+  app.get('/api/mock/overview', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      const domain = normalizeDomain(request.query.domain, selectedDomain);
+      const activeInterview = await findActiveMockInterview(user.id, domain);
+      const rows = await db.query<{ id: string }>(`
+        SELECT id
+          FROM mock_interviews
+         WHERE user_id = $1
+           AND domain = $2
+           AND (status <> 'started' OR NOW() < (started_at + (duration_minutes * INTERVAL '1 minute')))
+         ORDER BY COALESCE(completed_at, started_at) DESC
+         LIMIT 12
+      `, [user.id, domain]);
+      const interviews = await Promise.all(rows.map((row) => loadMockInterview(user.id, row.id)));
+      const history = interviews.flatMap((item) => item ? [{
+        id: item.id,
+        domain: item.domain,
+        domainLabel: item.domainLabel,
+        level: item.level,
+        interviewType: item.interviewType,
+        persona: item.persona,
+        interviewTitle: item.interviewTitle,
+        status: item.status,
+        startedAt: item.startedAt,
+        completedAt: item.completedAt,
+        savedAt: item.savedAt,
+        score: item.report?.overallScore ?? null,
+      }] : []);
+      response.json({ activeInterviewId: activeInterview?.id ?? null, history });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load mock overview.' });
+    }
+  });
+
   app.post('/api/mock/start', requireUser, async (request, response) => {
     const user = (request as AuthedRequest).user!;
     try {
@@ -7310,7 +7362,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
         return;
       }
       const domain = requestedDomain;
-      const existing = await findActiveMockInterview(user.id, domain);
+      const existing = Boolean(request.body?.forceNew) ? null : await findActiveMockInterview(user.id, domain);
       if (existing) {
         response.json({ interview: existing, resumed: true });
         return;

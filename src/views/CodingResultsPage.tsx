@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { DOMAIN_LABELS } from '../lib/prep';
 import { fetchCodingAttempt, submitCodingAttempt, type CodingAttempt } from '../lib/codingRound';
 
@@ -28,6 +28,7 @@ function edgeCasesClass(content: string) {
 
 export default function CodingResultsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const params = useParams<{ attemptId?: string }>();
   const attemptId = String(params.attemptId ?? '').trim();
   const [attempt, setAttempt] = useState<CodingAttempt | null>(null);
@@ -35,6 +36,19 @@ export default function CodingResultsPage() {
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [showNotes, setShowNotes] = useState(() => new URLSearchParams(location.search).get('showNotes') === '1');
+  const notesSectionRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    setShowNotes(new URLSearchParams(location.search).get('showNotes') === '1');
+  }, [location.search]);
+
+  useEffect(() => {
+    if (!showNotes) return;
+    window.requestAnimationFrame(() => {
+      notesSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [showNotes]);
 
   useEffect(() => {
     if (!attemptId) {
@@ -128,6 +142,13 @@ export default function CodingResultsPage() {
               >
                 Back To Coding Round
               </button>
+              <button
+                type="button"
+                onClick={() => setShowNotes((current) => !current)}
+                className="rounded-full border border-blueprint-line px-6 py-3 text-ui-label text-primary hover:bg-[#f5f3f3]"
+              >
+                {showNotes ? 'Hide Notes' : 'See Notes'}
+              </button>
             </div>
           </section>
         ) : null}
@@ -193,8 +214,24 @@ export default function CodingResultsPage() {
               >
                 View Dashboard
               </button>
+              <button
+                type="button"
+                onClick={() => setShowNotes((current) => !current)}
+                className="rounded-full border border-blueprint-line px-6 py-3 text-ui-label text-primary hover:bg-[#f5f3f3]"
+              >
+                {showNotes ? 'Hide Notes' : 'See Notes'}
+              </button>
             </div>
           </>
+        ) : null}
+
+        {attempt && showNotes ? (
+          <section ref={notesSectionRef} className="rounded-2xl border border-blueprint-line bg-card p-6">
+            <p className="text-ui-label text-blueprint-muted">Saved Notes</p>
+            <p className="mt-3 whitespace-pre-wrap text-body-md text-primary">
+              {attempt.notes.trim() || 'No saved notes were stored for this coding round.'}
+            </p>
+          </section>
         ) : null}
       </main>
     </div>

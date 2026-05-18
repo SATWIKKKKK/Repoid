@@ -59,6 +59,26 @@ export type MockInterviewState = {
   report: MockReport | null;
 };
 
+export type MockInterviewHistoryItem = {
+  id: string;
+  domain: string;
+  domainLabel: string;
+  level: MockLevel;
+  interviewType: MockInterviewType;
+  persona: MockPersona;
+  interviewTitle: string;
+  status: string;
+  startedAt: string;
+  completedAt: string | null;
+  savedAt: string | null;
+  score: number | null;
+};
+
+export type MockInterviewOverview = {
+  activeInterviewId: string | null;
+  history: MockInterviewHistoryItem[];
+};
+
 type ApiResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: string; aiUnavailable?: boolean };
@@ -81,13 +101,17 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<ApiResu
   }
 }
 
-export async function startMockInterview(payload: { domain: string; level: MockLevel; interviewType: MockInterviewType; persona: MockPersona }) {
+export async function startMockInterview(payload: { domain: string; level: MockLevel; interviewType: MockInterviewType; persona: MockPersona; forceNew?: boolean }) {
   const result = await requestJson<{ interview: MockInterviewState }>('/api/mock/start', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
   if (result.ok === false) return result;
   return { ok: true as const, data: result.data.interview };
+}
+
+export async function fetchMockOverview(domain: string) {
+  return requestJson<MockInterviewOverview>(`/api/mock/overview?domain=${encodeURIComponent(domain)}`);
 }
 
 export async function fetchMockInterview(interviewId: string) {
