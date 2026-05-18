@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, History, LoaderCircle, Mic, Search } from 'lucide-react';
+import { ArrowRight, Bookmark, BookmarkCheck, History, LoaderCircle, Mic, Search } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import RoundShell from '../components/RoundShell';
 import { DOMAIN_LABELS, updatePrepWorkspace } from '../lib/prep';
@@ -9,6 +9,7 @@ import {
   fetchScenarioAttempt,
   fetchScenarioOverview,
   generateScenario,
+  saveScenarioAttempt,
   startScenarioAttempt,
   submitScenarioAttempt,
   type Scenario,
@@ -118,6 +119,7 @@ export default function ScenarioRoundPage() {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voiceMessage, setVoiceMessage] = useState<string | null>(null);
   const [voiceTooltipVisible, setVoiceTooltipVisible] = useState(false);
+  const [historySaveId, setHistorySaveId] = useState<string | null>(null);
 
   const generationStartedAt = useRef<number | null>(null);
   const generationPhaseRef = useRef<HTMLParagraphElement | null>(null);
@@ -389,6 +391,18 @@ export default function ScenarioRoundPage() {
     }
     navigate(`/round/scenario/${encodeURIComponent(item.attemptId)}`);
   }, [navigate]);
+
+  const handleSaveScenarioItem = useCallback(async (item: ScenarioHistoryItem) => {
+    if (historySaveId === item.attemptId) return;
+    setHistorySaveId(item.attemptId);
+    const result = await saveScenarioAttempt(item.attemptId, true);
+    setHistorySaveId(null);
+    if (result.ok === false) return;
+    setOverview((current) => current ? {
+      ...current,
+      history: current.history.map((entry) => entry.attemptId === item.attemptId ? { ...entry, savedAt: result.data } : entry),
+    } : current);
+  }, [historySaveId]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -768,6 +782,9 @@ export default function ScenarioRoundPage() {
         <section className="rounded-[28px] border border-blueprint-line bg-card p-6 shadow-[0_24px_48px_rgba(0,0,0,0.06)] sm:p-8">
           <p className="text-ui-label text-blueprint-muted">Scenario Round</p>
           <h1 className="mt-3 text-display-xl text-primary">Practice one deep scenario question for {domainLabel}.</h1>
+          <span className="mt-3 inline-block rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-sm text-amber-800">
+            You're given a real workplace crisis. Solve it.
+          </span>
           <p className="mt-3 max-w-3xl text-body-lg text-blueprint-muted">
             Search a domain-specific topic and we will generate one realistic scenario with a single open-ended question that rewards clear engineering tradeoffs and specific validation thinking.
           </p>
@@ -894,15 +911,24 @@ export default function ScenarioRoundPage() {
                   <span className="rounded-full border border-blueprint-line bg-white px-3 py-1 text-ui-label text-primary">{scenarioScoreLabel(item)}</span>
                 </div>
                 <div className="mt-4 flex flex-wrap gap-3">
-                  <button type="button" onClick={() => { setTopic(item.topic); void launchTopic(item.topic); }} className="rounded-full bg-primary px-4 py-2 text-ui-label text-white hover:bg-[#303031]">
-                    Try Again
+                  <button
+                    type="button"
+                    onClick={() => { void handleSaveScenarioItem(item); }}
+                    disabled={historySaveId === item.attemptId}
+                    className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3] disabled:opacity-60"
+                  >
+                    {historySaveId === item.attemptId ? <LoaderCircle size={15} className="animate-spin" /> : item.savedAt ? <BookmarkCheck size={15} /> : <Bookmark size={15} />}
+                    {historySaveId === item.attemptId ? 'Saving...' : item.savedAt ? 'Saved' : 'Save'}
+                  </button>
+                  <button type="button" onClick={() => { setTopic(item.topic); void launchTopic(item.topic); }} className="rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3]">
+                    Retry Topic
                   </button>
                   {item.status === 'completed' ? (
-                    <button type="button" onClick={() => navigate(`/results/scenario/${encodeURIComponent(item.attemptId)}`)} className="rounded-full border border-blueprint-line px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3]">
+                    <button type="button" onClick={() => navigate(`/results/scenario/${encodeURIComponent(item.attemptId)}`)} className="rounded-full bg-primary px-4 py-2 text-ui-label text-white hover:bg-[#303031]">
                       View Results
                     </button>
                   ) : (
-                    <button type="button" onClick={() => navigate(`/round/scenario/${encodeURIComponent(item.attemptId)}`)} className="rounded-full border border-blueprint-line px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3]">
+                    <button type="button" onClick={() => navigate(`/round/scenario/${encodeURIComponent(item.attemptId)}`)} className="rounded-full bg-primary px-4 py-2 text-ui-label text-white hover:bg-[#303031]">
                       Resume
                     </button>
                   )}

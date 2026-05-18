@@ -2239,7 +2239,7 @@ async function generateScenarioForTopic(params: {
       scenarioType,
     });
     try {
-      const systemPrompt = `You are a senior ${SCENARIO_DOMAIN_LABELS[params.domain]} engineer creating a realistic workplace scenario for interview preparation. The scenario must reflect real engineering situations. Return only valid JSON. Start with { and end with }. No markdown fences. No preamble.`;
+      const systemPrompt = `You are a senior ${SCENARIO_DOMAIN_LABELS[params.domain]} engineer creating a realistic workplace scenario for interview preparation. The scenario must reflect real engineering situations. Every question must be a workplace situation in third person. Format: 'You are a [ROLE] at [COMPANY_TYPE]. [SITUATION]. What do you do?' The situation must be a specific crisis or decision point. Never ask 'Tell me about a time' — always present a specific scenario the candidate is currently inside. Return only valid JSON. Start with { and end with }. No markdown fences. No preamble.`;
       const seenHashList = JSON.stringify([...seenHashes, ...additionalAvoidHashes]);
       const userPrompt = `Domain: ${SCENARIO_DOMAIN_LABELS[params.domain]}. Topic: ${params.topic}. Level: ${params.level}. Repo context: ${repoContext || 'none'}. Session seed: ${seed}. Preferred scenario angle: ${scenarioType}. Avoid hashes: ${seenHashList}. Generate a scenario with exactly 5 steps. Return JSON: { id: string, title: string, domain: string, topic: string, level: string, context: string, role: string, steps: [ { stepNumber: number, question: string, type: 'decision' | 'technical' | 'tradeoff' | 'communication', hint: string } ] }. Rules: the context must be specific to ${params.topic} - not generic. Steps must escalate in complexity - step 1 is situational awareness, step 5 is a hard tradeoff or architectural decision. Use this step-type pattern unless the scenario strongly requires a different one: step 1 communication, step 2 technical, step 3 decision, step 4 technical, step 5 tradeoff. Never repeat the same step type consecutively. The scenario must feel like a real conversation with a senior engineer, not a quiz. If a similar scenario hash appears in Avoid hashes, generate a different angle on the same topic.`;
 
@@ -2778,6 +2778,7 @@ async function listSingleScenarioOverview(userId: string, domain: ScenarioDomain
     score: number;
     generated_at: string;
     completed_at: string | null;
+    saved_at: string | null;
   }>(
     `SELECT
         sa.id AS attempt_id,
@@ -2787,7 +2788,8 @@ async function listSingleScenarioOverview(userId: string, domain: ScenarioDomain
         sa.status,
         sa.score,
         s.generated_at,
-        sa.completed_at
+        sa.completed_at,
+        sa.saved_at
       FROM scenario_attempts sa
       JOIN scenarios s ON s.id = sa.scenario_id
      WHERE sa.user_id = $1 AND s.domain = $2
@@ -2808,6 +2810,7 @@ async function listSingleScenarioOverview(userId: string, domain: ScenarioDomain
       score: Number.isFinite(Number(row.score)) && Number(row.score) > 0 ? Number(row.score) : null,
       generatedAt: row.generated_at,
       completedAt: row.completed_at,
+      savedAt: row.saved_at,
     })),
   };
 }
@@ -4070,7 +4073,7 @@ async function generateMockInterviewForUser(params: { userId: string; domain: st
   const secondaryType = requiredTypes[1];
   await checkAiRateLimit(params.userId, 'mock-question-generation', 3);
   const generated = await callStructuredModel(
-    `You are a technical hiring manager at a tier-1 tech company preparing a mock interview for a ${domainLabel} ${mockLevelLabel(params.level)} engineer. Generate exactly 3 realistic interview questions. Never generate DSA or competitive programming questions. Questions must reflect real engineering work in ${domainLabel}. Return only valid JSON.`,
+    `You are a technical hiring manager at a tier-1 tech company preparing a mock interview for a ${domainLabel} ${mockLevelLabel(params.level)} engineer. Generate exactly 3 realistic interview questions. Never generate DSA or competitive programming questions. Questions must reflect real engineering work in ${domainLabel}. Questions must be directly addressed to the candidate. Technical questions probe knowledge directly: 'How does X work?', 'What is the difference between X and Y?'. Design questions are open-ended architecture challenges: 'How would you design X?'. Behavioral questions require past experience: 'Tell me about a time you...'. Situational questions present a dilemma: 'You have X constraint and Y deadline — how do you approach this?'. Never create a fictional company scenario — always address the candidate directly. Return only valid JSON.`,
     `Domain: ${domainLabel}. Level: ${mockLevelLabel(params.level)}. Interview type: ${mockInterviewTypeLabel(params.interviewType)}. Previously seen question hashes for this user+domain: ${JSON.stringify(seenRows.map((row) => row.question_hash))}. These question angles have been used: ${JSON.stringify(usedAngles)}. Draw your 3 questions from this relevant pool: ${JSON.stringify(seeds)}. Generate exactly 3 questions in this exact type mix: 1 technical, 1 ${secondaryType}, 1 behavioral. Never repeat a type. Never return two questions of the same type. For behavioral questions, ask for a real past example. For situational questions, present a concrete tradeoff scenario. For design questions, present a realistic system or architecture prompt. Return JSON: { interviewTitle: string, questions: [ { id, question, type: 'technical'|'design'|'behavioral'|'situational', whatWeAreLookingFor: string, followUpIfStrong: string, followUpIfWeak: string } ] }`,
     (payload) => normalizeMockQuestions(payload, params.interviewType),
     {

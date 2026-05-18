@@ -52,6 +52,7 @@ export type ScenarioHistoryItem = {
   score: number | null;
   generatedAt: string;
   completedAt: string | null;
+  savedAt?: string | null;
 };
 
 export type ScenarioOverview = {

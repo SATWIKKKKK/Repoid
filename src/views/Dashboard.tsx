@@ -66,9 +66,11 @@ function buildRecommendations(domain: string): Recommendation[] {
   }
 }
 
-function insightFromAttempt(attempt: StoredRoundAttempt) {
-  const missed = attempt.results.filter((result) => !result.isCorrect);
-  const focus = missed[0]?.topic ?? attempt.focusAreas[0];
+function insightFromAttempt(attempt?: StoredRoundAttempt | null) {
+  if (!attempt) return null;
+  const results = Array.isArray(attempt.results) ? attempt.results : [];
+  const missed = results.filter((result) => !result.isCorrect);
+  const focus = missed[0]?.topic ?? (Array.isArray(attempt.focusAreas) ? attempt.focusAreas[0] : undefined);
   if (!focus) return null;
   return {
     title: `${focus} needs the next focused drill.`,
@@ -182,9 +184,9 @@ export default function Dashboard() {
     return [...practiceInsights, ...roundInsights].slice(0, 4);
   }, [attempts, currentDomainPracticeSessions]);
   const gapTopics = useMemo(() => {
-    const fromPracticeSessions = currentDomainPracticeSessions.flatMap((session) => session.weakTags);
-    const fromAttempts = attempts.flatMap((attempt) => attempt.focusAreas);
-    const fromResults = attempts.flatMap((attempt) => attempt.results.filter((result) => !result.isCorrect).map((result) => result.topic));
+    const fromPracticeSessions = currentDomainPracticeSessions.flatMap((session) => Array.isArray(session.weakTags) ? session.weakTags : []);
+    const fromAttempts = attempts.flatMap((attempt) => Array.isArray(attempt.focusAreas) ? attempt.focusAreas : []);
+    const fromResults = attempts.flatMap((attempt) => Array.isArray(attempt.results) ? attempt.results.filter((result) => !result.isCorrect).map((result) => result.topic) : []);
     return Array.from(new Set([...fromPracticeSessions, ...fromAttempts, ...fromResults])).slice(0, 4);
   }, [attempts, currentDomainPracticeSessions]);
   const hasAnyActivity = attempts.length || currentDomainPracticeSessions.length;

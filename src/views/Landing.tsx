@@ -44,8 +44,8 @@ export default function Landing({ onViewChange }: LandingProps) {
       </nav>
 
       <main className="relative z-10 mx-auto flex w-full max-w-360 flex-col px-4 pb-20 sm:px-8 lg:px-12">
-        <section className="flex min-h-[calc(100vh-3rem)] flex-col items-start justify-center text-left sm:min-h-[calc(100vh-3.5rem)]">
-          <h1 className="max-w-3xl text-left font-serif leading-[1.08] text-[clamp(2.5rem,6.8vw,72px)] text-primary">
+        <section className="flex min-h-[calc(100vh-3rem)] flex-col items-center justify-center text-center sm:min-h-[calc(100vh-3.5rem)]">
+          <h1 className="max-w-3xl font-serif leading-[1.08] text-[clamp(2.5rem,6.8vw,72px)] text-primary">
             Practice the rounds you are actually going to face.
           </h1>
           <p className="mt-6 max-w-xl text-body-lg text-blueprint-muted">
@@ -54,7 +54,7 @@ export default function Landing({ onViewChange }: LandingProps) {
           <div className="mt-8 w-full max-w-2xl">
             <GlobalSearch />
           </div>
-          <div className="mt-7 flex flex-wrap justify-start gap-4">
+          <div className="mt-7 flex flex-wrap justify-center gap-4">
             <button
               type="button"
               onClick={() => onViewChange(isAuthed ? 'dashboard' : 'signup')}

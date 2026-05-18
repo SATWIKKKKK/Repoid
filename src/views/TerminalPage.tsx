@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bookmark, BookmarkCheck, History, LoaderCircle, Mic, MicOff } from 'lucide-react';
+import { Bookmark, BookmarkCheck, History, LoaderCircle, Mic } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import RoundDomainGate from '../components/RoundDomainGate';
 import RoundShell from '../components/RoundShell';
@@ -128,6 +128,8 @@ export default function TerminalPage(_props: TerminalPageProps) {
   const [finishStage, setFinishStage] = useState<FinishStage>('idle');
   const [error, setError] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState('');
+  const [voiceProcessing, setVoiceProcessing] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [questionVisible, setQuestionVisible] = useState(false);
   const [completedTimeTakenSeconds, setCompletedTimeTakenSeconds] = useState(0);
@@ -146,6 +148,11 @@ export default function TerminalPage(_props: TerminalPageProps) {
   const toastTimeoutRef = useRef<number | null>(null);
   const questionFadeFrameRef = useRef<number | null>(null);
   const autoVoiceAllowedRef = useRef(true);
+  const beginReadingPhaseRef = useRef<() => void>(() => undefined);
+  const voiceRestartTimeoutRef = useRef<number | null>(null);
+  const voiceProcessingTimeoutRef = useRef<number | null>(null);
+  const voiceStoppedManuallyRef = useRef(true);
+  const accumulatedTranscriptRef = useRef('');
 
   const question = interview?.questions[currentIndex] ?? null;
   const currentResponse = question ? interview?.responses.find((item) => item.questionId === question.id) ?? null : null;
@@ -155,40 +162,110 @@ export default function TerminalPage(_props: TerminalPageProps) {
   const voiceSupported = typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
   const overviewHistory = overview?.history ?? [];
 
+  function appendVoiceTranscript(base: string, chunk: string) {
+    const trimmedChunk = chunk.trim();
+    if (!trimmedChunk) return base;
+    const trimmedBase = base.trimEnd();
+    if (!trimmedBase) return trimmedChunk;
+    return `${trimmedBase} ${trimmedChunk}`;
+  }
+
   const stopListening = useCallback(() => {
-    recognitionRef.current?.stop?.();
-    recognitionRef.current = null;
+    voiceStoppedManuallyRef.current = true;
+    if (voiceRestartTimeoutRef.current !== null) {
+      window.clearTimeout(voiceRestartTimeoutRef.current);
+      voiceRestartTimeoutRef.current = null;
+    }
+    if (voiceProcessingTimeoutRef.current !== null) {
+      window.clearTimeout(voiceProcessingTimeoutRef.current);
+      voiceProcessingTimeoutRef.current = null;
+    }
+    try {
+      recognitionRef.current?.stop?.();
+    } catch {
+      // ignore stop races
+    }
     setListening(false);
+    setVoiceProcessing(false);
+    setInterimTranscript('');
   }, []);
 
   const startListening = useCallback(() => {
-    if (!voiceSupported || listening) return;
+    if (!voiceSupported) return;
     const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!Recognition) return;
-    const recognition = new Recognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.onresult = (event: any) => {
-      let transcript = '';
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        if (event.results[index].isFinal) {
-          transcript += event.results[index][0].transcript;
+
+    if (!recognitionRef.current) {
+      const recognition = new Recognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+      recognition.maxAlternatives = 1;
+
+      recognition.onresult = (event: any) => {
+        let finalTranscript = '';
+        let interimText = '';
+        for (let index = event.resultIndex; index < event.results.length; index += 1) {
+          const result = event.results[index];
+          const transcript = String(result[0]?.transcript ?? '').trim();
+          if (!transcript) continue;
+          if (result.isFinal) finalTranscript = appendVoiceTranscript(finalTranscript, transcript);
+          else interimText = appendVoiceTranscript(interimText, transcript);
         }
-      }
-      const normalizedTranscript = transcript.trim();
-      if (!normalizedTranscript) return;
-      setDraft((current) => {
-        const nextValue = `${current}${current ? ' ' : ''}${normalizedTranscript}`.trim();
-        draftRef.current = nextValue;
-        return nextValue;
-      });
-    };
-    recognition.onerror = () => setListening(false);
-    recognition.onend = () => setListening(false);
-    recognitionRef.current = recognition;
-    setListening(true);
-    recognition.start();
-  }, [listening, phase, voiceSupported]);
+
+        if (finalTranscript) {
+          accumulatedTranscriptRef.current = appendVoiceTranscript(accumulatedTranscriptRef.current, finalTranscript);
+          draftRef.current = accumulatedTranscriptRef.current;
+          setVoiceProcessing(true);
+          if (voiceProcessingTimeoutRef.current !== null) window.clearTimeout(voiceProcessingTimeoutRef.current);
+          voiceProcessingTimeoutRef.current = window.setTimeout(() => setVoiceProcessing(false), 350);
+        }
+
+        if (interimText) {
+          setInterimTranscript(interimText);
+          setDraft(appendVoiceTranscript(accumulatedTranscriptRef.current, interimText));
+        } else {
+          setInterimTranscript('');
+          setDraft(accumulatedTranscriptRef.current);
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        if (event.error === 'no-speech') return;
+        stopListening();
+      };
+
+      recognition.onend = () => {
+        if (voiceStoppedManuallyRef.current) {
+          setListening(false);
+          return;
+        }
+        if (voiceRestartTimeoutRef.current !== null) window.clearTimeout(voiceRestartTimeoutRef.current);
+        voiceRestartTimeoutRef.current = window.setTimeout(() => {
+          if (voiceStoppedManuallyRef.current) return;
+          try {
+            recognition.start();
+            setListening(true);
+          } catch {
+            stopListening();
+          }
+        }, 300);
+      };
+
+      recognitionRef.current = recognition;
+    }
+
+    voiceStoppedManuallyRef.current = false;
+    accumulatedTranscriptRef.current = draftRef.current;
+    setInterimTranscript('');
+
+    try {
+      recognitionRef.current.start();
+      setListening(true);
+    } catch {
+      stopListening();
+    }
+  }, [stopListening, voiceSupported]);
 
   const clearReadingTimer = useCallback(() => {
     if (readingIntervalRef.current !== null) {
@@ -430,11 +507,15 @@ export default function TerminalPage(_props: TerminalPageProps) {
     setFollowUpDraft(currentResponse?.followUpAnswer ?? '');
   }, [currentResponse?.answer, currentResponse?.followUpAnswer, question?.id]);
 
+  beginReadingPhaseRef.current = beginReadingPhase;
+
   useEffect(() => {
     if (!interview || !question || currentResponse || finishStage !== 'idle') return undefined;
-    beginReadingPhase();
+    beginReadingPhaseRef.current();
     return undefined;
-  }, [beginReadingPhase, currentResponse, finishStage, interview, question]);
+    // intentionally omit beginReadingPhase — use ref to avoid restarting timer on callback identity change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentResponse, finishStage, interview, question]);
 
   useEffect(() => () => {
     clearPhaseTimers();
@@ -503,6 +584,9 @@ export default function TerminalPage(_props: TerminalPageProps) {
           <section className="surface-card">
             <p className="text-ui-label tracking-[0.2em] text-blueprint-muted">MOCK INTERVIEW</p>
             <h1 className="mt-3 text-display-xl text-primary">Practice a realistic mock interview for {domainLabel}.</h1>
+            <span className="mt-3 inline-block rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-sm text-blue-800">
+              You're in an interview. Show what you know.
+            </span>
             <p className="mt-3 max-w-3xl text-body-lg text-blueprint-muted">
               Start from a clean landing page, then continue into the existing setup flow for level, interview type, and interviewer persona.
             </p>
@@ -556,6 +640,19 @@ export default function TerminalPage(_props: TerminalPageProps) {
                       >
                         {historySaveId === item.id ? <LoaderCircle size={15} className="animate-spin" /> : item.savedAt ? <BookmarkCheck size={15} /> : <Bookmark size={15} />}
                         {historySaveId === item.id ? 'Saving...' : item.savedAt ? 'Saved' : 'Save'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLevel(item.level);
+                          setInterviewType(item.interviewType);
+                          setPersona(item.persona);
+                          setLaunchFlowStarted(true);
+                          setDomainConfirmed(true);
+                        }}
+                        className="rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3]"
+                      >
+                        Retry
                       </button>
                       {item.status === 'completed' ? (
                         <button type="button" onClick={() => navigate(`/results/mock/${encodeURIComponent(item.id)}`)} className="rounded-full bg-primary px-4 py-2 text-ui-label text-white hover:bg-[#303031]">
@@ -763,50 +860,53 @@ export default function TerminalPage(_props: TerminalPageProps) {
               ) : null}
             </div>
             <div className="mt-4 flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <button
-                  type="button"
-                  disabled={phase !== 'answering' || submitting || !voiceSupported}
-                  onClick={() => {
-                    if (listening) {
-                      autoVoiceAllowedRef.current = false;
-                      stopListening();
-                      return;
-                    }
-                    autoVoiceAllowedRef.current = true;
-                    startListening();
-                  }}
-                  className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-ui-label ${phase === 'answering' && voiceSupported ? 'border-blueprint-line text-primary' : 'border-blueprint-line text-blueprint-muted opacity-60'}`}
-                >
-                  {listening ? <MicOff size={15} /> : <Mic size={15} />}
-                  {listening ? 'Listening live' : 'Voice input'}
-                </button>
-                {phase === 'answering' && listening ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      autoVoiceAllowedRef.current = false;
-                      stopListening();
-                    }}
-                    className="mt-2 block text-sm text-blueprint-muted underline underline-offset-2"
-                  >
-                    Stop and type instead
-                  </button>
-                ) : phase === 'answering' && voiceSupported ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      autoVoiceAllowedRef.current = true;
-                      startListening();
-                    }}
-                    className="mt-2 block text-sm text-blueprint-muted underline underline-offset-2"
-                  >
-                    Start voice input again
-                  </button>
-                ) : phase === 'submitting' ? (
-                  <p className="mt-2 text-sm text-blueprint-muted">Your answer is being recorded now.</p>
-                ) : (
-                  <p className="mt-2 text-sm text-blueprint-muted">The microphone unlocks after the reading phase.</p>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-3">
+                  {voiceSupported && phase === 'answering' ? (
+                    <button
+                      type="button"
+                      disabled={submitting}
+                      onClick={() => {
+                        if (listening) {
+                          autoVoiceAllowedRef.current = false;
+                          stopListening();
+                        } else {
+                          autoVoiceAllowedRef.current = true;
+                          startListening();
+                        }
+                      }}
+                      className="relative inline-flex items-center gap-3 rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-blueprint-bg disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {listening && (
+                        <span className="absolute -left-1 -top-1 flex h-4 w-4">
+                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                          <span className="relative inline-flex h-4 w-4 rounded-full bg-red-500" />
+                        </span>
+                      )}
+                      <Mic size={15} />
+                      {listening ? (voiceProcessing ? 'Processing...' : 'Listening...') : 'Speak answer'}
+                    </button>
+                  ) : voiceSupported ? (
+                    <span className="inline-flex items-center gap-2 text-sm text-blueprint-muted">
+                      <Mic size={14} />
+                      Mic unlocks after reading phase
+                    </span>
+                  ) : null}
+                  {listening && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        autoVoiceAllowedRef.current = false;
+                        stopListening();
+                      }}
+                      className="text-sm text-blueprint-muted underline underline-offset-2"
+                    >
+                      Stop listening
+                    </button>
+                  )}
+                </div>
+                {interimTranscript && (
+                  <p className="max-w-sm text-sm italic text-blueprint-muted">{interimTranscript}</p>
                 )}
               </div>
               <button
