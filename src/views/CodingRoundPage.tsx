@@ -1,6 +1,6 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { EditorView } from '@codemirror/view';
-import { Bookmark, BookmarkCheck, ChevronDown, ChevronLeft, ChevronRight, History, LoaderCircle, NotebookPen, Play, Shuffle, X } from 'lucide-react';
+import { AlertTriangle, Bookmark, BookmarkCheck, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleX, History, LoaderCircle, NotebookPen, Play, Shuffle, X } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import RoundShell from '../components/RoundShell';
 import RoundDomainGate from '../components/RoundDomainGate';
@@ -12,6 +12,7 @@ import {
   fetchCodingOverview,
   fetchCodingStarterCode,
   generateCodingAttempt,
+  persistCodingResultTitle,
   saveCodingAttempt,
   submitCodingAttempt,
   type CodingAttempt,
@@ -61,7 +62,12 @@ type CodingDraftPayload = {
   savedAt?: string;
 };
 
-type RunPanelOutput = CodingExecutionResult;
+type RunPanelResult =
+  | { status: 'idle' }
+  | { status: 'accepted'; output: string; runtimeMs: number }
+  | { status: 'wrong-answer'; output: string; expectedOutput: string; runtimeMs: number }
+  | { status: 'runtime-error'; message: string; lineLabel: string | null }
+  | { status: 'compile-error'; message: string };
 
 function difficultyCardClasses(level: CodingDifficulty, selected: boolean) {
   if (level === 'easy') {
@@ -145,6 +151,42 @@ function codingStatusLabel(attempt: CodingAttempt) {
   return 'in-progress';
 }
 
+function normalizeRunCodeOutput(lines: string[]) {
+  return lines.join('\n').trim();
+}
+
+function extractExecutionLineLabel(message: string) {
+  const pythonMatch = message.match(/File "<string>", line (\d+)/i);
+  if (pythonMatch) return `Line ${pythonMatch[1]}`;
+  const browserMatch = message.match(/<anonymous>:(\d+):\d+/);
+  if (browserMatch) return `Line ${browserMatch[1]}`;
+  const genericMatch = message.match(/\bline (\d+)\b/i);
+  if (genericMatch) return `Line ${genericMatch[1]}`;
+  return null;
+}
+
+function getRunResultBarStyle(status: Exclude<RunPanelResult['status'], 'idle'>) {
+  if (status === 'accepted') {
+    return {
+      label: 'Accepted',
+      className: 'border-[#16a34a] bg-[rgba(22,163,74,0.15)] text-[#16a34a] dark:border-[#4ade80] dark:text-[#4ade80]',
+      Icon: CheckCircle2,
+    };
+  }
+  if (status === 'compile-error') {
+    return {
+      label: 'Compile Error',
+      className: 'border-[#b45309] bg-[rgba(180,83,9,0.15)] text-[#b45309] dark:border-[#fbbf24] dark:text-[#fbbf24]',
+      Icon: AlertTriangle,
+    };
+  }
+  return {
+    label: status === 'runtime-error' ? 'Runtime Error' : 'Wrong Answer',
+    className: 'border-[#dc2626] bg-[rgba(220,38,38,0.15)] text-[#dc2626] dark:border-[#f87171] dark:text-[#f87171]',
+    Icon: CircleX,
+  };
+}
+
 export default function CodingRoundPage() {
   const navigate = useNavigate();
   const params = useParams<{ attemptId?: string }>();
@@ -179,7 +221,7 @@ export default function CodingRoundPage() {
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [runningCode, setRunningCode] = useState(false);
   const [runStatus, setRunStatus] = useState<string | null>(null);
-  const [runOutput, setRunOutput] = useState<RunPanelOutput>({ stdout: [], stderr: [], notices: [] });
+  const [runResult, setRunResult] = useState<RunPanelResult>({ status: 'idle' });
   const [clockNow, setClockNow] = useState(Date.now());
   const [expiring, setExpiring] = useState(false);
   const [launchFlowStarted, setLaunchFlowStarted] = useState(Boolean(attemptId));
@@ -199,6 +241,14 @@ export default function CodingRoundPage() {
     : 0;
   const roundExpired = Boolean(attempt && elapsedSeconds >= attempt.durationMinutes * 60);
   const languageOptions = useMemo(() => getDomainLanguageOptions(attempt?.problem.domain ?? domain), [attempt?.problem.domain, domain]);
+
+  const navigateToResults = useCallback((resultAttempt: CodingAttempt, replace = false) => {
+    persistCodingResultTitle(resultAttempt.id, resultAttempt.problem.title);
+    navigate(`/results/coding/${encodeURIComponent(resultAttempt.id)}`, {
+      replace,
+      state: { result: resultAttempt },
+    });
+  }, [navigate]);
 
   const startCodingRound = useCallback(async () => {
     if (!selectedDifficulty || generating) return;
@@ -281,11 +331,11 @@ export default function CodingRoundPage() {
 
   const openHistoryAttempt = useCallback((historyAttempt: CodingAttempt) => {
     if (historyAttempt.status === 'submitted') {
-      navigate(`/results/coding/${encodeURIComponent(historyAttempt.id)}`);
+      navigateToResults(historyAttempt);
       return;
     }
     navigate(`/round/coding/${encodeURIComponent(historyAttempt.id)}`);
-  }, [navigate]);
+  }, [navigate, navigateToResults]);
 
   const replaceEditorCode = useCallback((nextCode: string) => {
     const editor = editorViewRef.current;
@@ -365,7 +415,7 @@ export default function CodingRoundPage() {
       if (refreshed.ok === true && refreshed.data.status === 'submitted') {
         setAttempt(refreshed.data);
         if (navigateOnComplete) {
-          navigate(`/results/coding/${encodeURIComponent(refreshed.data.id)}`, options.autoSubmitted ? { replace: true } : undefined);
+          navigateToResults(refreshed.data, Boolean(options.autoSubmitted));
         }
         return refreshed.data;
       }
@@ -374,31 +424,58 @@ export default function CodingRoundPage() {
     }
     setAttempt(result.data);
     if (navigateOnComplete) {
-      navigate(`/results/coding/${encodeURIComponent(result.data.id)}`, options.autoSubmitted ? { replace: true } : undefined);
+      navigateToResults(result.data, Boolean(options.autoSubmitted));
     }
     return result.data;
-  }, [attempt, code, elapsedSeconds, navigate, savedNotes, selectedLanguage, submitting]);
+  }, [attempt, code, elapsedSeconds, navigateToResults, savedNotes, selectedLanguage, submitting]);
 
   const handleRunCode = useCallback(async () => {
     if (!attempt || runningCode) return;
     setRunPanelOpen(true);
     setRunningCode(true);
     setRunStatus('Preparing runtime...');
-    setRunOutput({ stdout: [], stderr: [], notices: [] });
+    setRunResult({ status: 'idle' });
     try {
+      const startedAt = performance.now();
       const result = await executeCodingSnippet(codeRef.current || code, selectedLanguage, (message) => {
         setRunStatus(message);
       });
-      setRunOutput(
-        result.stdout.length || result.stderr.length || result.notices.length
-          ? result
-          : { stdout: [], stderr: [], notices: ['Execution finished with no output. Add console.log or print statements to inspect behavior.'] },
-      );
+      if (result.status === 'compile-error') {
+        setRunResult({
+          status: 'compile-error',
+          message: (result.errorMessage ?? result.stderr.join('\n').trim()) || 'Fix the syntax error before running.',
+        });
+        return;
+      }
+      if (result.status === 'runtime-error') {
+        const message = (result.errorMessage ?? result.stderr.join('\n').trim()) || 'Your code threw an exception before producing output.';
+        setRunResult({
+          status: 'runtime-error',
+          message,
+          lineLabel: extractExecutionLineLabel(message),
+        });
+        return;
+      }
+
+      const runtimeMs = Math.max(1, Math.round(performance.now() - startedAt));
+      const actualOutput = normalizeRunCodeOutput(result.stdout);
+      const matchingExample = attempt.problem.examples.find((example) => example.output.trim() === actualOutput);
+      if (matchingExample) {
+        setRunResult({ status: 'accepted', output: actualOutput, runtimeMs });
+        return;
+      }
+      setRunResult({
+        status: 'wrong-answer',
+        output: actualOutput,
+        expectedOutput: attempt.problem.examples[0]?.output.trim() ?? '',
+        runtimeMs,
+      });
     } catch (executionError) {
-      setRunOutput({
-        stdout: [],
-        stderr: [executionError instanceof Error ? executionError.message : 'Execution failed.'],
-        notices: [],
+      const message = executionError instanceof Error ? executionError.message : 'Execution failed.';
+      setRunResult({
+        status: 'runtime-error',
+        message,
+        lineLabel: extractExecutionLineLabel(message),
       });
     } finally {
       setRunningCode(false);
@@ -475,9 +552,10 @@ export default function CodingRoundPage() {
         return;
       }
       if (result.data.status === 'submitted') {
-        navigate(`/results/coding/${encodeURIComponent(result.data.id)}`, { replace: true });
+        navigateToResults(result.data, true);
         return;
       }
+      persistCodingResultTitle(result.data.id, result.data.problem.title);
       setAttempt(result.data);
 
       let restoredCode = result.data.code || result.data.problem.starterCode;
@@ -512,7 +590,7 @@ export default function CodingRoundPage() {
     return () => {
       ignore = true;
     };
-  }, [attemptId, domain, navigate]);
+  }, [attemptId, domain, navigateToResults]);
 
   useEffect(() => {
     setDomainConfirmed(Boolean(attemptId));
@@ -722,7 +800,7 @@ export default function CodingRoundPage() {
                         {historySaveId === item.id ? 'Saving...' : item.savedAt ? 'Saved' : 'Save'}
                       </button>
                       {item.status === 'submitted' ? (
-                        <button type="button" onClick={() => navigate(`/results/coding/${encodeURIComponent(item.id)}`)} className="rounded-full bg-primary px-4 py-2 text-ui-label text-white hover:bg-[#303031]">
+                        <button type="button" onClick={() => navigateToResults(item)} className="rounded-full bg-primary px-4 py-2 text-ui-label text-white hover:bg-[#303031]">
                           View Results
                         </button>
                       ) : (
@@ -947,9 +1025,9 @@ export default function CodingRoundPage() {
                           ) : null}
                           {starterError ? <p className="absolute left-4 top-4 z-30 rounded-full border border-red-500/40 bg-red-950/80 px-4 py-2 text-ui-label text-red-100">{starterError}</p> : null}
                           <div className={`pointer-events-none absolute inset-x-4 bottom-4 z-20 transition-all duration-200 ${runPanelOpen ? 'translate-y-0 opacity-100' : 'translate-y-6 opacity-0'}`}>
-                            <div className="pointer-events-auto h-50 overflow-hidden rounded-2xl border border-[#284535] bg-[rgba(8,12,10,0.94)] shadow-[0_-12px_40px_rgba(0,0,0,0.35)] backdrop-blur-sm">
+                            <div className="pointer-events-auto h-50 overflow-hidden rounded-2xl border border-[#2a2a2f] bg-[rgba(11,12,14,0.96)] shadow-[0_-12px_40px_rgba(0,0,0,0.35)] backdrop-blur-sm">
                               <div className="flex items-center justify-between border-b border-[#1e3227] px-4 py-3">
-                                <p className="font-mono text-xs tracking-[0.24em] text-[#8bcf9f]">OUTPUT</p>
+                                <p className="font-mono text-xs tracking-[0.24em] text-[#d6d3d1]">OUTPUT</p>
                                 <button
                                   type="button"
                                   onClick={() => setRunPanelOpen(false)}
@@ -958,20 +1036,67 @@ export default function CodingRoundPage() {
                                   <X size={16} />
                                 </button>
                               </div>
-                              <div className="h-38 overflow-y-auto px-4 py-3 font-mono text-sm">
-                                {runningCode && runStatus ? <p className="text-[#facc15]">{runStatus}</p> : null}
-                                {runOutput.notices.map((line) => (
-                                  <p key={`notice-${line}`} className="text-[#facc15]">{line}</p>
-                                ))}
-                                {runOutput.stdout.map((line, index) => (
-                                  <p key={`stdout-${index}-${line}`} className="text-[#86efac]">{line}</p>
-                                ))}
-                                {runOutput.stderr.map((line, index) => (
-                                  <p key={`stderr-${index}-${line}`} className="whitespace-pre-wrap text-[#f87171]">{line}</p>
-                                ))}
-                                {!runningCode && !runOutput.stdout.length && !runOutput.stderr.length && !runOutput.notices.length ? (
-                                  <p className="text-[#6ee7b7]">Run your code to inspect stdout and runtime errors here.</p>
-                                ) : null}
+                              <div className="h-38 overflow-y-auto px-4 py-3 text-sm">
+                                {runningCode ? <p className="font-mono text-[#facc15]">{runStatus ?? 'Running code...'}</p> : null}
+                                {!runningCode && runResult.status === 'idle' ? <p className="font-mono text-[#9ca3af]">Run your code to inspect the evaluated output here.</p> : null}
+                                {!runningCode && runResult.status !== 'idle' ? (() => {
+                                  const barStyle = getRunResultBarStyle(runResult.status);
+                                  const Icon = barStyle.Icon;
+                                  if (runResult.status === 'accepted') {
+                                    return (
+                                      <div className="space-y-3">
+                                        <div className={`flex h-9 w-full items-center gap-2 rounded border px-3 ${barStyle.className}`}>
+                                          <Icon size={16} />
+                                          <span className="font-semibold">{barStyle.label}</span>
+                                        </div>
+                                        <pre className="whitespace-pre-wrap rounded-md bg-[#0c1510] p-3 font-mono text-[#16a34a] dark:text-[#4ade80]">{runResult.output || ' '}</pre>
+                                        <p className="text-xs text-[#9ca3af]">Runtime: {runResult.runtimeMs}ms</p>
+                                      </div>
+                                    );
+                                  }
+                                  if (runResult.status === 'wrong-answer') {
+                                    return (
+                                      <div className="space-y-3">
+                                        <div className={`flex h-9 w-full items-center gap-2 rounded border px-3 ${barStyle.className}`}>
+                                          <Icon size={16} />
+                                          <span className="font-semibold">{barStyle.label}</span>
+                                        </div>
+                                        <div>
+                                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#f87171]">Your Output:</p>
+                                          <pre className="mt-2 whitespace-pre-wrap rounded-md bg-[#190f12] p-3 font-mono text-[#f87171]">{runResult.output || ' '}</pre>
+                                        </div>
+                                        <div>
+                                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#16a34a] dark:text-[#4ade80]">Expected Output:</p>
+                                          <pre className="mt-2 whitespace-pre-wrap rounded-md bg-[#0c1510] p-3 font-mono text-[#16a34a] dark:text-[#4ade80]">{runResult.expectedOutput || ' '}</pre>
+                                        </div>
+                                        <p className="text-xs text-[#f59e0b] dark:text-[#fbbf24]">Hint: Check your logic for the base case and edge conditions.</p>
+                                        <p className="text-xs text-[#9ca3af]">Runtime: {runResult.runtimeMs}ms</p>
+                                      </div>
+                                    );
+                                  }
+                                  if (runResult.status === 'runtime-error') {
+                                    return (
+                                      <div className="space-y-3">
+                                        <div className={`flex h-9 w-full items-center gap-2 rounded border px-3 ${barStyle.className}`}>
+                                          <Icon size={16} />
+                                          <span className="font-semibold">{barStyle.label}</span>
+                                        </div>
+                                        <pre className="whitespace-pre-wrap rounded-md bg-[#190f12] p-3 font-mono text-[#f87171]">{runResult.lineLabel ? `${runResult.message}\n${runResult.lineLabel}` : runResult.message}</pre>
+                                        <p className="text-xs text-[#9ca3af]">Your code threw an exception before producing output.</p>
+                                      </div>
+                                    );
+                                  }
+                                  return (
+                                    <div className="space-y-3">
+                                      <div className={`flex h-9 w-full items-center gap-2 rounded border px-3 ${barStyle.className}`}>
+                                        <Icon size={16} />
+                                        <span className="font-semibold">{barStyle.label}</span>
+                                      </div>
+                                      <pre className="whitespace-pre-wrap rounded-md bg-[#1b140c] p-3 font-mono text-[#f59e0b] dark:text-[#fbbf24]">{runResult.message}</pre>
+                                      <p className="text-xs text-[#9ca3af]">Fix the syntax error before running.</p>
+                                    </div>
+                                  );
+                                })() : null}
                               </div>
                             </div>
                           </div>

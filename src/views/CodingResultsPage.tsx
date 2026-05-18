@@ -1,9 +1,17 @@
 import React, { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import type { EditorView } from '@codemirror/view';
 import { diffLines } from 'diff';
+import { LoaderCircle } from 'lucide-react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { DOMAIN_LABELS } from '../lib/prep';
-import { fetchCodingAttempt, submitCodingAttempt, type CodingAttempt } from '../lib/codingRound';
+import {
+  fetchCodingResult,
+  readCodingResultTitle,
+  persistCodingResultTitle,
+  submitCodingAttempt,
+  type CodingApiError,
+  type CodingEvaluationResult,
+} from '../lib/codingRound';
 
 const LazyCodeEditor = React.lazy(() => import('../components/LazyCodeEditor'));
 
@@ -91,23 +99,112 @@ function buildLineComparison(userCode: string, modelCode: string) {
   return { userClasses, modelClasses, stats: { match, differ, missing } };
 }
 
+type CodingResultsLocationState = {
+  result?: CodingEvaluationResult;
+};
+
+function isPrefetchedCodingResult(value: unknown, attemptId: string): value is CodingEvaluationResult {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<CodingEvaluationResult>;
+  return candidate.id === attemptId && Boolean(candidate.problem) && Boolean(candidate.aiUnavailable || candidate.evaluation);
+}
+
 export default function CodingResultsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const params = useParams<{ attemptId?: string }>();
   const attemptId = String(params.attemptId ?? '').trim();
-  const [attempt, setAttempt] = useState<CodingAttempt | null>(null);
-  const [loading, setLoading] = useState(true);
+  const prefetched = useMemo(() => {
+    const state = (location.state as CodingResultsLocationState | null) ?? null;
+    return isPrefetchedCodingResult(state?.result, attemptId) ? state.result : null;
+  }, [attemptId, location.state]);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error' | 'unavailable'>(() => {
+    if (!attemptId) return 'error';
+    if (!prefetched) return 'loading';
+    return prefetched.aiUnavailable ? 'unavailable' : 'ready';
+  });
+  const [result, setResult] = useState<CodingEvaluationResult | null>(prefetched);
   const [error, setError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const [showNotes, setShowNotes] = useState(() => new URLSearchParams(location.search).get('showNotes') === '1');
   const [scoreExplainerOpen, setScoreExplainerOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
+  const [slowLoad, setSlowLoad] = useState(false);
+  const [pollingMissingResult, setPollingMissingResult] = useState(false);
+  const [missingResultPollsLeft, setMissingResultPollsLeft] = useState(3);
   const notesSectionRef = useRef<HTMLElement | null>(null);
   const userEditorRef = useRef<EditorView | null>(null);
   const modelEditorRef = useRef<EditorView | null>(null);
   const syncingScrollRef = useRef(false);
+  const activeFetchRef = useRef<AbortController | null>(null);
+  const missingResultPollTimerRef = useRef<number | null>(null);
+
+  const attempt = result;
+
+  const clearPendingMissingResultPoll = () => {
+    if (missingResultPollTimerRef.current !== null) {
+      window.clearTimeout(missingResultPollTimerRef.current);
+      missingResultPollTimerRef.current = null;
+    }
+  };
+
+  const loadResult = React.useCallback(async (options: { remaining404Polls?: number } = {}) => {
+    clearPendingMissingResultPoll();
+    activeFetchRef.current?.abort();
+
+    if (!attemptId) {
+      setError('Coding attempt id is missing.');
+      setStatus('error');
+      return;
+    }
+
+    const controller = new AbortController();
+    activeFetchRef.current = controller;
+    setStatus('loading');
+    setError(null);
+    setRetryError(null);
+    setPollingMissingResult(false);
+
+    try {
+      const data = await fetchCodingResult(attemptId, controller.signal);
+      if (controller.signal.aborted) return;
+      persistCodingResultTitle(data.id, data.problem.title);
+      setResult(data);
+      setMissingResultPollsLeft(3);
+      if (data.aiUnavailable) {
+        setStatus('unavailable');
+        return;
+      }
+      setStatus('ready');
+    } catch (loadError) {
+      if (controller.signal.aborted || (loadError instanceof DOMException && loadError.name === 'AbortError')) {
+        return;
+      }
+      const requestError = loadError as CodingApiError;
+      if (requestError.statusCode === 404) {
+        const remaining404Polls = options.remaining404Polls ?? 3;
+        const hasMorePolls = remaining404Polls > 0;
+        setResult(null);
+        setMissingResultPollsLeft(remaining404Polls);
+        setPollingMissingResult(hasMorePolls);
+        setError(
+          hasMorePolls
+            ? 'Results not found — this attempt may still be processing'
+            : 'Results not found — this attempt may still be processing. We could not load a completed evaluation yet.',
+        );
+        setStatus('error');
+        if (hasMorePolls) {
+          missingResultPollTimerRef.current = window.setTimeout(() => {
+            void loadResult({ remaining404Polls: remaining404Polls - 1 });
+          }, 5_000);
+        }
+        return;
+      }
+      setError(loadError instanceof Error ? loadError.message : 'Unable to load coding results.');
+      setStatus('error');
+    }
+  }, [attemptId]);
 
   useEffect(() => {
     setShowNotes(new URLSearchParams(location.search).get('showNotes') === '1');
@@ -121,31 +218,42 @@ export default function CodingResultsPage() {
   }, [showNotes]);
 
   useEffect(() => {
+    if (prefetched) {
+      persistCodingResultTitle(prefetched.id, prefetched.problem.title);
+      setResult(prefetched);
+      setError(null);
+      setStatus(prefetched.aiUnavailable ? 'unavailable' : 'ready');
+      return undefined;
+    }
     if (!attemptId) {
       setError('Coding attempt id is missing.');
-      setLoading(false);
-      return;
+      setStatus('error');
+      return undefined;
     }
-    let ignore = false;
-    setLoading(true);
-    setError(null);
-    void fetchCodingAttempt(attemptId).then((result) => {
-      if (ignore) return;
-      setLoading(false);
-      if (result.ok === false) {
-        setError(result.error);
-        return;
-      }
-      setAttempt(result.data);
-    });
+    void loadResult({ remaining404Polls: 3 });
     return () => {
-      ignore = true;
+      clearPendingMissingResultPoll();
+      activeFetchRef.current?.abort();
     };
-  }, [attemptId]);
+  }, [attemptId, loadResult, prefetched]);
+
+  useEffect(() => {
+    if (status !== 'loading') {
+      setSlowLoad(false);
+      return undefined;
+    }
+    setSlowLoad(false);
+    const timer = window.setTimeout(() => setSlowLoad(true), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [status]);
 
   const evaluation = attempt?.evaluation ?? null;
   const problem = attempt?.problem ?? null;
   const aiUnavailable = attempt?.aiUnavailable ?? false;
+  const loadingTitle = useMemo(() => {
+    if (problem?.title) return problem.title;
+    return readCodingResultTitle(attemptId);
+  }, [attemptId, problem?.title]);
   const domainLabel = useMemo(() => DOMAIN_LABELS[problem?.domain ?? ''] ?? problem?.domain ?? 'Domain', [problem?.domain]);
   const dimensionScores = useMemo(() => {
     if (!evaluation) return null;
@@ -197,34 +305,87 @@ export default function CodingResultsPage() {
     });
     if (result.ok === false) {
       setRetryError(result.error);
-      const refreshed = await fetchCodingAttempt(attempt.id);
-      if (refreshed.ok === true) {
-        setAttempt(refreshed.data);
+      try {
+        const refreshed = await fetchCodingResult(attempt.id);
+        persistCodingResultTitle(refreshed.id, refreshed.problem.title);
+        setResult(refreshed);
+        setStatus(refreshed.aiUnavailable ? 'unavailable' : 'ready');
+      } catch (refreshError) {
+        const requestError = refreshError as CodingApiError;
+        if (!(refreshError instanceof DOMException && refreshError.name === 'AbortError')) {
+          setError(
+            requestError.statusCode === 404
+              ? 'Results not found — this attempt may still be processing'
+              : refreshError instanceof Error ? refreshError.message : 'Unable to load coding results.',
+          );
+          setStatus('error');
+        }
       }
       setRetrying(false);
       return;
     }
-    setAttempt(result.data);
+    persistCodingResultTitle(result.data.id, result.data.problem.title);
+    setResult(result.data);
+    setStatus(result.data.aiUnavailable ? 'unavailable' : 'ready');
     setRetrying(false);
   };
+
+  if (status === 'loading') {
+    return (
+      <div className="min-h-screen bg-[#0d0d0f] text-[#f7f2e8]">
+        <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-10" />
+        <main className="relative z-10 flex min-h-screen items-center justify-center px-4 py-8">
+          <section className="w-full max-w-xl rounded-[28px] border border-[#2d2d31] bg-[#111113] p-8 text-center shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
+            <LoaderCircle size={28} className="mx-auto animate-spin text-[#f7f2e8]" />
+            <h1 className="mt-5 text-headline-lg text-white">Loading your results...</h1>
+            {loadingTitle ? <p className="mt-3 text-body-md text-[#b3aca2]">{loadingTitle}</p> : null}
+            {slowLoad ? (
+              <div className="mt-6 space-y-4">
+                <p className="text-body-md text-[#d6d3d1]">This is taking longer than expected...</p>
+                <button
+                  type="button"
+                  onClick={() => { void loadResult({ remaining404Polls: 3 }); }}
+                  className="rounded-full border border-[#34343a] px-5 py-2.5 text-ui-label text-[#f6efe3] hover:bg-[#1a1a1d]"
+                >
+                  Retry
+                </button>
+              </div>
+            ) : null}
+          </section>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-full bg-background px-4 py-8 sm:px-8 lg:px-16">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
       <main className="relative z-10 mx-auto w-full max-w-6xl space-y-6">
-        {loading ? (
+        {status === 'error' ? (
           <section className="surface-card">
-            <p className="text-body-md text-blueprint-muted">Loading coding results...</p>
+            <p className="text-ui-label text-blueprint-muted">Coding Results</p>
+            <h1 className="mt-2 text-headline-md text-primary not-italic">{error ?? 'Unable to load coding results.'}</h1>
+            {pollingMissingResult ? <p className="mt-3 text-body-md text-blueprint-muted">Retrying automatically in 5 seconds. {missingResultPollsLeft} retries left.</p> : null}
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => { void loadResult({ remaining404Polls: 3 }); }}
+                className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white"
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate('/coding-round')}
+                className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary hover:bg-[#f5f3f3]"
+              >
+                Back To Coding Round
+              </button>
+            </div>
           </section>
         ) : null}
 
-        {error ? (
-          <section className="surface-card">
-            <p className="text-body-md text-red-700">{error}</p>
-          </section>
-        ) : null}
-
-        {!loading && !error && !attempt ? (
+        {status !== 'error' && !attempt ? (
           <section className="surface-card">
             <p className="text-ui-label text-blueprint-muted">Coding Results</p>
             <h1 className="mt-2 text-headline-md text-primary not-italic">No coding attempt was found for this result.</h1>
@@ -235,7 +396,7 @@ export default function CodingResultsPage() {
           </section>
         ) : null}
 
-        {attempt && problem && aiUnavailable ? (
+        {attempt && problem && status === 'unavailable' ? (
           <section className="rounded-[28px] border border-red-200 bg-card p-6 shadow-[0_24px_48px_rgba(0,0,0,0.06)] dark:border-red-500/50 sm:p-8">
             <p className="text-ui-label tracking-[0.22em] text-red-700 dark:text-red-300">EVALUATION UNAVAILABLE</p>
             <h1 className="mt-4 text-display-lg text-primary">DeepSeek could not evaluate your submission.</h1>
@@ -269,7 +430,7 @@ export default function CodingResultsPage() {
           </section>
         ) : null}
 
-        {attempt && problem && evaluation && !aiUnavailable ? (
+        {attempt && problem && evaluation && status === 'ready' && !aiUnavailable ? (
           <>
             <section className="rounded-[28px] border border-blueprint-line bg-card p-6 shadow-[0_24px_48px_rgba(0,0,0,0.06)] sm:p-8">
               <p className="text-ui-label tracking-[0.22em] text-blueprint-muted">CODING RESULTS</p>
@@ -334,7 +495,7 @@ export default function CodingResultsPage() {
                 <div className="mt-4 grid overflow-hidden rounded-2xl border border-blueprint-line lg:grid-cols-2">
                   <div className="border-b border-blueprint-line lg:border-b-0 lg:border-r">
                     <div className="border-b border-blueprint-line bg-blueprint-bg px-4 py-3 text-ui-label text-primary">YOUR CODE</div>
-                    <div className="h-[520px]">
+                    <div className="h-130">
                       <Suspense fallback={<div className="h-full animate-pulse bg-blueprint-bg" />}>
                         <LazyCodeEditor
                           value={attempt.code || ''}
@@ -352,7 +513,7 @@ export default function CodingResultsPage() {
                   </div>
                   <div>
                     <div className="border-b border-blueprint-line bg-blueprint-bg px-4 py-3 text-ui-label text-primary">MODEL SOLUTION</div>
-                    <div className="h-[520px]">
+                    <div className="h-130">
                       <Suspense fallback={<div className="h-full animate-pulse bg-blueprint-bg" />}>
                         <LazyCodeEditor
                           value={evaluation.modelSolutionCode || evaluation.modelSolutionSketch || ''}

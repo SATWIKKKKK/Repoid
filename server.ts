@@ -3206,6 +3206,37 @@ function buildCodingResultMeta(problem: CodingProblemRecord, evaluation: CodingE
   };
 }
 
+async function expandCodingModelSolutionSketch(params: {
+  userId: string;
+  problem: CodingProblemRecord;
+  language: 'typescript' | 'javascript' | 'python' | 'sql' | 'bash';
+  existingSketch: string;
+}) {
+  const existingSketch = params.existingSketch.trim();
+  const sketchSeed = existingSketch || 'Describe the optimal solution approach concretely.';
+  try {
+    await checkAiRateLimit(params.userId, 'coding-model-solution-sketch', 1);
+    const expanded = await callTextModel(
+      'Expand short coding solution sketches into a concrete 3-4 sentence optimal approach description. Return plain text only.',
+      [
+        `Expand this into a 3-4 sentence concrete description of the optimal solution approach for ${params.problem.title} in ${formatCodingLanguageLabel(params.language)}:`,
+        sketchSeed,
+      ].join('\n'),
+      {
+        maxTokens: 200,
+        timeoutMs: 12_000,
+        model: CODING_EVALUATION_MODEL,
+        temperature: 0.35,
+      },
+    );
+    const text = expanded.text.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
+    return text || existingSketch;
+  } catch (error) {
+    console.warn('[coding-eval] sketch expansion failed', { error: error instanceof Error ? error.message : String(error) });
+    return existingSketch;
+  }
+}
+
 async function evaluateCodingSubmission(params: {
   userId: string;
   problem: CodingProblemRecord;
@@ -3256,9 +3287,12 @@ async function evaluateCodingSubmission(params: {
         },
       );
       if (ai.result.modelSolutionSketch.trim().length < 80) {
-        const error = new Error('coding_evaluation_insufficient_model_solution_sketch') as Error & { rawResponse?: string };
-        error.rawResponse = JSON.stringify(ai.result);
-        throw error;
+        ai.result.modelSolutionSketch = await expandCodingModelSolutionSketch({
+          userId: params.userId,
+          problem: params.problem,
+          language: params.language,
+          existingSketch: ai.result.modelSolutionSketch,
+        });
       }
       try {
         await checkAiRateLimit(params.userId, 'coding-model-solution', 1);
@@ -7176,11 +7210,15 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
   app.post('/api/coding/:attemptId/submit', requireUser, async (request, response) => {
     try {
+      const sendSubmitResponse = (statusCode: number, payload: Record<string, unknown>) => {
+        if (response.headersSent) return;
+        response.status(statusCode).json(payload);
+      };
       const user = (request as AuthedRequest).user!;
       const attemptId = String(request.params.attemptId ?? '').trim();
       const attempt = await loadCodingAttempt(user.id, attemptId);
       if (!attempt) {
-        response.status(404).json({ error: 'Coding attempt not found.' });
+        sendSubmitResponse(404, { error: 'Coding attempt not found.' });
         return;
       }
 
@@ -7205,7 +7243,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
         });
       } catch (error) {
         if ((error as Error & { statusCode?: number }).statusCode === 429) {
-          response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
+          sendSubmitResponse(429, { error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
           return;
         }
         aiUnavailable = true;
@@ -7249,11 +7287,12 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
       const submittedAttempt = await loadCodingAttempt(user.id, attemptId);
       if (aiUnavailable) {
-        response.status(503).json({ error: evaluationError ?? 'DeepSeek could not evaluate your submission right now.', aiUnavailable: true, attemptId });
+        sendSubmitResponse(503, { error: evaluationError ?? 'DeepSeek could not evaluate your submission right now.', aiUnavailable: true, attemptId });
         return;
       }
-      response.json({ attempt: submittedAttempt });
+      sendSubmitResponse(200, { attempt: submittedAttempt });
     } catch (error) {
+      if (response.headersSent) return;
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to submit coding attempt.' });
     }
   });

@@ -62,6 +62,8 @@ export type CodingAttempt = {
   nextSteps: string[];
 };
 
+export type CodingEvaluationResult = CodingAttempt;
+
 export type CodingOverview = {
   activeAttemptId: string | null;
   suggestedFromDifficulty: CodingDifficulty | null;
@@ -71,7 +73,14 @@ export type CodingOverview = {
 
 type ApiResult<T> =
   | { ok: true; data: T }
-  | { ok: false; error: string };
+  | { ok: false; error: string; aiUnavailable?: boolean; statusCode?: number };
+
+export type CodingApiError = Error & {
+  statusCode?: number;
+  aiUnavailable?: boolean;
+};
+
+const CODING_RESULT_TITLE_STORAGE_PREFIX = 'automata.coding-result-title:';
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   try {
@@ -83,14 +92,39 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<ApiResu
       },
       ...init,
     });
-    const data = (await response.json().catch(() => ({}))) as T & { error?: string };
+    const data = (await response.json().catch(() => ({}))) as T & { error?: string; aiUnavailable?: boolean };
     if (!response.ok) {
-      return { ok: false, error: String(data.error ?? 'Request failed.') };
+      return {
+        ok: false,
+        error: String(data.error ?? 'Request failed.'),
+        aiUnavailable: Boolean(data.aiUnavailable),
+        statusCode: response.status,
+      };
     }
     return { ok: true, data };
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error;
+    }
     return { ok: false, error: error instanceof Error ? error.message : 'Network request failed.' };
   }
+}
+
+export function getCodingResultTitleStorageKey(attemptId: string) {
+  return `${CODING_RESULT_TITLE_STORAGE_PREFIX}${String(attemptId ?? '').trim()}`;
+}
+
+export function persistCodingResultTitle(attemptId: string, title: string) {
+  if (typeof window === 'undefined') return;
+  const normalizedAttemptId = String(attemptId ?? '').trim();
+  const normalizedTitle = String(title ?? '').trim();
+  if (!normalizedAttemptId || !normalizedTitle) return;
+  window.localStorage.setItem(getCodingResultTitleStorageKey(normalizedAttemptId), normalizedTitle);
+}
+
+export function readCodingResultTitle(attemptId: string) {
+  if (typeof window === 'undefined') return '';
+  return window.localStorage.getItem(getCodingResultTitleStorageKey(attemptId))?.trim() ?? '';
 }
 
 export async function fetchCodingOverview(domain: string): Promise<ApiResult<CodingOverview>> {
@@ -110,6 +144,17 @@ export async function fetchCodingAttempt(attemptId: string): Promise<ApiResult<C
   const result = await requestJson<{ attempt: CodingAttempt }>(`/api/coding/attempts/${encodeURIComponent(attemptId)}`);
   if (result.ok === false) return result;
   return { ok: true as const, data: result.data.attempt };
+}
+
+export async function fetchCodingResult(attemptId: string, signal?: AbortSignal): Promise<CodingEvaluationResult> {
+  const result = await requestJson<{ attempt: CodingEvaluationResult }>(`/api/coding/attempts/${encodeURIComponent(attemptId)}`, { signal });
+  if (result.ok === false) {
+    const error = new Error(result.error) as CodingApiError;
+    error.statusCode = result.statusCode;
+    error.aiUnavailable = result.aiUnavailable;
+    throw error;
+  }
+  return result.data.attempt;
 }
 
 export async function fetchCodingStarterCode(

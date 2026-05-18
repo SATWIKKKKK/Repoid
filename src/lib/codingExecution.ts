@@ -4,6 +4,8 @@ export type CodingExecutionResult = {
   stdout: string[];
   stderr: string[];
   notices: string[];
+  status: 'success' | 'runtime-error' | 'compile-error';
+  errorMessage?: string;
 };
 
 type StatusHandler = (message: string) => void;
@@ -61,7 +63,7 @@ async function transformBrowserRunnableCode(code: string, language: CodingLangua
   });
   return {
     transformedCode: result.code.trim(),
-    notices: language === 'typescript' ? ['Type errors are not checked - logic execution only.'] : [],
+    notices: [],
   };
 }
 
@@ -93,10 +95,13 @@ async function executeBrowserCode(code: string, language: 'javascript' | 'typesc
     transformedCode = transformed.transformedCode;
     notices = transformed.notices;
   } catch (error) {
+    const message = `Syntax Error: ${error instanceof Error ? error.message : String(error)}`;
     return {
       stdout: [],
-      stderr: [`Syntax Error: ${error instanceof Error ? error.message : String(error)}`],
+      stderr: [message],
       notices: [],
+      status: 'compile-error',
+      errorMessage: message,
     };
   }
   const iframe = ensureExecutionIframe();
@@ -110,13 +115,16 @@ async function executeBrowserCode(code: string, language: 'javascript' | 'typesc
 
     const handleMessage = (event: MessageEvent) => {
       if (event.source !== iframe.contentWindow) return;
-      const payload = event.data as { source?: string; runId?: string; stdout?: unknown; stderr?: unknown; notices?: unknown };
+      const payload = event.data as { source?: string; runId?: string; stdout?: unknown; stderr?: unknown; notices?: unknown; runtimeError?: unknown };
       if (payload.source !== EXECUTION_MESSAGE_SOURCE || payload.runId !== runId) return;
       cleanup();
+      const runtimeError = typeof payload.runtimeError === 'string' ? payload.runtimeError.trim() : '';
       resolve({
         stdout: Array.isArray(payload.stdout) ? payload.stdout.map(formatExecutionValue) : [],
         stderr: Array.isArray(payload.stderr) ? payload.stderr.map(formatExecutionValue) : [],
         notices: Array.isArray(payload.notices) ? payload.notices.map(formatExecutionValue) : notices,
+        status: runtimeError ? 'runtime-error' : 'success',
+        errorMessage: runtimeError || undefined,
       });
     };
 
@@ -126,6 +134,8 @@ async function executeBrowserCode(code: string, language: 'javascript' | 'typesc
         stdout: [],
         stderr: ['Execution timed out after 8 seconds.'],
         notices,
+        status: 'runtime-error',
+        errorMessage: 'Execution timed out after 8 seconds.',
       });
     }, EXECUTION_TIMEOUT_MS);
 
@@ -145,6 +155,7 @@ async function executeBrowserCode(code: string, language: 'javascript' | 'typesc
       const notices = ${escapeForInlineScript(JSON.stringify(notices))};
       const stdout = [];
       const stderr = [];
+      let runtimeError = '';
       const safeNotices = (() => {
         try {
           return JSON.parse(notices);
@@ -161,21 +172,26 @@ async function executeBrowserCode(code: string, language: 'javascript' | 'typesc
         }
       };
       const send = () => {
-        window.parent.postMessage({ source: ${escapeForInlineScript(EXECUTION_MESSAGE_SOURCE)}, runId, stdout, stderr, notices: safeNotices }, '*');
+        window.parent.postMessage({ source: ${escapeForInlineScript(EXECUTION_MESSAGE_SOURCE)}, runId, stdout, stderr, notices: safeNotices, runtimeError }, '*');
       };
       console.log = (...args) => stdout.push(args.map(format).join(' '));
-      console.error = (...args) => stderr.push('ERROR: ' + args.map(format).join(' '));
+      console.error = (...args) => stdout.push(args.map(format).join(' '));
       window.onerror = (message, source, line, column, error) => {
-        stderr.push(error && error.stack ? error.stack : String(message));
-        send();
+        runtimeError = error && error.stack
+          ? error.stack
+          : [String(message), source ? source + ':' + line + ':' + column : ''].filter(Boolean).join('\n');
         return true;
+      };
+      window.onunhandledrejection = (event) => {
+        const reason = event && event.reason ? event.reason : 'Unhandled promise rejection';
+        runtimeError = reason && reason.stack ? reason.stack : String(reason);
       };
       (async () => {
         try {
           const execute = new Function('console', 'return (async () => {\\n' + userCode + '\\n})();');
           await execute(console);
         } catch (error) {
-          stderr.push(error && error.stack ? error.stack : String(error));
+          runtimeError = error && error.stack ? error.stack : String(error);
         } finally {
           send();
         }
@@ -269,10 +285,16 @@ json.dumps({
 })
     `);
     const parsed = JSON.parse(String(result ?? '{}')) as CodingExecutionResult;
+    const stderr = Array.isArray(parsed.stderr) ? parsed.stderr.map(formatExecutionValue) : [];
+    const runtimeError = stderr.join('\n').trim();
+    const hasRuntimeError = runtimeError.includes('Traceback (most recent call last):');
+    const executionStatus: CodingExecutionResult['status'] = hasRuntimeError ? 'runtime-error' : 'success';
     return {
       stdout: Array.isArray(parsed.stdout) ? parsed.stdout.map(formatExecutionValue) : [],
-      stderr: Array.isArray(parsed.stderr) ? parsed.stderr.map(formatExecutionValue) : [],
+      stderr,
       notices: Array.isArray(parsed.notices) ? parsed.notices.map(formatExecutionValue) : [],
+      status: executionStatus,
+      errorMessage: hasRuntimeError ? runtimeError : undefined,
     };
   } finally {
     pyodide.globals.delete?.('__automata_code__');
@@ -289,13 +311,17 @@ export async function executeCodingSnippet(code: string, language: CodingLanguag
   if (language === 'sql') {
     return {
       stdout: [],
-      stderr: [],
-      notices: ['SQL execution requires a database connection. Describe your expected query results in the Notes field.'],
+      stderr: ['SQL execution is not supported in the browser sandbox.'],
+      notices: [],
+      status: 'compile-error',
+      errorMessage: 'SQL execution is not supported in the browser sandbox.',
     };
   }
   return {
     stdout: [],
-    stderr: [],
-    notices: ['Bash execution is not supported in the browser sandbox. Describe the expected command output in the Notes field.'],
+    stderr: ['Bash execution is not supported in the browser sandbox.'],
+    notices: [],
+    status: 'compile-error',
+    errorMessage: 'Bash execution is not supported in the browser sandbox.',
   };
 }
