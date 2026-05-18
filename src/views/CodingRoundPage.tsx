@@ -1,13 +1,18 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, LoaderCircle, Play, X } from 'lucide-react';
+import type { EditorView } from '@codemirror/view';
+import { Bookmark, BookmarkCheck, ChevronDown, ChevronLeft, ChevronRight, LoaderCircle, NotebookPen, Play, Shuffle, X } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import RoundShell from '../components/RoundShell';
+import RoundDomainGate from '../components/RoundDomainGate';
 import { DOMAIN_FAMILIES, DOMAIN_LABELS } from '../lib/prep';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 import {
   fetchCodingAttempt,
+  fetchCodingHistory,
   fetchCodingOverview,
+  fetchCodingStarterCode,
   generateCodingAttempt,
+  saveCodingAttempt,
   submitCodingAttempt,
   type CodingAttempt,
   type CodingDifficulty,
@@ -129,6 +134,7 @@ export default function CodingRoundPage() {
   const domainLabel = DOMAIN_LABELS[domain] ?? 'Selected Domain';
 
   const [selectedDifficulty, setSelectedDifficulty] = useState<CodingDifficulty | null>(null);
+  const [domainConfirmed, setDomainConfirmed] = useState(Boolean(attemptId));
   const [suggestionMessage, setSuggestionMessage] = useState<string | null>(null);
   const [checkingOverview, setCheckingOverview] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -139,6 +145,12 @@ export default function CodingRoundPage() {
   const [selectedLanguage, setSelectedLanguage] = useState<CodingLanguage>(getPrimaryCodingLanguage(domain));
   const [code, setCode] = useState('');
   const [notes, setNotes] = useState('');
+  const [scratchNotes, setScratchNotes] = useState('');
+  const [scratchOpen, setScratchOpen] = useState(false);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [savingAttempt, setSavingAttempt] = useState(false);
+  const [starterLoading, setStarterLoading] = useState(false);
+  const [starterError, setStarterError] = useState<string | null>(null);
   const [notesOpen, setNotesOpen] = useState(true);
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [runningCode, setRunningCode] = useState(false);
@@ -153,6 +165,7 @@ export default function CodingRoundPage() {
   const remainingRef = useRef<HTMLSpanElement | null>(null);
   const autoSubmitHandledRef = useRef(false);
   const codeRef = useRef('');
+  const editorViewRef = useRef<EditorView | null>(null);
 
   const elapsedSeconds = attempt
     ? Math.max(0, Math.floor((clockNow - new Date(attempt.startedAt).getTime()) / 1000))
@@ -172,6 +185,60 @@ export default function CodingRoundPage() {
     }
     navigate(`/round/coding/${encodeURIComponent(result.data.id)}`, { replace: true });
   }, [domain, generating, navigate, selectedDifficulty]);
+
+  const handleSaveAttempt = useCallback(async () => {
+    if (!attempt || savingAttempt) return;
+    setSavingAttempt(true);
+    const result = await saveCodingAttempt(attempt.id, { saved: !savedAt, scratchNotes });
+    setSavingAttempt(false);
+    if (result.ok) {
+      setSavedAt(result.data.savedAt);
+      setScratchNotes(result.data.scratchNotes ?? scratchNotes);
+    }
+  }, [attempt, savedAt, savingAttempt, scratchNotes]);
+
+  const replaceEditorCode = useCallback((nextCode: string) => {
+    const editor = editorViewRef.current;
+    if (editor) {
+      editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: nextCode } });
+    }
+    codeRef.current = nextCode;
+    setCode(nextCode);
+  }, []);
+
+  const handleLanguageChange = useCallback(async (nextLanguage: CodingLanguage) => {
+    if (!attempt || starterLoading || nextLanguage === selectedLanguage) {
+      setSelectedLanguage(nextLanguage);
+      return;
+    }
+    setStarterLoading(true);
+    setStarterError(null);
+    setSelectedLanguage(nextLanguage);
+    const result = await fetchCodingStarterCode(attempt.problem.id, { language: nextLanguage, domain: attempt.problem.domain });
+    setStarterLoading(false);
+    if (result.ok === false) {
+      setStarterError(result.error);
+      return;
+    }
+    replaceEditorCode(result.data);
+    saveLocalDraft('coding-round', attempt.id, { code: result.data, notes, language: nextLanguage, savedAt: new Date().toISOString() });
+  }, [attempt, notes, replaceEditorCode, selectedLanguage, starterLoading]);
+
+  const handlePreviousProblem = useCallback(async () => {
+    if (!attempt) return;
+    const history = await fetchCodingHistory(attempt.problem.domain, attempt.problem.difficulty);
+    if (!history.ok) return;
+    const previous = history.data.find((item) => item.id !== attempt.id);
+    if (previous) navigate(`/round/coding/${encodeURIComponent(previous.id)}`);
+  }, [attempt, navigate]);
+
+  const handleNewProblem = useCallback(async () => {
+    if (!attempt || generating) return;
+    setGenerating(true);
+    const result = await generateCodingAttempt({ domain: attempt.problem.domain, difficulty: attempt.problem.difficulty, forceNew: true });
+    setGenerating(false);
+    if (result.ok) navigate(`/round/coding/${encodeURIComponent(result.data.id)}`, { replace: true });
+  }, [attempt, generating, navigate]);
 
   const finalizeRound = useCallback(async (options: { autoSubmitted?: boolean; navigateOnComplete?: boolean } = {}) => {
     if (!attempt || submitting) return null;
@@ -310,11 +377,17 @@ export default function CodingRoundPage() {
       codeRef.current = restoredCode;
       setNotes(restoredNotes);
       setSelectedLanguage(restoredLanguage);
+      setScratchNotes(result.data.scratchNotes ?? '');
+      setSavedAt(result.data.savedAt ?? null);
     });
     return () => {
       ignore = true;
     };
   }, [attemptId, domain, navigate]);
+
+  useEffect(() => {
+    setDomainConfirmed(Boolean(attemptId));
+  }, [attemptId, domain]);
 
   useEffect(() => {
     if (!attempt) return undefined;
@@ -333,6 +406,17 @@ export default function CodingRoundPage() {
       document.removeEventListener('visibilitychange', onHidden);
     };
   }, [attempt, notes, selectedLanguage]);
+
+  useEffect(() => {
+    if (!attempt) return undefined;
+    const save = () => {
+      void saveCodingAttempt(attempt.id, { saved: Boolean(savedAt), scratchNotes }).then((result) => {
+        if (result.ok) setSavedAt(result.data.savedAt);
+      });
+    };
+    const interval = window.setInterval(save, 30_000);
+    return () => window.clearInterval(interval);
+  }, [attempt, savedAt, scratchNotes]);
 
   useEffect(() => {
     if (!attempt) return undefined;
@@ -392,7 +476,10 @@ export default function CodingRoundPage() {
             </div>
           </div>
         ) : null}
-        <div className="fixed inset-0 z-70 flex items-center justify-center px-4">
+        {!domainConfirmed ? (
+          <RoundDomainGate roundTitle="CODING ROUND" domain={domain} subject="coding problems" onConfirmed={() => setDomainConfirmed(true)} />
+        ) : null}
+        {domainConfirmed ? <div className="fixed inset-0 z-70 flex items-center justify-center px-4">
           <div className="relative w-full max-w-4xl rounded-[32px] border border-[#2d2d31] bg-[#111113] p-8 text-[#f6efe3] shadow-[0_32px_90px_rgba(0,0,0,0.45)]">
             <p className="text-ui-label tracking-[0.22em] text-[#9f9a92]">CODING ROUND</p>
             <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -431,7 +518,7 @@ export default function CodingRoundPage() {
               {generating ? 'Generating...' : 'Start Coding Round'}
             </button>
           </div>
-        </div>
+        </div> : null}
       </div>
     );
   }
@@ -466,11 +553,28 @@ export default function CodingRoundPage() {
           {attempt ? (
             <section className="flex h-full w-full flex-col overflow-hidden rounded-[28px] border border-[#2d2d31] bg-[#111113] shadow-[0_24px_80px_rgba(0,0,0,0.35)] lg:flex-row">
               <aside className="flex h-full w-full flex-col overflow-y-auto border-b border-[#242427] bg-[#151517] px-6 py-6 lg:w-2/5 lg:border-b-0 lg:border-r">
-                <div className="flex flex-wrap gap-2">
-                  <span className={`rounded-full border px-3 py-1 text-ui-label ${difficultyBadgeClasses(attempt.problem.difficulty)}`}>{attempt.problem.difficulty}</span>
-                  <span className="rounded-full border border-[#333338] bg-[#1d1d21] px-3 py-1 text-ui-label text-[#f1e5d0]">{domainLabel}</span>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex flex-wrap gap-2">
+                    <span className={`rounded-full border px-3 py-1 text-ui-label ${difficultyBadgeClasses(attempt.problem.difficulty)}`}>{attempt.problem.difficulty}</span>
+                    <span className="rounded-full border border-[#333338] bg-[#1d1d21] px-3 py-1 text-ui-label text-[#f1e5d0]">{domainLabel}</span>
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <button type="button" onClick={() => { void handleSaveAttempt(); }} className="rounded-full border border-[#333338] p-2 text-[#f6efe3] hover:bg-[#202025]" aria-label="Save coding attempt">
+                      {savedAt ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}
+                    </button>
+                    <button type="button" onClick={() => setScratchOpen((current) => !current)} className="rounded-full border border-[#333338] p-2 text-[#f6efe3] hover:bg-[#202025]" aria-label="Toggle scratch notes">
+                      <NotebookPen size={17} />
+                    </button>
+                  </div>
                 </div>
-                <h1 className="mt-5 text-headline-lg text-[#fbf7f0]">{attempt.problem.title}</h1>
+                <div className="mt-5 flex items-start justify-between gap-3">
+                  <h1 className="text-headline-lg text-[#fbf7f0]">{attempt.problem.title}</h1>
+                  <div className="flex shrink-0 gap-2">
+                    <button type="button" onClick={() => { void handlePreviousProblem(); }} className="rounded-full border border-[#333338] p-2 text-[#f6efe3] hover:bg-[#202025]" aria-label="Previous problem"><ChevronLeft size={16} /></button>
+                    <button type="button" onClick={() => { void handleNewProblem(); }} className="rounded-full border border-[#333338] p-2 text-[#f6efe3] hover:bg-[#202025]" aria-label="Next problem"><ChevronRight size={16} /></button>
+                    <button type="button" onClick={() => { void handleNewProblem(); }} className="rounded-full border border-[#333338] p-2 text-[#f6efe3] hover:bg-[#202025]" aria-label="Shuffle problem"><Shuffle size={16} /></button>
+                  </div>
+                </div>
                 <p className="mt-5 text-body-lg text-[#cdc6bb]">{attempt.problem.problemStatement}</p>
 
                 <section className="mt-8">
@@ -508,6 +612,18 @@ export default function CodingRoundPage() {
                     ))}
                   </ul>
                 </section>
+                {scratchOpen ? (
+                  <section className="mb-4 rounded-2xl border border-[#2a2a2f] bg-[#101013] p-4">
+                    <h2 className="text-ui-label tracking-[0.18em] text-[#9f9a92]">Scratch Notes</h2>
+                    <textarea
+                      value={scratchNotes}
+                      onChange={(event) => setScratchNotes(event.target.value)}
+                      className="mt-3 h-36 w-full resize-none rounded-xl border border-[#2a2a2f] bg-[#151517] p-3 text-body-md text-[#f2ede4] outline-none"
+                      placeholder="Approach notes, pseudocode, edge cases, observations."
+                    />
+                    <p className="mt-2 text-ui-label text-[#9f9a92]">Autosaves every 30 seconds.</p>
+                  </section>
+                ) : null}
               </aside>
 
               <section className="relative flex h-full w-full min-w-0 flex-col bg-[#0f0f10] lg:w-3/5">
@@ -515,7 +631,7 @@ export default function CodingRoundPage() {
                   <div className="relative">
                     <select
                       value={selectedLanguage}
-                      onChange={(event) => setSelectedLanguage(normalizeClientCodingLanguage(event.target.value, getPrimaryCodingLanguage(attempt.problem.domain)))}
+                      onChange={(event) => { void handleLanguageChange(normalizeClientCodingLanguage(event.target.value, getPrimaryCodingLanguage(attempt.problem.domain))); }}
                       disabled={languageOptions.length <= 1}
                       className="appearance-none rounded-full border border-[#2e2e33] bg-[#1b1b20] px-3 py-1 pr-9 text-ui-label text-[#f6efe3] outline-none transition-colors hover:border-[#4a4a50] disabled:cursor-default disabled:opacity-90"
                     >
@@ -549,17 +665,30 @@ export default function CodingRoundPage() {
                 <div className="border-b border-[#242427] px-4 py-4">
                   <Suspense fallback={<div className="h-full animate-pulse rounded-2xl border border-[#2a2a2f] bg-[#111114]" />}>
                     <div className="relative overflow-hidden rounded-2xl border border-[#2a2a2f] bg-[#111114]" style={{ height: 'calc(100vh - 180px)', overflow: 'hidden' }}>
+                      <div className={starterLoading ? 'h-full opacity-45 transition-opacity' : 'h-full transition-opacity'}>
                       <LazyCodeEditor
                         value={code}
                         language={selectedLanguage}
-                        editable={!submitting && !expiring}
+                        editable={!submitting && !expiring && !starterLoading}
                         height="100%"
+                        onEditorReady={(view) => {
+                          editorViewRef.current = view;
+                        }}
                         onChange={(value) => {
                           codeRef.current = value;
                           setCode(value);
                           saveLocalDraft('coding-round', attempt.id, { code: value, notes, language: selectedLanguage, savedAt: new Date().toISOString() });
                         }}
                       />
+                      </div>
+                      {starterLoading ? (
+                        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/15">
+                          <span className="inline-flex items-center gap-2 rounded-full border border-[#333338] bg-[#141416] px-4 py-2 text-ui-label text-[#f6efe3] shadow-xl">
+                            <LoaderCircle size={16} className="animate-spin" /> Loading starter code...
+                          </span>
+                        </div>
+                      ) : null}
+                      {starterError ? <p className="absolute left-4 top-4 z-30 rounded-full border border-red-500/40 bg-red-950/80 px-4 py-2 text-ui-label text-red-100">{starterError}</p> : null}
                       <div className={`pointer-events-none absolute inset-x-4 bottom-4 z-20 transition-all duration-200 ${runPanelOpen ? 'translate-y-0 opacity-100' : 'translate-y-6 opacity-0'}`}>
                         <div className="pointer-events-auto h-[200px] overflow-hidden rounded-2xl border border-[#284535] bg-[rgba(8,12,10,0.94)] shadow-[0_-12px_40px_rgba(0,0,0,0.35)] backdrop-blur-sm">
                           <div className="flex items-center justify-between border-b border-[#1e3227] px-4 py-3">

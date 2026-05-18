@@ -24,6 +24,7 @@ const QuestionBank = lazy(() => import('./views/QuestionBank'));
 const ResultsPage = lazy(() => import('./views/ResultsPage'));
 const ScenarioResultsPage = lazy(() => import('./views/ScenarioResultsPage'));
 const CodingResultsPage = lazy(() => import('./views/CodingResultsPage'));
+const MockResultsPage = lazy(() => import('./views/MockResultsPage'));
 const PracticeRound = lazy(() => import('./views/PracticeRound'));
 const PracticeSessionResults = lazy(() => import('./views/PracticeSessionResults'));
 const GithubRepos = lazy(() => import('./views/GithubRepos'));
@@ -131,7 +132,8 @@ function AppShell() {
   const isResultsPath = Boolean(matchPath('/results/:roundType', location.pathname))
     || Boolean(matchPath('/results/practice/:sessionId', location.pathname))
     || Boolean(matchPath('/results/scenario/:attemptId', location.pathname))
-    || Boolean(matchPath('/results/coding/:attemptId', location.pathname));
+    || Boolean(matchPath('/results/coding/:attemptId', location.pathname))
+    || Boolean(matchPath('/results/mock/:interviewId', location.pathname));
   const isRoundPath = Boolean(matchPath('/round/*', location.pathname));
   const isLiveRoundPath = ['/scenario-round', '/coding-round', '/mock-interview'].includes(location.pathname);
   const isSettingsPath = location.pathname === '/settings' || location.pathname.startsWith('/settings/');
@@ -256,6 +258,24 @@ function AppShell() {
 
   useEffect(() => {
     if (!user?.loggedIn) return;
+    if (isResultsPath) {
+      try {
+        window.localStorage.removeItem('repoid-active-round');
+        window.localStorage.removeItem('repoid-active-practice-session');
+      } catch {
+        undefined;
+      }
+      return;
+    }
+    try {
+      const activeRound = JSON.parse(window.localStorage.getItem('repoid-active-round') || 'null') as { attemptId?: string; feature?: string; path?: string } | null;
+      if (activeRound?.attemptId && activeRound.path && location.pathname !== activeRound.path) {
+        navigate(activeRound.path, { replace: true });
+        return;
+      }
+    } catch {
+      undefined;
+    }
     let activePracticeId: string | null = null;
     try {
       activePracticeId = window.localStorage.getItem('repoid-active-practice-session');
@@ -268,7 +288,7 @@ function AppShell() {
       setBlockedPracticeId(activePracticeId);
       navigate(expectedPath, { replace: true });
     }
-  }, [location.pathname, navigate, user?.loggedIn]);
+  }, [isResultsPath, location.pathname, navigate, user?.loggedIn]);
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">
@@ -331,6 +351,8 @@ function AppShell() {
             <Route path="/results/:roundType" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><ResultsPage /></ProtectedRoute>} />
             <Route path="/results/scenario/:attemptId" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><ScenarioResultsPage /></ProtectedRoute>} />
             <Route path="/results/coding/:attemptId" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><CodingResultsPage /></ProtectedRoute>} />
+            <Route path="/results/mock/:interviewId" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><MockResultsPage /></ProtectedRoute>} />
+            <Route path="/results/mock-interview" element={<Navigate to="/mock-interview" replace />} />
             <Route path="/saved" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><SavedSessions /></ProtectedRoute>} />
             <Route path="/settings" element={<Navigate to="/settings/profile" replace />} />
             <Route path="/settings/:tab" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><SettingsRoute onViewChange={handleViewChange} /></ProtectedRoute>} />

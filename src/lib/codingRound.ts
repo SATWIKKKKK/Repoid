@@ -44,6 +44,8 @@ export type CodingAttempt = {
   submittedAt: string | null;
   score: number | null;
   timeSpentSeconds: number | null;
+  savedAt?: string | null;
+  scratchNotes?: string;
   evaluation: CodingEvaluation | null;
   aiUnavailable: boolean;
   evaluationError: string | null;
@@ -87,7 +89,7 @@ export async function fetchCodingOverview(domain: string): Promise<ApiResult<Cod
   return requestJson<CodingOverview>(`/api/coding/overview?domain=${encodeURIComponent(domain)}`);
 }
 
-export async function generateCodingAttempt(payload: { domain: string; difficulty: CodingDifficulty }): Promise<ApiResult<CodingAttempt>> {
+export async function generateCodingAttempt(payload: { domain: string; difficulty: CodingDifficulty; forceNew?: boolean }): Promise<ApiResult<CodingAttempt>> {
   const result = await requestJson<{ attempt: CodingAttempt; resumed?: boolean }>('/api/coding/generate', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -100,6 +102,37 @@ export async function fetchCodingAttempt(attemptId: string): Promise<ApiResult<C
   const result = await requestJson<{ attempt: CodingAttempt }>(`/api/coding/attempts/${encodeURIComponent(attemptId)}`);
   if (result.ok === false) return result;
   return { ok: true as const, data: result.data.attempt };
+}
+
+export async function fetchCodingStarterCode(
+  problemId: string,
+  payload: { language: CodingLanguage; domain: string },
+): Promise<ApiResult<string>> {
+  const result = await requestJson<{ starterCode: string }>(`/api/coding/${encodeURIComponent(problemId)}/starter-code`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  if (result.ok === false) return result;
+  return { ok: true as const, data: result.data.starterCode };
+}
+
+export async function saveCodingAttempt(
+  attemptId: string,
+  payload: { saved?: boolean; scratchNotes?: string },
+): Promise<ApiResult<{ savedAt: string | null; scratchNotes?: string }>> {
+  return requestJson<{ savedAt: string | null; scratchNotes?: string }>(`/api/coding/${encodeURIComponent(attemptId)}/save`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchCodingHistory(domain: string, difficulty?: CodingDifficulty): Promise<ApiResult<CodingAttempt[]>> {
+  const params = new URLSearchParams();
+  params.set('domain', domain);
+  if (difficulty) params.set('difficulty', difficulty);
+  const result = await requestJson<{ attempts: CodingAttempt[] }>(`/api/coding/history?${params.toString()}`);
+  if (result.ok === false) return result;
+  return { ok: true as const, data: result.data.attempts };
 }
 
 export async function submitCodingAttempt(

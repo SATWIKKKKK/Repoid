@@ -81,10 +81,21 @@ export default function RoundShell({
   const [kickOutSubmitting, setKickOutSubmitting] = useState(false);
   const [offline, setOffline] = useState(() => typeof navigator !== 'undefined' ? !navigator.onLine : false);
   const [endConfirm, setEndConfirm] = useState(false);
+  const [endConfirmStep, setEndConfirmStep] = useState(0);
   const isMobile = useMemo(() => typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent), []);
   const startedAtMs = useMemo(() => startedAt ? new Date(startedAt).getTime() : Date.now(), [startedAt]);
   const leaveCountKey = attemptId ? `repoid-round-leaves:${feature}:${attemptId}` : '';
   const visibilityEnforced = Boolean(attemptId && onMaxVisibilityLeaves);
+
+  useEffect(() => {
+    if (!attemptId) return undefined;
+    try {
+      window.localStorage.setItem('repoid-active-round', JSON.stringify({ attemptId, feature, path: window.location.pathname }));
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }, [attemptId, feature]);
 
   useEffect(() => {
     kickOutHandledRef.current = false;
@@ -269,7 +280,44 @@ export default function RoundShell({
         </div>
       ) : null}
       {fullscreenWarning ? <div className="fixed inset-0 z-95 flex items-center justify-center bg-black/40 px-4"><div className="max-w-md rounded-2xl bg-card p-6 text-center"><h2 className="text-headline-md text-primary not-italic">Return to fullscreen.</h2><p className="mt-2 text-body-md text-blueprint-muted">The round is paused while this overlay is active.</p><button type="button" onClick={() => { void resumeFullscreen(); }} className="mt-5 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">Re-enter Fullscreen</button></div></div> : null}
-      {endConfirm ? <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/40 px-4"><div className="max-w-md rounded-2xl bg-card p-6"><p className="text-ui-label text-blueprint-muted">End Round Early</p><h2 className="mt-2 text-headline-md text-primary not-italic">Submit your current progress?</h2><p className="mt-2 text-body-md text-blueprint-muted">Your saved answers will be submitted and scored where possible.</p><div className="mt-6 flex justify-end gap-3"><button type="button" onClick={() => setEndConfirm(false)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary">Stay</button><button type="button" onClick={() => { setEndConfirm(false); onEndEarly?.(); }} className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">End Round</button></div></div></div> : null}
+      {endConfirm ? (
+        <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/45 px-4">
+          <div className="max-w-md rounded-2xl bg-card p-6">
+            <p className="text-ui-label text-blueprint-muted">Active Round</p>
+            <h2 className="mt-2 text-headline-md text-primary not-italic">You are in an active round. Leaving will end your session.</h2>
+            <p className="mt-2 text-body-md text-blueprint-muted">
+              {endConfirmStep ? 'Confirm one more time to end this round early.' : 'Return to the round or choose to end early.'}
+            </p>
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setEndConfirm(false);
+                  setEndConfirmStep(0);
+                }}
+                className="rounded-full bg-[#dc2626] px-5 py-2.5 text-ui-label text-white"
+              >
+                Return to Round
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!endConfirmStep) {
+                    setEndConfirmStep(1);
+                    return;
+                  }
+                  setEndConfirm(false);
+                  setEndConfirmStep(0);
+                  onEndEarly?.();
+                }}
+                className="rounded-full bg-gray-200 px-5 py-2.5 text-ui-label text-gray-900"
+              >
+                {endConfirmStep ? 'Confirm End Round' : 'End Round Early'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <RoundErrorBoundary>{children}</RoundErrorBoundary>
     </div>

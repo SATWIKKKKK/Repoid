@@ -1,238 +1,364 @@
-import React, { useCallback, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import RoundGuard from '../components/RoundGuard';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { LoaderCircle, Mic, Square } from 'lucide-react';
+import { useNavigate, useParams } from 'react-router-dom';
+import RoundDomainGate from '../components/RoundDomainGate';
 import RoundShell from '../components/RoundShell';
 import { DOMAIN_LABELS } from '../lib/prep';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 import {
-  requestRoundFeedback,
-  startRoundAttempt,
-  submitRoundAttempt,
-  type RoundFeedback,
-  type StoredRoundAttempt,
-} from '../lib/questionBankApi';
-import { getRoundEntryPath } from '../lib/roundNavigation';
-import { saveLocalDraft, saveServerDraft } from '../lib/roundRuntime';
+  fetchMockInterview,
+  finishMockInterview,
+  respondToMockQuestion,
+  startMockInterview,
+  type MockInterviewState,
+  type MockInterviewType,
+  type MockLevel,
+  type MockPersona,
+} from '../lib/mockInterview';
 import { View } from '../App';
 
 interface TerminalPageProps {
   onViewChange: (view: View) => void;
 }
 
-const PERSONAS = [
-  { id: 'Supportive Mentor', name: 'Alex', style: 'supportive', note: 'Encouraging, specific, and calm.' },
-  { id: 'Skeptical Senior Engineer', name: 'Jordan', style: 'technical', note: 'Pushes for depth and precision.' },
-  { id: 'Startup CTO', name: 'Sam', style: 'pressure', note: 'Direct, pragmatic, and impact-focused.' },
+const LEVELS: Array<{ id: MockLevel; title: string; body: string }> = [
+  { id: 'junior', title: 'Junior', body: '0-2 years' },
+  { id: 'mid', title: 'Mid', body: '2-5 years' },
+  { id: 'senior', title: 'Senior', body: '5+ years' },
 ];
+
+const TYPES: Array<{ id: MockInterviewType; title: string; body: string }> = [
+  { id: 'technical', title: 'Technical Deep Dive', body: 'Heavy on domain-specific technical questions.' },
+  { id: 'design', title: 'System Design', body: 'Architecture and design decisions.' },
+  { id: 'mixed', title: 'Behavioral + Technical Mix', body: 'Balanced, realistic interview coverage.' },
+];
+
+const PERSONAS: Array<{ id: MockPersona; name: string; tag: string; body: string }> = [
+  { id: 'alex', name: 'Alex', tag: 'Supportive Mentor', body: 'Encouraging, thorough, and specific.' },
+  { id: 'jordan', name: 'Jordan', tag: 'Skeptical Senior', body: 'Pushes for depth and challenges vague answers.' },
+  { id: 'sam', name: 'Sam', tag: 'Startup CTO', body: 'Pragmatic, fast, and focused on judgment.' },
+];
+
+function personaMeta(persona: MockPersona) {
+  return PERSONAS.find((item) => item.id === persona) ?? PERSONAS[0];
+}
+
+function pickNextIndex(interview: MockInterviewState) {
+  const answered = new Set(interview.responses.map((item) => item.questionId));
+  const next = interview.questions.findIndex((question) => !answered.has(question.id));
+  return next === -1 ? Math.max(0, interview.questions.length - 1) : next;
+}
 
 export default function TerminalPage(_props: TerminalPageProps) {
   const navigate = useNavigate();
+  const params = useParams<{ interviewId?: string }>();
+  const interviewId = String(params.interviewId ?? '').trim();
   const workspace = usePrepWorkspace();
-  const exitPath = getRoundEntryPath('mock-interview');
-  const [attempt, setAttempt] = useState<StoredRoundAttempt | null>(null);
-  const [persona, setPersona] = useState(PERSONAS[0].id);
+  const domain = workspace.selections.domain;
+  const domainLabel = DOMAIN_LABELS[domain] ?? 'Selected Domain';
+  const [domainConfirmed, setDomainConfirmed] = useState(Boolean(interviewId));
+  const [level, setLevel] = useState<MockLevel | null>(null);
+  const [interviewType, setInterviewType] = useState<MockInterviewType | null>(null);
+  const [persona, setPersona] = useState<MockPersona | null>(null);
+  const [interview, setInterview] = useState<MockInterviewState | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [draft, setDraft] = useState('');
   const [followUpDraft, setFollowUpDraft] = useState('');
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [followUps, setFollowUps] = useState<Record<string, string>>({});
-  const [feedback, setFeedback] = useState<Record<string, RoundFeedback>>({});
-  const [loadingAttempt, setLoadingAttempt] = useState(false);
-  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [elapsedLoading, setElapsedLoading] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const questions = attempt?.questions ?? [];
-  const question = questions[currentIndex] ?? null;
-  const domainLabel = DOMAIN_LABELS[workspace.selections.domain] ?? 'Selected Domain';
-  const submittedCurrent = Boolean(question && answers[question.id]);
-  const isLastQuestion = currentIndex === questions.length - 1;
-  const voiceSupported = typeof window !== 'undefined'
-    && window.isSecureContext
-    && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
 
-  const startAttempt = useCallback(async () => {
-    if (attempt || loadingAttempt) return;
-    setLoadingAttempt(true);
+  const question = interview?.questions[currentIndex] ?? null;
+  const currentResponse = question ? interview?.responses.find((item) => item.questionId === question.id) ?? null : null;
+  const meta = personaMeta(interview?.persona ?? persona ?? 'alex');
+  const setupReady = Boolean(level && interviewType && persona);
+  const answeredCount = interview?.responses.length ?? 0;
+  const voiceSupported = typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+
+  useEffect(() => {
+    if (!interviewId) return undefined;
+    let ignore = false;
+    setLoading(true);
     setError(null);
-    const result = await startRoundAttempt({
-      roundType: 'mock-interview',
-      questionType: 'mock',
-      domain: workspace.selections.domain,
-      limit: 8,
-      durationMinutes: 35,
+    void fetchMockInterview(interviewId).then((result) => {
+      if (ignore) return;
+      setLoading(false);
+      if (result.ok === false) {
+        setError(result.error);
+        return;
+      }
+      setInterview(result.data);
+      setCurrentIndex(pickNextIndex(result.data));
     });
-    setLoadingAttempt(false);
-    if ('error' in result) throw new Error(result.error);
-    setAttempt(result.data);
-  }, [attempt, loadingAttempt, workspace.selections.domain]);
+    return () => {
+      ignore = true;
+    };
+  }, [interviewId]);
+
+  useEffect(() => {
+    if (!loading && !finishing) return undefined;
+    const started = Date.now();
+    const interval = window.setInterval(() => setElapsedLoading(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(interval);
+  }, [finishing, loading]);
+
+  useEffect(() => {
+    if (!question) return;
+    setDraft(currentResponse?.answer ?? '');
+    setFollowUpDraft(currentResponse?.followUpAnswer ?? '');
+  }, [currentResponse?.answer, currentResponse?.followUpAnswer, question?.id]);
+
+  const startInterview = useCallback(async () => {
+    if (!level || !interviewType || !persona || loading) return;
+    setLoading(true);
+    setElapsedLoading(0);
+    setError(null);
+    const result = await startMockInterview({ domain, level, interviewType, persona });
+    setLoading(false);
+    if (result.ok === false) {
+      setError(result.error);
+      return;
+    }
+    setInterview(result.data);
+    setCurrentIndex(pickNextIndex(result.data));
+    navigate(`/round/mock/${encodeURIComponent(result.data.id)}`, { replace: true });
+  }, [domain, interviewType, level, loading, navigate, persona]);
 
   const submitAnswer = async () => {
-    if (!attempt || !question || !draft.trim() || feedbackLoading) return;
-    setFeedbackLoading(true);
+    if (!interview || !question || !draft.trim() || submitting) return;
+    setSubmitting(true);
     setError(null);
-    const result = await requestRoundFeedback(attempt.id, {
+    const result = await respondToMockQuestion(interview.id, {
       questionId: question.id,
       answer: draft,
-      mode: 'mock',
-      persona,
-    });
-    setFeedbackLoading(false);
-    if ('error' in result) {
-      setError(result.error);
-      return;
-    }
-    setAnswers((current) => ({ ...current, [question.id]: draft }));
-    setFeedback((current) => ({ ...current, [question.id]: result.data }));
-    const payload = { currentIndex, answers: { ...answers, [question.id]: draft }, followUps, feedback: { ...feedback, [question.id]: result.data } };
-    saveLocalDraft('mock-interview', attempt.id, payload);
-    void saveServerDraft('mock-interview', attempt.id, payload);
-  };
-
-  const finishRound = useCallback(async (autoSubmitted = false) => {
-    if (!attempt || submitting) return;
-    setSubmitting(true);
-    const currentDraft = question && !answers[question.id] && draft ? { ...answers, [question.id]: draft } : answers;
-    const result = await submitRoundAttempt(attempt.id, {
-      answers: questions.map((item) => ({
-        questionId: item.id,
-        selectedAnswer: currentDraft[item.id] ?? null,
-        notes: JSON.stringify({
-          answer: currentDraft[item.id] ?? null,
-          followUpQuestion: feedback[item.id]?.followUpQuestion ?? null,
-          followUpAnswer: followUps[item.id] ?? null,
-        }),
-      })),
-      autoSubmitted,
-      timeSpentSeconds: attempt.durationMinutes * 60,
+      followUpAnswer: followUpDraft,
     });
     setSubmitting(false);
-    if ('error' in result) {
+    if (result.ok === false) {
       setError(result.error);
       return;
     }
-    setAttempt(result.data);
-    if (!autoSubmitted) navigate('/results/mock-interview');
-  }, [answers, attempt, draft, navigate, question, questions, submitting]);
-
-  const advance = () => {
-    if (!submittedCurrent) return;
-    if (isLastQuestion) {
-      void finishRound(false);
-      return;
-    }
-    const nextIndex = currentIndex + 1;
-    setCurrentIndex(nextIndex);
-    setDraft(answers[questions[nextIndex]?.id] ?? '');
-    setFollowUpDraft(followUps[questions[nextIndex]?.id] ?? '');
+    setInterview(result.data.interview);
   };
 
+  const finishInterview = useCallback(async () => {
+    if (!interview || finishing) return;
+    setFinishing(true);
+    setElapsedLoading(0);
+    const result = await finishMockInterview(interview.id);
+    setFinishing(false);
+    if (result.ok === false) {
+      setError(result.error);
+      return;
+    }
+    navigate(`/results/mock/${encodeURIComponent(interview.id)}`, { replace: true });
+  }, [finishing, interview, navigate]);
+
+  const nextQuestion = () => {
+    if (!interview) return;
+    if (currentIndex >= interview.questions.length - 1) {
+      void finishInterview();
+      return;
+    }
+    setCurrentIndex((index) => index + 1);
+  };
+
+  const startListening = () => {
+    if (!voiceSupported || listening) return;
+    const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const recognition = new Recognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onresult = (event: any) => {
+      let transcript = '';
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        transcript += event.results[index][0].transcript;
+      }
+      if (transcript.trim()) setDraft((current) => `${current}${current ? ' ' : ''}${transcript.trim()}`);
+    };
+    recognition.onend = () => setListening(false);
+    recognitionRef.current = recognition;
+    setListening(true);
+    recognition.start();
+  };
+
+  const stopListening = () => {
+    recognitionRef.current?.stop?.();
+    setListening(false);
+  };
+
+  if (!domain) {
+    return (
+      <div className="min-h-full bg-background px-4 py-8 sm:px-8 lg:px-16">
+        <section className="surface-card">
+          <p className="text-body-md text-red-700">Choose your interview domain in onboarding before opening mock interview.</p>
+        </section>
+      </div>
+    );
+  }
+
+  if (!interviewId && !domainConfirmed) {
+    return <RoundDomainGate roundTitle="MOCK INTERVIEW" domain={domain} subject="mock interviews" onConfirmed={() => setDomainConfirmed(true)} />;
+  }
+
+  if (!interviewId && !interview) {
+    return (
+      <div className="min-h-full bg-background px-4 py-8 sm:px-8 lg:px-12">
+        <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
+        {loading ? (
+          <div className="fixed inset-0 z-80 flex items-center justify-center bg-background/90 px-4">
+            <div className="rounded-2xl border border-blueprint-line bg-card p-7 text-center shadow-2xl">
+              <LoaderCircle size={24} className="mx-auto animate-spin text-primary" />
+              <h2 className="mt-4 text-headline-md text-primary">Preparing your interviewer...</h2>
+              <p className="mt-2 text-body-md text-blueprint-muted">Elapsed: {elapsedLoading}s · estimated 12s</p>
+            </div>
+          </div>
+        ) : null}
+        <main className="relative z-10 mx-auto w-full max-w-6xl space-y-6">
+          <section className="surface-card">
+            <p className="text-ui-label tracking-[0.2em] text-blueprint-muted">MOCK INTERVIEW</p>
+            <h1 className="mt-3 text-display-xl text-primary">{domainLabel} mock interview setup</h1>
+            {error ? <p className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-body-md text-red-700">{error}</p> : null}
+          </section>
+
+          <section className="surface-card">
+            <h2 className="text-headline-sm text-primary">Experience Level</h2>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              {LEVELS.map((item) => (
+                <button key={item.id} type="button" onClick={() => setLevel(item.id)} className={`rounded-xl border p-5 text-left ${level === item.id ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-primary'}`}>
+                  <p className="text-headline-sm">{item.title}</p>
+                  <p className="mt-2 text-body-md opacity-75">{item.body}</p>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="surface-card">
+            <h2 className="text-headline-sm text-primary">Interview Type</h2>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              {TYPES.map((item) => (
+                <button key={item.id} type="button" onClick={() => setInterviewType(item.id)} className={`rounded-xl border p-5 text-left ${interviewType === item.id ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-primary'}`}>
+                  <p className="text-headline-sm">{item.title}</p>
+                  <p className="mt-2 text-body-md opacity-75">{item.body}</p>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="surface-card">
+            <h2 className="text-headline-sm text-primary">Interviewer Persona</h2>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              {PERSONAS.map((item) => (
+                <button key={item.id} type="button" onClick={() => setPersona(item.id)} className={`rounded-xl border p-5 text-left ${persona === item.id ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-primary'}`}>
+                  <p className="text-ui-label opacity-70">{item.tag}</p>
+                  <h3 className="mt-2 text-headline-sm">{item.name}</h3>
+                  <p className="mt-2 text-body-md opacity-75">{item.body}</p>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <button type="button" disabled={!setupReady || loading} onClick={() => { void startInterview(); }} className="rounded-full bg-primary px-6 py-3 text-ui-label text-white disabled:cursor-not-allowed disabled:opacity-60">
+            Start Interview
+          </button>
+        </main>
+      </div>
+    );
+  }
+
+  if (loading && !interview) {
+    return <div className="min-h-screen bg-background p-8 text-body-md text-blueprint-muted">Loading interview...</div>;
+  }
+
   return (
-    <div className="min-h-full bg-background px-4 py-6 sm:px-8 lg:px-12">
-      <RoundGuard roundName="Mock Interview Round" durationMinutes={35} resultsPath="/results/mock-interview" onStart={startAttempt} onExpire={() => finishRound(true)}>
-        {({ formattedTime, inputsLocked }) => (
-          <RoundShell attemptId={attempt?.id} feature="mock-interview" label={`${domainLabel} Mock Interview`} startedAt={attempt?.startedAt} counter={`Question ${currentIndex + 1} of ${questions.length || 8}`} onEndEarly={() => { void finishRound(false); }}>
-            <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
-            <main className="relative z-10 mx-auto flex w-full max-w-7xl flex-col gap-5">
-              <header className="surface-card-compact flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-ui-label text-blueprint-muted">{domainLabel} Mock Interview</p>
-                  <h1 className="text-headline-md text-primary not-italic">Six-question simulated interview with live interviewer feedback.</h1>
-                </div>
-                <div className="flex items-center gap-2 rounded-full border border-blueprint-line bg-[#efeded] px-3 py-1.5 text-ui-label text-primary">
-                  <span className="material-symbols-outlined text-[16px]">timer</span>
-                  {formattedTime}
-                </div>
-              </header>
+    <RoundShell
+      attemptId={interview?.id}
+      feature="mock-interview"
+      label={`${interview?.domainLabel ?? domainLabel} Mock Interview`}
+      startedAt={interview?.startedAt}
+      pausedMs={interview?.pausedMs ?? 0}
+      counter={`Q${Math.min(currentIndex + 1, interview?.questions.length || 8)} / ${interview?.questions.length || 8}`}
+      timerLimitSeconds={45 * 60}
+      onEndEarly={() => { void finishInterview(); }}
+      onMaxVisibilityLeaves={() => { void finishInterview(); }}
+      kickOutResultsPath={interview ? `/results/mock/${encodeURIComponent(interview.id)}` : undefined}
+      kickOutTopic={interview?.interviewTitle}
+    >
+      <div className="min-h-[calc(100vh-72px)] bg-background px-4 py-6 sm:px-8 lg:px-12">
+        <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
+        {finishing ? (
+          <div className="fixed inset-0 z-90 flex items-center justify-center bg-background/90 px-4">
+            <div className="rounded-2xl border border-blueprint-line bg-card p-7 text-center shadow-2xl">
+              <LoaderCircle size={24} className="mx-auto animate-spin text-primary" />
+              <h2 className="mt-4 text-headline-md text-primary">Interview complete. Generating your readiness report...</h2>
+              <p className="mt-2 text-body-md text-blueprint-muted">Elapsed: {elapsedLoading}s</p>
+            </div>
+          </div>
+        ) : null}
+        <main className="relative z-10 mx-auto w-full max-w-5xl space-y-5">
+          {error ? <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-body-md text-red-700">{error}</p> : null}
+          <section className="surface-card">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-ui-label text-blueprint-muted">{meta.name} · {meta.tag}</p>
+                <h1 className="mt-2 text-headline-lg text-primary">{question?.question ?? 'Loading question...'}</h1>
+              </div>
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-primary text-headline-sm text-white">{meta.name[0]}</span>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <span className="rounded-full border border-blueprint-line bg-blueprint-bg px-3 py-1 text-ui-label text-primary">{question?.type ?? 'question'}</span>
+              <span className="rounded-full border border-blueprint-line bg-blueprint-bg px-3 py-1 text-ui-label text-blueprint-muted">{answeredCount} answered</span>
+            </div>
+          </section>
 
-              {!attempt ? (
-                <section className="grid gap-4 md:grid-cols-3">
-                  {PERSONAS.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setPersona(item.id)}
-                      className={`surface-card text-left transition-colors ${persona === item.id ? 'border-primary bg-primary text-white' : ''}`}
-                    >
-                      <p className="text-ui-label opacity-70">{item.style}</p>
-                      <h2 className="mt-2 text-headline-md not-italic">{item.name}</h2>
-                      <p className="mt-2 text-body-md opacity-80">{item.note}</p>
-                    </button>
-                  ))}
-                </section>
+          <section className="surface-card">
+            <label className="text-ui-label text-blueprint-muted">Your answer</label>
+            <textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              disabled={!question || Boolean(currentResponse)}
+              className="mt-3 min-h-72 w-full resize-none rounded-xl border border-blueprint-line bg-blueprint-bg p-4 text-body-md text-primary outline-none focus:border-primary disabled:opacity-70"
+              placeholder="Answer like you would in a real interview. Name tradeoffs, examples, and validation."
+            />
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-3 text-ui-label text-blueprint-muted">
+              <span className={draft.length < 100 ? 'text-amber-700' : 'text-blueprint-muted'}>{draft.length} characters · 100 soft minimum</span>
+              {voiceSupported ? (
+                <button type="button" onClick={listening ? stopListening : startListening} className="inline-flex items-center gap-2 rounded-full border border-blueprint-line px-4 py-2 text-primary">
+                  {listening ? <Square size={15} /> : <Mic size={15} />} {listening ? 'Stop Listening' : 'Microphone'}
+                </button>
               ) : null}
-
-              {loadingAttempt ? <p className="text-body-md text-blueprint-muted">Loading interview set...</p> : null}
-              {error ? <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-body-md text-red-700">{error}</p> : null}
-
-              <section className="grid gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-                <article className="surface-card">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="rounded-full bg-[#efeded] px-3 py-1 text-ui-label text-blueprint-muted">Question {currentIndex + 1} of {questions.length || 6}</span>
-                    <span className="rounded-full bg-[#efeded] px-3 py-1 text-ui-label text-blueprint-muted">{persona}</span>
-                  </div>
-                  <h2 className="mt-4 text-headline-md text-primary not-italic">{question?.topic ?? 'Interview prompt'}</h2>
-                  <p className="mt-4 text-body-lg text-primary">{question?.questionText ?? 'Start the round to load a domain-specific mock interview prompt.'}</p>
-                  <div className="surface-inset mt-5">
-                    <p className="text-ui-label text-blueprint-muted">What a strong answer covers</p>
-                    <p className="mt-2 text-body-md text-primary">{question?.correctAnswer ?? 'Problem, decision, tradeoff, result, and validation.'}</p>
-                  </div>
-                  {question && feedback[question.id] ? (
-                    <div className="mt-5 rounded-xl border border-blueprint-line bg-card p-4">
-                      {feedback[question.id].aiUnavailable ? <p className="mb-3 rounded-lg border border-blueprint-line bg-[#fff7df] px-4 py-3 text-body-md text-primary">AI evaluation temporarily unavailable - your answer is saved and will be re-evaluated shortly.</p> : null}
-                      <p className="text-ui-label text-blueprint-muted">Interviewer</p>
-                      <p className="mt-2 text-body-md text-primary">{feedback[question.id].spokenResponse}</p>
-                      {feedback[question.id].followUpQuestion ? (
-                        <div className="mt-4">
-                          <p className="text-body-md text-blueprint-muted">{feedback[question.id].followUpQuestion}</p>
-                          <textarea
-                            value={followUpDraft}
-                            onChange={(event) => setFollowUpDraft(event.target.value)}
-                            onBlur={() => {
-                              setFollowUps((current) => ({ ...current, [question.id]: followUpDraft }));
-                              saveLocalDraft('mock-interview', attempt?.id ?? 'pending', { currentIndex, answers, followUps: { ...followUps, [question.id]: followUpDraft }, feedback });
-                            }}
-                            className="mt-3 min-h-24 w-full resize-none rounded-xl border border-blueprint-line bg-blueprint-bg p-3 text-body-md text-primary outline-none focus:border-primary"
-                            placeholder="Optional follow-up answer"
-                          />
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </article>
-
-                <article className="surface-card flex flex-col">
-                  <label className="text-ui-label text-blueprint-muted">Your Response</label>
-                  <textarea
-                    value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
-                    disabled={inputsLocked || !question || submittedCurrent}
-                    className="mt-3 min-h-80 flex-1 resize-none rounded-xl border border-blueprint-line bg-blueprint-bg p-4 text-body-md text-primary outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-70"
-                    placeholder="Write what you said. Include tradeoffs, failure modes, and validation."
-                  />
-                  <div className="mt-2 flex items-center justify-between text-ui-label text-blueprint-muted">
-                    <span>{draft.length} characters</span>
-                    {voiceSupported ? <span>Voice mode available</span> : null}
-                  </div>
-                  <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:justify-end">
-                    <button type="button" onClick={() => navigate(exitPath)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary hover:bg-[#f5f3f3]">
-                      Exit
-                    </button>
-                    {submittedCurrent ? (
-                      <button type="button" onClick={advance} className="rounded-full bg-primary px-6 py-2.5 text-ui-label text-white hover:bg-[#303031]">
-                        {isLastQuestion ? (submitting ? 'Submitting...' : 'Finish Interview') : 'Next Question'}
-                      </button>
-                    ) : (
-                      <button type="button" disabled={inputsLocked || feedbackLoading || !question || !draft.trim()} onClick={() => { void submitAnswer(); }} className="rounded-full bg-primary px-6 py-2.5 text-ui-label text-white hover:bg-[#303031] disabled:cursor-not-allowed disabled:opacity-60">
-                        {feedbackLoading ? 'Interviewer Thinking...' : 'Submit Answer'}
-                      </button>
-                    )}
-                  </div>
-                </article>
-              </section>
-            </main>
-          </RoundShell>
-        )}
-      </RoundGuard>
-    </div>
+            </div>
+            {currentResponse?.followUpQuestion ? (
+              <div className="mt-5 rounded-xl border border-blueprint-line bg-card p-4">
+                <p className="text-ui-label text-blueprint-muted">Optional follow-up</p>
+                <p className="mt-2 text-body-md text-primary">{currentResponse.followUpQuestion}</p>
+                <textarea value={followUpDraft} onChange={(event) => setFollowUpDraft(event.target.value)} className="mt-3 h-24 w-full resize-none rounded-xl border border-blueprint-line bg-blueprint-bg p-3 text-body-md text-primary outline-none" />
+              </div>
+            ) : null}
+            {currentResponse ? (
+              <div className="mt-5 rounded-2xl border border-blueprint-line bg-blueprint-bg p-4">
+                <p className="text-ui-label text-blueprint-muted">{meta.name}</p>
+                <p className="mt-2 text-body-md text-primary">{currentResponse.spokenResponse}</p>
+              </div>
+            ) : null}
+            <div className="mt-5 flex justify-end gap-3">
+              {currentResponse ? (
+                <button type="button" onClick={nextQuestion} className="rounded-full bg-primary px-6 py-3 text-ui-label text-white">
+                  {currentIndex >= (interview?.questions.length ?? 1) - 1 ? 'Finish Interview' : 'Next Question'}
+                </button>
+              ) : (
+                <button type="button" disabled={!draft.trim() || submitting} onClick={() => { void submitAnswer(); }} className="rounded-full bg-primary px-6 py-3 text-ui-label text-white disabled:opacity-60">
+                  {submitting ? 'Interviewer Thinking...' : 'Submit Answer'}
+                </button>
+              )}
+            </div>
+          </section>
+        </main>
+      </div>
+    </RoundShell>
   );
 }

@@ -2,18 +2,41 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { BookmarkCheck, LoaderCircle, RotateCcw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { DOMAIN_LABELS, getVisibleDomainOptions } from '../lib/prep';
-import { fetchPracticeSessions, type PracticeSessionSummary } from '../lib/practiceSessions';
+import { fetchSavedSessions, type SavedRoundType, type SavedSessionCard } from '../lib/savedSessions';
 
-function scoreLabel(session: PracticeSessionSummary) {
-  if (session.score === null) return 'In progress';
-  return `${session.correctAnswers}/${session.totalQuestions} correct · ${session.score}%`;
+const ROUND_FILTERS: Array<{ id: 'all' | SavedRoundType; label: string }> = [
+  { id: 'all', label: 'ALL' },
+  { id: 'practice', label: 'PRACTICE' },
+  { id: 'scenario', label: 'SCENARIO' },
+  { id: 'coding', label: 'CODING' },
+  { id: 'mock', label: 'MOCK' },
+];
+
+const ROUND_BADGES: Record<SavedRoundType, string> = {
+  practice: 'PRACTICE',
+  scenario: 'SCENARIO',
+  coding: 'CODING',
+  mock: 'MOCK',
+};
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Saved recently';
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function statusLabel(session: SavedSessionCard) {
+  if (session.status === 'completed' || session.status === 'submitted') return 'completed';
+  if (session.status === 'abandoned') return 'abandoned';
+  return 'in-progress';
 }
 
 export default function SavedSessions() {
   const navigate = useNavigate();
   const domains = useMemo(() => getVisibleDomainOptions(), []);
   const [selectedDomain, setSelectedDomain] = useState('all');
-  const [sessions, setSessions] = useState<PracticeSessionSummary[]>([]);
+  const [selectedRoundType, setSelectedRoundType] = useState<'all' | SavedRoundType>('all');
+  const [sessions, setSessions] = useState<SavedSessionCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -21,7 +44,7 @@ export default function SavedSessions() {
     let ignore = false;
     setLoading(true);
     setError(null);
-    void fetchPracticeSessions({ savedOnly: true }).then((result) => {
+    void fetchSavedSessions({ domain: selectedDomain, roundType: selectedRoundType }).then((result) => {
       if (ignore) return;
       setLoading(false);
       if (result.ok === false) {
@@ -38,9 +61,8 @@ export default function SavedSessions() {
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [selectedDomain, selectedRoundType]);
 
-  const filteredSessions = sessions.filter((session) => selectedDomain === 'all' || session.domain === selectedDomain);
   const selectedLabel = selectedDomain === 'all' ? 'all domains' : (DOMAIN_LABELS[selectedDomain] ?? selectedDomain);
 
   return (
@@ -51,9 +73,9 @@ export default function SavedSessions() {
           <div className="flex flex-col gap-5 border-b border-blueprint-line pb-5 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <p className="text-ui-label text-blueprint-muted">Saved</p>
-              <h1 className="mt-2 text-display-xl text-primary">Saved practice sessions</h1>
+              <h1 className="mt-2 text-display-xl text-primary">Saved sessions</h1>
               <p className="mt-3 max-w-2xl text-body-lg text-blueprint-muted">
-                Review domain-specific practice sessions end to end, including in-progress sessions that were saved before completion.
+                Resume or review saved work across practice, scenario, coding, and mock interview rounds.
               </p>
             </div>
             {loading ? (
@@ -64,6 +86,19 @@ export default function SavedSessions() {
           </div>
 
           <div className="mt-5 flex gap-2 overflow-x-auto pb-1">
+            {ROUND_FILTERS.map((filter) => (
+              <button
+                key={filter.id}
+                type="button"
+                onClick={() => setSelectedRoundType(filter.id)}
+                className={`shrink-0 rounded-full border px-4 py-2 text-ui-label ${selectedRoundType === filter.id ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-primary'}`}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
             <button
               type="button"
               onClick={() => setSelectedDomain('all')}
@@ -86,50 +121,51 @@ export default function SavedSessions() {
 
         {error ? <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-body-md text-red-700">{error}</p> : null}
 
-        {filteredSessions.length ? (
+        {sessions.length ? (
           <section className="grid gap-4 lg:grid-cols-2">
-            {filteredSessions.map((session) => (
-              <article key={session.id} className="surface-card-compact">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-ui-label text-blueprint-muted">{session.domainLabel}</p>
-                    <h2 className="mt-1 text-headline-sm text-primary">{session.topic}</h2>
-                    <p className="mt-2 text-body-md text-blueprint-muted">{scoreLabel(session)}</p>
+            {sessions.map((session) => {
+              const completed = statusLabel(session) === 'completed';
+              return (
+                <article key={`${session.roundType}-${session.id}`} className="surface-card-compact">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full border border-blueprint-line bg-card px-3 py-1 text-ui-label text-primary">{ROUND_BADGES[session.roundType]}</span>
+                        <span className="rounded-full border border-blueprint-line bg-blueprint-bg px-3 py-1 text-ui-label text-blueprint-muted">{session.domainLabel}</span>
+                      </div>
+                      <h2 className="mt-3 text-headline-sm text-primary">{session.title}</h2>
+                      <p className="mt-2 text-body-md text-blueprint-muted">
+                        Saved {formatDate(session.savedAt)} · {session.score === null ? statusLabel(session) : `${session.score}/10`}
+                      </p>
+                    </div>
+                    <span className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-primary">
+                      <BookmarkCheck size={14} /> {statusLabel(session)}
+                    </span>
                   </div>
-                  <span className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-primary">
-                    <BookmarkCheck size={14} /> Saved
-                  </span>
-                </div>
-                {session.weakTags.length ? (
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {session.weakTags.slice(0, 4).map((tag) => (
-                      <span key={`${session.id}-${tag}`} className="rounded-full border border-blueprint-line bg-[#f5f3f3] px-3 py-1 text-ui-label text-blueprint-muted">{tag}</span>
-                    ))}
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={() => navigate(completed ? session.resultsPath : session.resumePath)}
+                      className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white"
+                    >
+                      {completed ? 'View Results' : 'Resume'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => navigate(session.roundType === 'practice' ? `/practice-tracks?search=${encodeURIComponent(session.title)}` : session.resumePath)}
+                      className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-5 py-2.5 text-ui-label text-primary"
+                    >
+                      <RotateCcw size={14} /> Open Round
+                    </button>
                   </div>
-                ) : null}
-                <div className="mt-5 flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={() => navigate(session.status === 'completed' ? `/results/practice/${session.id}` : `/round/practice/${session.id}`)}
-                    className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white"
-                  >
-                    {session.status === 'completed' ? 'View End to End' : 'Resume Session'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/practice-tracks?search=${encodeURIComponent(session.topic)}`)}
-                    className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-5 py-2.5 text-ui-label text-primary"
-                  >
-                    <RotateCcw size={14} /> Retry Topic
-                  </button>
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </section>
         ) : (
           <section className="surface-card text-center">
             <p className="text-headline-sm text-primary">No saved sessions yet for {selectedLabel}.</p>
-            <p className="mt-3 text-body-md text-blueprint-muted">Save a practice session from results or session history and it will stay here after refresh.</p>
+            <p className="mt-3 text-body-md text-blueprint-muted">Save any round and it will stay here after refresh.</p>
             <button type="button" onClick={() => navigate('/practice-tracks')} className="mt-5 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">
               Open Practice Tracks
             </button>

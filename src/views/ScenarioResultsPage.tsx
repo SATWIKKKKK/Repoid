@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { fetchScenarioResult, type ScenarioResultAttempt } from '../lib/scenarioSessions';
+import { BookmarkCheck } from 'lucide-react';
+import { fetchScenarioResult, saveScenarioAttempt, type ScenarioResultAttempt } from '../lib/scenarioSessions';
 
 function verdictConfig(score: number | null) {
   if (score === null) return { label: 'Pending', className: 'border-blueprint-line bg-card text-primary' };
@@ -18,6 +19,7 @@ export default function ScenarioResultsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [contextOpen, setContextOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!attemptId) {
@@ -125,6 +127,18 @@ export default function ScenarioResultsPage() {
             </section>
 
             <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={async () => {
+                  setSaving(true);
+                  await saveScenarioAttempt(attemptId, true);
+                  setSaving(false);
+                }}
+                className="inline-flex items-center gap-2 rounded-full border border-blueprint-line px-6 py-3 text-ui-label text-primary hover:bg-[#f5f3f3] disabled:opacity-60"
+              >
+                <BookmarkCheck size={16} /> {saving ? 'Saving...' : 'Save'}
+              </button>
               <button
                 type="button"
                 onClick={() => navigate('/scenario-round')}

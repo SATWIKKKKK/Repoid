@@ -40,6 +40,7 @@ import {
   toScenarioDomain,
   type ScenarioDomainId,
 } from './src/lib/scenarioConfig.js';
+import { selectMockQuestionSeeds } from './src/lib/mockQuestionPools.js';
 
 const envPath = path.resolve(process.cwd(), '.env');
 if (fs.existsSync(envPath)) {
@@ -2944,6 +2945,8 @@ type CodingAttemptRecord = {
   submittedAt: string | null;
   score: number | null;
   timeSpentSeconds: number | null;
+  savedAt: string | null;
+  scratchNotes: string;
   evaluation: CodingEvaluation | null;
   aiUnavailable: boolean;
   evaluationError: string | null;
@@ -3255,6 +3258,8 @@ async function loadCodingAttempt(userId: string, attemptId: string) {
     score: number;
     time_spent_seconds: number | null;
     submitted_at: string | null;
+    saved_at: string | null;
+    scratch_notes: string | null;
     evaluation_payload: unknown;
     problem_id: string;
     problem_user_id: string | null;
@@ -3281,6 +3286,8 @@ async function loadCodingAttempt(userId: string, attemptId: string) {
         ca.score,
         ca.time_spent_seconds,
         ca.submitted_at,
+        ca.saved_at,
+        ca.scratch_notes,
         ca.evaluation_payload,
         cp.id AS problem_id,
         cp.user_id AS problem_user_id,
@@ -3339,6 +3346,8 @@ async function loadCodingAttempt(userId: string, attemptId: string) {
     submittedAt: row.submitted_at,
     score: typeof storedScore === 'number' && Number.isFinite(storedScore) && storedScore > 0 ? clampScore(storedScore, meta.score) : (evaluation ? meta.score : null),
     timeSpentSeconds: row.time_spent_seconds === null ? null : Number(row.time_spent_seconds),
+    savedAt: row.saved_at,
+    scratchNotes: String(row.scratch_notes ?? ''),
     evaluation,
     aiUnavailable,
     evaluationError: aiUnavailable ? String(evaluationPayload.error ?? 'DeepSeek could not evaluate your submission right now.') : null,
@@ -3590,6 +3599,323 @@ async function generateCodingAttemptForUser(params: {
   }
 
   throw new Error(`aiUnavailable: Unable to generate a fresh coding problem right now. Last error: ${lastError}`);
+}
+
+type MockLevel = 'junior' | 'mid' | 'senior';
+type MockInterviewType = 'technical' | 'design' | 'mixed';
+type MockPersona = 'alex' | 'jordan' | 'sam';
+type MockQuestionType = 'technical' | 'design' | 'behavioral' | 'situational';
+
+type MockQuestionRecord = {
+  id: string;
+  question: string;
+  type: MockQuestionType;
+  whatWeAreLookingFor: string;
+  followUpIfStrong: string;
+  followUpIfWeak: string;
+};
+
+type MockResponseRecord = {
+  questionId: string;
+  answer: string;
+  followUpAnswer?: string;
+  spokenResponse: string;
+  followUpQuestion: string | null;
+  internalScore: number | null;
+  internalFlags: string[];
+  aiUnavailable?: boolean;
+  answeredAt: string;
+};
+
+function normalizeMockLevel(value: unknown): MockLevel {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'junior' || normalized === 'mid' || normalized === 'senior') return normalized;
+  return 'mid';
+}
+
+function normalizeMockInterviewType(value: unknown): MockInterviewType {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'technical' || normalized === 'design' || normalized === 'mixed') return normalized;
+  return 'mixed';
+}
+
+function normalizeMockPersona(value: unknown): MockPersona {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'jordan' || normalized === 'sam') return normalized;
+  return 'alex';
+}
+
+function mockLevelLabel(level: MockLevel) {
+  if (level === 'junior') return 'Junior (0-2 years)';
+  if (level === 'senior') return 'Senior (5+ years)';
+  return 'Mid (2-5 years)';
+}
+
+function mockInterviewTypeLabel(type: MockInterviewType) {
+  if (type === 'technical') return 'Technical Deep Dive';
+  if (type === 'design') return 'System Design';
+  return 'Behavioral + Technical Mix';
+}
+
+function mockPersonaName(persona: MockPersona) {
+  if (persona === 'jordan') return 'Jordan';
+  if (persona === 'sam') return 'Sam';
+  return 'Alex';
+}
+
+function mockPersonaSystemPrompt(persona: MockPersona) {
+  if (persona === 'jordan') return 'You are Jordan, a skeptical senior engineer. Push for depth. Challenge vague answers directly. Return only JSON.';
+  if (persona === 'sam') return 'You are Sam, a startup CTO. Terse, pragmatic, focused on judgment and ownership. Return only JSON.';
+  return 'You are Alex, a supportive senior engineer interviewer. Respond warmly, acknowledge what the candidate said, ask a follow-up if incomplete. Return only JSON.';
+}
+
+function mockQuestionHash(question: string) {
+  return hashText(question.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 80));
+}
+
+function normalizeMockQuestions(payload: unknown): { interviewTitle: string; questions: MockQuestionRecord[] } {
+  const source = parseJsonRecord(payload);
+  const interviewTitle = String(source.interviewTitle ?? 'Mock Interview').trim() || 'Mock Interview';
+  const rawQuestions = Array.isArray(source.questions) ? source.questions : [];
+  const questions = rawQuestions.map((raw, index) => {
+    const item = parseJsonRecord(raw);
+    const type = String(item.type ?? '').trim().toLowerCase();
+    const normalizedType = (['technical', 'design', 'behavioral', 'situational'].includes(type) ? type : 'technical') as MockQuestionType;
+    return {
+      id: String(item.id ?? `q-${index + 1}`).trim() || `q-${index + 1}`,
+      question: String(item.question ?? '').trim(),
+      type: normalizedType,
+      whatWeAreLookingFor: String(item.whatWeAreLookingFor ?? item.what_we_are_looking_for ?? '').trim(),
+      followUpIfStrong: String(item.followUpIfStrong ?? item.follow_up_if_strong ?? '').trim(),
+      followUpIfWeak: String(item.followUpIfWeak ?? item.follow_up_if_weak ?? '').trim(),
+    };
+  }).filter((item) => item.question && item.whatWeAreLookingFor).slice(0, 8);
+  if (questions.length !== 8) throw new Error(`mock_question_validation_failed:${questions.length}`);
+  return { interviewTitle, questions };
+}
+
+function normalizeMockResponsePayload(payload: unknown) {
+  const source = parseJsonRecord(payload);
+  return {
+    spokenResponse: String(source.spokenResponse ?? 'Take a moment, then continue to the next question.').trim() || 'Take a moment, then continue to the next question.',
+    followUpQuestion: source.followUpQuestion === null ? null : String(source.followUpQuestion ?? '').trim() || null,
+    internalScore: clampScore(source.internalScore, 5),
+    internalFlags: parseJsonArray(source.internalFlags).slice(0, 5),
+  };
+}
+
+function normalizeMockReportPayload(payload: unknown) {
+  const source = parseJsonRecord(payload);
+  const verdict = String(source.readinessVerdict ?? '').trim();
+  return {
+    overallScore: clampScore(source.overallScore, 5),
+    readinessVerdict: ['not-ready', 'borderline', 'ready', 'strong-yes'].includes(verdict) ? verdict : 'borderline',
+    technicalDepth: String(source.technicalDepth ?? 'Evaluation unavailable for some questions.'),
+    communicationClarity: String(source.communicationClarity ?? 'Use clearer structure and examples.'),
+    designThinking: String(source.designThinking ?? 'Name tradeoffs and failure modes more explicitly.'),
+    behavioralMaturity: String(source.behavioralMaturity ?? 'Tie answers to ownership, impact, and learning.'),
+    topThreeStrengths: parseJsonArray(source.topThreeStrengths).slice(0, 3),
+    topThreeWeaknesses: parseJsonArray(source.topThreeWeaknesses).slice(0, 3),
+    criticalGaps: parseJsonArray(source.criticalGaps).slice(0, 5),
+    studyPlan: parseJsonObjectList(source.studyPlan).slice(0, 5).map((item) => ({
+      area: String(item.area ?? 'Interview readiness'),
+      action: String(item.action ?? 'Review missed questions and write stronger structured answers.'),
+      estimatedDays: Math.max(1, Number(item.estimatedDays ?? 3)),
+    })),
+    hiringPanelSummary: String(source.hiringPanelSummary ?? 'The interview showed useful signal, but some evaluation details were unavailable.'),
+  };
+}
+
+function parseMockResponses(value: unknown): MockResponseRecord[] {
+  return parseJsonObjectList(value).map((item) => ({
+    questionId: String(item.questionId ?? ''),
+    answer: String(item.answer ?? ''),
+    followUpAnswer: item.followUpAnswer === undefined ? undefined : String(item.followUpAnswer ?? ''),
+    spokenResponse: String(item.spokenResponse ?? 'Take a moment, then continue to the next question.'),
+    followUpQuestion: item.followUpQuestion === null ? null : String(item.followUpQuestion ?? '').trim() || null,
+    internalScore: item.internalScore === null ? null : clampScore(item.internalScore, 5),
+    internalFlags: parseJsonArray(item.internalFlags),
+    aiUnavailable: Boolean(item.aiUnavailable),
+    answeredAt: String(item.answeredAt ?? new Date().toISOString()),
+  })).filter((item) => item.questionId);
+}
+
+function mapMockInterviewRow(row: {
+  id: string;
+  domain: string;
+  level: string;
+  persona: string;
+  interview_type: string;
+  interview_title: string;
+  status: string;
+  questions: unknown;
+  responses: unknown;
+  current_question_index: number;
+  started_at: string;
+  paused_ms: number;
+  duration_minutes: number;
+  last_saved_at: string | null;
+  saved_at: string | null;
+  completed_at: string | null;
+  report_payload: unknown;
+}) {
+  const questions = parseJsonObjectList(row.questions).map((item, index) => ({
+    id: String(item.id ?? `q-${index + 1}`),
+    question: String(item.question ?? ''),
+    type: (['technical', 'design', 'behavioral', 'situational'].includes(String(item.type)) ? String(item.type) : 'technical') as MockQuestionType,
+    whatWeAreLookingFor: String(item.whatWeAreLookingFor ?? ''),
+    followUpIfStrong: String(item.followUpIfStrong ?? ''),
+    followUpIfWeak: String(item.followUpIfWeak ?? ''),
+  })).filter((item) => item.question);
+  const report = parseJsonRecord(row.report_payload);
+  const hasReport = Object.keys(report).length > 0;
+  return {
+    id: row.id,
+    domain: row.domain,
+    domainLabel: PRACTICE_DOMAIN_LABELS[toPracticeDomain(row.domain) || 'frontend'] ?? row.domain,
+    level: normalizeMockLevel(row.level),
+    interviewType: normalizeMockInterviewType(row.interview_type),
+    persona: normalizeMockPersona(row.persona),
+    interviewTitle: row.interview_title || 'Mock Interview',
+    status: row.status,
+    questions,
+    responses: parseMockResponses(row.responses),
+    currentQuestionIndex: Number(row.current_question_index ?? 0),
+    startedAt: row.started_at,
+    pausedMs: Number(row.paused_ms ?? 0),
+    durationMinutes: Number(row.duration_minutes ?? 45),
+    lastSavedAt: row.last_saved_at,
+    completedAt: row.completed_at,
+    savedAt: row.saved_at,
+    report: hasReport ? normalizeMockReportPayload(report) : null,
+  };
+}
+
+async function loadMockInterview(userId: string, interviewId: string) {
+  const rows = await db.query<{
+    id: string;
+    domain: string;
+    level: string;
+    persona: string;
+    interview_type: string;
+    interview_title: string;
+    status: string;
+    questions: unknown;
+    responses: unknown;
+    current_question_index: number;
+    started_at: string;
+    paused_ms: number;
+    duration_minutes: number;
+    last_saved_at: string | null;
+    saved_at: string | null;
+    completed_at: string | null;
+    report_payload: unknown;
+  }>(`
+    SELECT id, domain, level, persona, interview_type, interview_title, status, questions, responses,
+           current_question_index, started_at, paused_ms, duration_minutes, last_saved_at, saved_at, completed_at, report_payload
+      FROM mock_interviews
+     WHERE id = $1 AND user_id = $2
+     LIMIT 1
+  `, [interviewId, userId]);
+  return rows[0] ? mapMockInterviewRow(rows[0]) : null;
+}
+
+async function getLatestMockInterview(userId: string, domain?: string) {
+  const params: unknown[] = [userId];
+  const domainClause = domain ? 'AND domain = $2' : '';
+  if (domain) params.push(domain);
+  const rows = await db.query<{ id: string }>(`
+    SELECT id FROM mock_interviews
+     WHERE user_id = $1 ${domainClause}
+     ORDER BY COALESCE(completed_at, started_at) DESC
+     LIMIT 1
+  `, params);
+  return rows[0] ? loadMockInterview(userId, rows[0].id) : null;
+}
+
+async function findActiveMockInterview(userId: string, domain: string) {
+  const rows = await db.query<{ id: string }>(`
+    SELECT id FROM mock_interviews
+     WHERE user_id = $1 AND domain = $2 AND status = 'started'
+     ORDER BY started_at DESC
+     LIMIT 1
+  `, [userId, domain]);
+  return rows[0] ? loadMockInterview(userId, rows[0].id) : null;
+}
+
+async function generateMockInterviewForUser(params: { userId: string; domain: string; level: MockLevel; interviewType: MockInterviewType; persona: MockPersona }) {
+  const seenRows = await db.query<{ question_hash: string; question_text: string }>(`
+    SELECT question_hash, question_text
+      FROM question_history
+     WHERE user_id = $1 AND domain = $2 AND round_type = 'mock-interview'
+     ORDER BY seen_at DESC
+     LIMIT 80
+  `, [params.userId, params.domain]);
+  const usedAngles = seenRows.length >= 24 ? seenRows.map((row) => row.question_text).slice(0, 12) : [];
+  const seeds = selectMockQuestionSeeds(params.domain, params.interviewType);
+  const domainLabel = PRACTICE_DOMAIN_LABELS[toPracticeDomain(params.domain) || 'frontend'] ?? params.domain;
+  await checkAiRateLimit(params.userId, 'mock-question-generation', 3);
+  const generated = await callStructuredModel(
+    `You are a technical hiring manager at a tier-1 tech company preparing a mock interview for a ${domainLabel} ${mockLevelLabel(params.level)} engineer. Generate 8 realistic interview questions. Never generate DSA or competitive programming questions. Questions must reflect real engineering work at ${domainLabel} domain. Return only valid JSON.`,
+    `Domain: ${domainLabel}. Level: ${mockLevelLabel(params.level)}. Interview type: ${mockInterviewTypeLabel(params.interviewType)}. Previously seen question hashes for this user+domain: ${JSON.stringify(seenRows.map((row) => row.question_hash))}. These question angles have been used: ${JSON.stringify(usedAngles)}. Draw your 8 questions from this relevant pool: ${JSON.stringify(seeds)}. Generate 8 questions: 2 technical depth, 2 system design or architecture, 2 behavioral/past experience, 2 situational/tradeoff. Vary question types - no two consecutive questions of the same type. For behavioral questions, reframe them as open questions to the candidate. For situational questions, present them as real scenarios. For system design, present them as "Design a [system]" prompts. Return JSON: { interviewTitle: string, questions: [ { id, question, type: 'technical'|'design'|'behavioral'|'situational', whatWeAreLookingFor: string, followUpIfStrong: string, followUpIfWeak: string } ] }`,
+    normalizeMockQuestions,
+    {
+      maxTokens: 2000,
+      timeoutMs: 30_000,
+      model: 'deepseek/deepseek-chat',
+      temperature: 0.8,
+    },
+  );
+  const questions = generated.result.questions.map((question, index) => ({ ...question, id: `q-${index + 1}` }));
+  const interviewId = crypto.randomUUID();
+  await db.prepare(`
+    INSERT INTO mock_interviews (
+      id, user_id, domain, level, persona, interview_type, interview_title, status, questions, responses,
+      current_question_index, started_at, paused_ms, last_saved_at, duration_minutes, completed_at, report_payload
+    ) VALUES (
+      ?, ?, ?, ?, ?, ?, ?, 'started', ?::jsonb, '[]'::jsonb, 0, NOW(), 0, NOW(), 45, NULL, '{}'::jsonb
+    )
+  `).run(
+    interviewId,
+    params.userId,
+    params.domain,
+    params.level,
+    params.persona,
+    params.interviewType,
+    generated.result.interviewTitle,
+    JSON.stringify(questions),
+  );
+  for (const question of questions) {
+    await db.prepare(`
+      INSERT INTO question_history (id, user_id, domain, round_type, question_hash, question_text, seen_at)
+      VALUES (?, ?, ?, 'mock-interview', ?, ?, NOW())
+      ON CONFLICT (user_id, domain, round_type, question_hash) DO NOTHING
+    `).run(crypto.randomUUID(), params.userId, params.domain, mockQuestionHash(question.question), question.question);
+  }
+  const interview = await loadMockInterview(params.userId, interviewId);
+  if (!interview) throw new Error('mock_interview_load_failed');
+  return interview;
+}
+
+function buildFallbackMockReport(interview: Awaited<ReturnType<typeof mapMockInterviewRow>>) {
+  const scored = interview.responses.map((response) => response.internalScore).filter((score): score is number => typeof score === 'number');
+  const average = scored.length ? Math.round(scored.reduce((sum, score) => sum + score, 0) / scored.length) : 5;
+  return {
+    overallScore: average,
+    readinessVerdict: average >= 8 ? 'ready' : average >= 6 ? 'borderline' : 'not-ready',
+    technicalDepth: 'Use more concrete mechanisms, failure modes, and examples from real systems.',
+    communicationClarity: 'Structure each answer with context, decision, tradeoff, outcome, and validation.',
+    designThinking: 'Call out constraints, alternatives, and how you would monitor the chosen approach.',
+    behavioralMaturity: 'Tie ownership stories to impact and learning.',
+    topThreeStrengths: ['Completed the interview flow', 'Provided answer signal across questions', 'Stayed engaged through the round'],
+    topThreeWeaknesses: ['Needs more specificity', 'Some evaluations may be unavailable', 'Tradeoffs can be sharper'],
+    criticalGaps: interview.responses.some((response) => response.internalScore === null) ? ['evaluation unavailable for one or more questions'] : ['deeper examples needed'],
+    studyPlan: [
+      { area: 'Answer structure', action: 'Practice STAR plus technical tradeoff framing for each answer.', estimatedDays: 3 },
+      { area: 'Domain depth', action: 'Review the weak question types from this interview and write model answers.', estimatedDays: 5 },
+    ],
+    hiringPanelSummary: 'The candidate showed useful signal but needs more concrete, domain-specific depth before a strong recommendation.',
+  };
 }
 
 async function generatePracticeSessionQuestions(params: {
@@ -6009,6 +6335,134 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
+  app.get('/api/saved-sessions', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const requestedRoundType = String(request.query.roundType ?? 'all').trim().toLowerCase();
+      const requestedDomain = String(request.query.domain ?? 'all').trim();
+      const sessions: Array<{
+        id: string;
+        roundType: 'practice' | 'scenario' | 'coding' | 'mock';
+        domain: string;
+        domainLabel: string;
+        title: string;
+        savedAt: string;
+        status: string;
+        score: number | null;
+        resumePath: string;
+        resultsPath: string;
+      }> = [];
+
+      if (requestedRoundType === 'all' || requestedRoundType === 'practice') {
+        const practiceRows = await listPracticeSessions(user.id, {
+          domain: requestedDomain === 'all' ? undefined : toPracticeDomain(requestedDomain) || undefined,
+          savedOnly: true,
+        });
+        for (const item of practiceRows) {
+          if (!item.savedAt) continue;
+          sessions.push({
+            id: item.id,
+            roundType: 'practice',
+            domain: item.domain,
+            domainLabel: item.domainLabel,
+            title: item.topic,
+            savedAt: item.savedAt,
+            status: item.status,
+            score: item.score,
+            resumePath: item.status === 'completed' ? `/results/practice/${item.id}` : `/round/practice/${item.id}`,
+            resultsPath: `/results/practice/${item.id}`,
+          });
+        }
+      }
+
+      if (requestedRoundType === 'all' || requestedRoundType === 'scenario') {
+        const domainClause = requestedDomain === 'all' ? '' : 'AND s.domain = $2';
+        const params: unknown[] = [user.id];
+        if (requestedDomain !== 'all') params.push(toScenarioDomain(requestedDomain) || requestedDomain);
+        const rows = await db.query<{ id: string; domain: string; topic: string; status: string; score: number | null; saved_at: string; completed_at: string | null }>(`
+          SELECT sa.id, s.domain, s.topic, sa.status, sa.score, sa.saved_at, sa.completed_at
+            FROM scenario_attempts sa
+            JOIN scenarios s ON s.id = sa.scenario_id
+           WHERE sa.user_id = $1 AND sa.saved_at IS NOT NULL ${domainClause}
+           ORDER BY sa.saved_at DESC
+        `, params);
+        for (const row of rows) {
+          sessions.push({
+            id: row.id,
+            roundType: 'scenario',
+            domain: row.domain,
+            domainLabel: SCENARIO_DOMAIN_LABELS[toScenarioDomain(row.domain) || 'frontend'] ?? row.domain,
+            title: row.topic,
+            savedAt: row.saved_at,
+            status: row.status,
+            score: row.completed_at ? Number(row.score ?? 0) : null,
+            resumePath: row.status === 'completed' ? `/results/scenario/${row.id}` : `/round/scenario/${row.id}`,
+            resultsPath: `/results/scenario/${row.id}`,
+          });
+        }
+      }
+
+      if (requestedRoundType === 'all' || requestedRoundType === 'coding') {
+        const domainClause = requestedDomain === 'all' ? '' : 'AND cp.domain = $2';
+        const params: unknown[] = [user.id];
+        if (requestedDomain !== 'all') params.push(requestedDomain);
+        const rows = await db.query<{ id: string; domain: string; title: string; status: string; score: number | null; saved_at: string; submitted_at: string | null }>(`
+          SELECT ca.id, cp.domain, cp.title, ca.status, ca.score, ca.saved_at, ca.submitted_at
+            FROM coding_attempts ca
+            JOIN coding_problems cp ON cp.id = ca.problem_id
+           WHERE ca.user_id = $1 AND ca.saved_at IS NOT NULL ${domainClause}
+           ORDER BY ca.saved_at DESC
+        `, params);
+        for (const row of rows) {
+          sessions.push({
+            id: row.id,
+            roundType: 'coding',
+            domain: row.domain,
+            domainLabel: PRACTICE_DOMAIN_LABELS[toPracticeDomain(row.domain) || 'frontend'] ?? row.domain,
+            title: row.title,
+            savedAt: row.saved_at,
+            status: row.status,
+            score: row.submitted_at ? Number(row.score ?? 0) : null,
+            resumePath: row.status === 'submitted' ? `/results/coding/${row.id}` : `/round/coding/${row.id}`,
+            resultsPath: `/results/coding/${row.id}`,
+          });
+        }
+      }
+
+      if (requestedRoundType === 'all' || requestedRoundType === 'mock') {
+        const domainClause = requestedDomain === 'all' ? '' : 'AND domain = $2';
+        const params: unknown[] = [user.id];
+        if (requestedDomain !== 'all') params.push(requestedDomain);
+        const rows = await db.query<{ id: string; domain: string; interview_title: string; status: string; saved_at: string; report_payload: unknown; completed_at: string | null }>(`
+          SELECT id, domain, interview_title, status, saved_at, report_payload, completed_at
+            FROM mock_interviews
+           WHERE user_id = $1 AND saved_at IS NOT NULL ${domainClause}
+           ORDER BY saved_at DESC
+        `, params);
+        for (const row of rows) {
+          const report = parseJsonRecord(row.report_payload);
+          sessions.push({
+            id: row.id,
+            roundType: 'mock',
+            domain: row.domain,
+            domainLabel: PRACTICE_DOMAIN_LABELS[toPracticeDomain(row.domain) || 'frontend'] ?? row.domain,
+            title: row.interview_title,
+            savedAt: row.saved_at,
+            status: row.status,
+            score: row.completed_at ? clampScore(report.overallScore, 0) : null,
+            resumePath: row.status === 'completed' ? `/results/mock/${row.id}` : `/round/mock/${row.id}`,
+            resultsPath: `/results/mock/${row.id}`,
+          });
+        }
+      }
+
+      sessions.sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());
+      response.json({ sessions });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load saved sessions.' });
+    }
+  });
+
   app.post('/api/practice/search', requireUser, async (request, response) => {
     try {
       const practiceSearchTimeoutMs = 130_000;
@@ -6540,6 +6994,28 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
+  app.post('/api/scenarios/:attemptId/save', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      const saved = request.body?.saved === undefined ? true : Boolean(request.body.saved);
+      await db.prepare(`
+        UPDATE scenario_attempts
+           SET saved_at = CASE WHEN ? THEN NOW() ELSE NULL END,
+               last_saved_at = NOW()
+         WHERE id = ? AND user_id = ?
+      `).run(saved, attemptId, user.id);
+      const attempt = await loadSingleScenarioAttempt(user.id, attemptId);
+      if (!attempt) {
+        response.status(404).json({ error: 'Scenario attempt not found.' });
+        return;
+      }
+      response.json({ savedAt: saved ? new Date().toISOString() : null });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to save scenario attempt.' });
+    }
+  });
+
   app.get('/api/coding/overview', requireUser, async (request, response) => {
     try {
       const user = (request as AuthedRequest).user!;
@@ -6586,7 +7062,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
         return;
       }
 
-      const activeAttempt = await findActiveCodingAttempt(user.id, domain);
+      const activeAttempt = Boolean(request.body?.forceNew) ? null : await findActiveCodingAttempt(user.id, domain);
       if (activeAttempt) {
         response.json({ attempt: activeAttempt, resumed: true });
         return;
@@ -6716,6 +7192,88 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
+  app.get('/api/coding/history', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const selectedDomain = await getUserSelectedDomain(user.id);
+      const domain = normalizeDomain(request.query.domain, selectedDomain);
+      const difficulty = request.query.difficulty ? normalizeCodingDifficulty(request.query.difficulty) : null;
+      const params: unknown[] = [user.id, domain];
+      const difficultyClause = difficulty ? 'AND cp.difficulty = $3' : '';
+      if (difficulty) params.push(difficulty);
+      const rows = await db.query<{ attempt_id: string }>(`
+        SELECT ca.id AS attempt_id
+          FROM coding_attempts ca
+          JOIN coding_problems cp ON cp.id = ca.problem_id
+         WHERE ca.user_id = $1 AND cp.domain = $2 ${difficultyClause}
+         ORDER BY ca.started_at DESC
+         LIMIT 20
+      `, params);
+      const attempts = (await Promise.all(rows.map((row) => loadCodingAttempt(user.id, row.attempt_id)))).filter(Boolean);
+      response.json({ attempts });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load coding history.' });
+    }
+  });
+
+  app.post('/api/coding/:problemId/starter-code', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const problemId = String(request.params.problemId ?? '').trim();
+      const language = normalizeCodingLanguage(request.body?.language, 'typescript');
+      const domain = normalizeDomain(request.body?.domain, await getUserSelectedDomain(user.id));
+      const rows = await db.query<{ title: string; description: string }>(
+        `SELECT title, description FROM coding_problems WHERE id = $1 AND user_id = $2 LIMIT 1`,
+        [problemId, user.id],
+      );
+      const problem = rows[0];
+      if (!problem) {
+        response.status(404).json({ error: 'Coding problem not found.' });
+        return;
+      }
+      await checkAiRateLimit(user.id, 'coding-starter-code', 1);
+      const domainLabel = PRACTICE_DOMAIN_LABELS[toPracticeDomain(domain) || 'frontend'] ?? domain;
+      const ai = await callStructuredModel(
+        'Return one JSON object only. No markdown fences. No explanation.',
+        `Given this coding problem: ${problem.title}. ${problem.description}. Generate starter code in ${formatCodingLanguageLabel(language)} with TODO comments marking what to implement. 15-25 lines. Return only JSON: { "starterCode": string }. The starterCode value must contain only code, no markdown fences, no explanation. Domain: ${domainLabel}.`,
+        (payload) => {
+          const source = parseJsonRecord(payload);
+          const starterCode = String(source.starterCode ?? source.code ?? '').trim();
+          if (!starterCode) throw new Error('starter_code_empty');
+          return starterCode.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
+        },
+        { maxTokens: 600, timeoutMs: 20_000, model: CODING_PROBLEM_GENERATION_MODEL, temperature: 0.6 },
+      );
+      response.json({ starterCode: ai.result });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to generate starter code.' });
+    }
+  });
+
+  app.post('/api/coding/:attemptId/save', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const attemptId = String(request.params.attemptId ?? '').trim();
+      const saved = request.body?.saved === undefined ? true : Boolean(request.body.saved);
+      const scratchNotes = request.body?.scratchNotes === undefined ? null : String(request.body.scratchNotes ?? '');
+      await db.prepare(`
+        UPDATE coding_attempts
+           SET saved_at = CASE WHEN ? THEN NOW() ELSE NULL END,
+               scratch_notes = COALESCE(?, scratch_notes),
+               last_saved_at = NOW()
+         WHERE id = ? AND user_id = ?
+      `).run(saved, scratchNotes, attemptId, user.id);
+      const attempt = await loadCodingAttempt(user.id, attemptId);
+      if (!attempt) {
+        response.status(404).json({ error: 'Coding attempt not found.' });
+        return;
+      }
+      response.json({ savedAt: attempt.savedAt, scratchNotes: attempt.scratchNotes });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to save coding attempt.' });
+    }
+  });
+
   app.get('/api/coding/problems', requireUser, async (request, response) => {
     try {
       const user = (request as AuthedRequest).user!;
@@ -6752,19 +7310,10 @@ export async function createApp(options: { listen?: boolean } = {}) {
         return;
       }
       const domain = requestedDomain;
-      const existing = await db.prepare(`
-        SELECT id
-          FROM round_attempts
-         WHERE user_id = ? AND round_type = 'mock-interview' AND domain = ? AND status = 'started'
-         ORDER BY started_at DESC
-         LIMIT 1
-      `).get<{ id: string }>(user.id, domain);
-      if (existing?.id) {
-        const attempt = await getRoundAttemptById(user.id, existing.id);
-        if (attempt) {
-          response.json({ attempt });
-          return;
-        }
+      const existing = await findActiveMockInterview(user.id, domain);
+      if (existing) {
+        response.json({ interview: existing, resumed: true });
+        return;
       }
 
       const entitlement = await getEntitlement(user.id, 'mock-interview');
@@ -6772,23 +7321,159 @@ export async function createApp(options: { listen?: boolean } = {}) {
         response.status(403).json({ error: entitlement.upgradeMessage ?? 'Upgrade required.', ...entitlement });
         return;
       }
-      await checkAiRateLimit(user.id, 'mock-question-generation', 3);
-
-      const attempt = await createRoundAttempt({
+      const interview = await generateMockInterviewForUser({
         userId: user.id,
-        roundType: 'mock-interview',
-        questionType: 'mock',
         domain,
-        limit: 8,
-        durationMinutes: 35,
+        level: normalizeMockLevel(request.body?.level),
+        interviewType: normalizeMockInterviewType(request.body?.interviewType),
+        persona: normalizeMockPersona(request.body?.persona),
       });
-      response.status(201).json({ attempt });
+      response.status(201).json({ interview });
     } catch (error) {
       if ((error as Error & { statusCode?: number }).statusCode === 429) {
         response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryable: true });
         return;
       }
       response.status(503).json({ error: "We couldn't prepare your interview - would you like to try again?", retryable: true });
+    }
+  });
+
+  app.get('/api/mock/:interviewId', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const interview = await loadMockInterview(user.id, String(request.params.interviewId ?? ''));
+      if (!interview) {
+        response.status(404).json({ error: 'Mock interview not found.' });
+        return;
+      }
+      response.json({ interview });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load mock interview.' });
+    }
+  });
+
+  app.post('/api/mock/:interviewId/respond', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const interviewId = String(request.params.interviewId ?? '').trim();
+      const interview = await loadMockInterview(user.id, interviewId);
+      if (!interview) {
+        response.status(404).json({ error: 'Mock interview not found.' });
+        return;
+      }
+      const questionId = String(request.body?.questionId ?? '').trim();
+      const answer = String(request.body?.answer ?? '').trim();
+      const followUpAnswer = String(request.body?.followUpAnswer ?? '').trim();
+      const question = interview.questions.find((item) => item.id === questionId);
+      if (!question || !answer) {
+        response.status(400).json({ error: 'questionId and answer are required.' });
+        return;
+      }
+
+      let responsePayload: Omit<MockResponseRecord, 'questionId' | 'answer' | 'followUpAnswer' | 'answeredAt'>;
+      try {
+        await checkAiRateLimit(user.id, 'mock-persona-response', 1);
+        const ai = await callStructuredModel(
+          mockPersonaSystemPrompt(interview.persona),
+          `Domain: ${interview.domainLabel}. Level: ${mockLevelLabel(interview.level)}. Question: ${question.question}. Looking for: ${question.whatWeAreLookingFor}. Answer: ${answer}. Follow-up answer: ${followUpAnswer || 'none'}. Return JSON: { spokenResponse: string (1-2 sentences in persona voice), followUpQuestion: string | null, internalScore: number (1-10), internalFlags: string[] (what they missed) }`,
+          normalizeMockResponsePayload,
+          { maxTokens: 250, timeoutMs: 15_000, model: 'deepseek/deepseek-chat', temperature: 0.75 },
+        );
+        responsePayload = ai.result;
+      } catch {
+        responsePayload = {
+          spokenResponse: 'Take a moment, then continue to the next question.',
+          followUpQuestion: null,
+          internalScore: null,
+          internalFlags: ['evaluation unavailable for this question'],
+          aiUnavailable: true,
+        };
+      }
+
+      const responses = interview.responses.filter((item) => item.questionId !== questionId);
+      const storedResponse: MockResponseRecord = {
+        questionId,
+        answer,
+        ...(followUpAnswer ? { followUpAnswer } : {}),
+        ...responsePayload,
+        answeredAt: new Date().toISOString(),
+      };
+      responses.push(storedResponse);
+      const answeredIndexes = responses
+        .map((item) => interview.questions.findIndex((questionItem) => questionItem.id === item.questionId))
+        .filter((index) => index >= 0);
+      const nextIndex = Math.min(interview.questions.length - 1, Math.max(0, Math.max(...answeredIndexes, -1) + 1));
+      await db.prepare(`
+        UPDATE mock_interviews
+           SET responses = ?::jsonb,
+               current_question_index = ?,
+               last_saved_at = NOW()
+         WHERE id = ? AND user_id = ?
+      `).run(JSON.stringify(responses), nextIndex, interviewId, user.id);
+      const updated = await loadMockInterview(user.id, interviewId);
+      response.json({ response: storedResponse, interview: updated });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to record mock response.' });
+    }
+  });
+
+  app.post('/api/mock/:interviewId/finish', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const interviewId = String(request.params.interviewId ?? '').trim();
+      const interview = await loadMockInterview(user.id, interviewId);
+      if (!interview) {
+        response.status(404).json({ error: 'Mock interview not found.' });
+        return;
+      }
+      let report = buildFallbackMockReport(interview);
+      try {
+        await checkAiRateLimit(user.id, 'mock-final-report', 1);
+        const ai = await callStructuredModel(
+          'You are a hiring panel lead writing a final interview assessment. Be honest, specific, constructive. No generic praise. Return only valid JSON.',
+          `Domain: ${interview.domainLabel}. Level: ${mockLevelLabel(interview.level)}. Persona: ${mockPersonaName(interview.persona)}. Full interview record: ${JSON.stringify({ questions: interview.questions, responses: interview.responses.map((item) => ({ ...item, scoreNote: item.internalScore === null ? 'evaluation unavailable for this question' : item.internalScore })) })}. Generate final report. Return JSON: { overallScore: number (1-10), readinessVerdict: 'not-ready'|'borderline'|'ready'|'strong-yes', technicalDepth: string, communicationClarity: string, designThinking: string, behavioralMaturity: string, topThreeStrengths: string[], topThreeWeaknesses: string[], criticalGaps: string[], studyPlan: [ { area: string, action: string, estimatedDays: number } ], hiringPanelSummary: string (2-3 sentences as if written for a real hiring committee) }`,
+          normalizeMockReportPayload,
+          { maxTokens: 900, timeoutMs: 25_000, model: 'deepseek/deepseek-chat', temperature: 0.5 },
+        );
+        report = ai.result;
+      } catch {
+        report = buildFallbackMockReport(interview);
+      }
+      await db.prepare(`
+        UPDATE mock_interviews
+           SET status = 'completed',
+               completed_at = NOW(),
+               current_question_index = ?,
+               last_saved_at = NOW(),
+               report_payload = ?::jsonb
+         WHERE id = ? AND user_id = ?
+      `).run(interview.questions.length, JSON.stringify(report), interviewId, user.id);
+      const updated = await loadMockInterview(user.id, interviewId);
+      response.json({ interview: updated });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to finish mock interview.' });
+    }
+  });
+
+  app.post('/api/mock/:interviewId/save', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const interviewId = String(request.params.interviewId ?? '').trim();
+      const saved = request.body?.saved === undefined ? true : Boolean(request.body.saved);
+      await db.prepare(`
+        UPDATE mock_interviews
+           SET saved_at = CASE WHEN ? THEN NOW() ELSE NULL END,
+               last_saved_at = NOW()
+         WHERE id = ? AND user_id = ?
+      `).run(saved, interviewId, user.id);
+      const interview = await loadMockInterview(user.id, interviewId);
+      if (!interview) {
+        response.status(404).json({ error: 'Mock interview not found.' });
+        return;
+      }
+      response.json({ savedAt: interview.savedAt });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to save mock interview.' });
     }
   });
 
@@ -7064,6 +7749,17 @@ export async function createApp(options: { listen?: boolean } = {}) {
         return;
       }
 
+      if (roundType === 'mock-interview') {
+        const domain = request.query.domain ? normalizeDomain(request.query.domain) : undefined;
+        const mockInterview = await getLatestMockInterview(user.id, domain);
+        if (!mockInterview) {
+          response.status(404).json({ error: 'No round attempt found for this round type yet.' });
+          return;
+        }
+        response.json({ attempt: mockInterview });
+        return;
+      }
+
       const domain = request.query.domain ? normalizeDomain(request.query.domain) : undefined;
       const attempt = await getLatestRoundAttempt(user.id, roundType, domain);
       if (!attempt) {
@@ -7084,7 +7780,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
       const attempts = await Promise.all([
         getLatestCodingAttempt(user.id, normalizedDomain).then((attempt) => (attempt ? toStoredRoundAttemptFromCodingAttempt(attempt) : null)),
         getLatestSingleScenarioAttempt(user.id, scenarioDomain).then((attempt) => (attempt ? toStoredRoundAttemptFromSingleScenarioAttempt(attempt) : null)),
-        getLatestRoundAttempt(user.id, 'mock-interview', normalizedDomain),
+        getLatestMockInterview(user.id, normalizedDomain),
       ]);
       response.json({ attempts: attempts.filter(Boolean) });
     } catch (error) {
@@ -7116,6 +7812,12 @@ export async function createApp(options: { listen?: boolean } = {}) {
       const codingAttempt = await loadCodingAttempt(user.id, attemptId);
       if (codingAttempt) {
         response.json({ attempt: toCodingResultAttemptPayload(codingAttempt) });
+        return;
+      }
+
+      const mockInterview = await loadMockInterview(user.id, attemptId);
+      if (mockInterview) {
+        response.json({ attempt: mockInterview });
         return;
       }
 

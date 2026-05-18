@@ -169,3 +169,12 @@ export async function fetchScenarioResult(attemptId: string): Promise<ApiResult<
   if (result.ok === false) return result;
   return { ok: true as const, data: result.data.attempt };
 }
+
+export async function saveScenarioAttempt(attemptId: string, saved = true): Promise<ApiResult<string | null>> {
+  const result = await requestJson<{ savedAt: string | null }>(`/api/scenarios/${encodeURIComponent(attemptId)}/save`, {
+    method: 'POST',
+    body: JSON.stringify({ saved }),
+  });
+  if (result.ok === false) return result;
+  return { ok: true as const, data: result.data.savedAt };
+}

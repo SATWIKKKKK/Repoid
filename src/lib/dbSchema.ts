@@ -220,6 +220,7 @@ export const DATABASE_SCHEMA_SQL = `
   ALTER TABLE scenario_attempts ADD COLUMN IF NOT EXISTS duration_minutes INTEGER NOT NULL DEFAULT 30;
   ALTER TABLE scenario_attempts ADD COLUMN IF NOT EXISTS score INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE scenario_attempts ADD COLUMN IF NOT EXISTS time_spent_seconds INTEGER;
+  ALTER TABLE scenario_attempts ADD COLUMN IF NOT EXISTS saved_at TIMESTAMPTZ;
 
   CREATE TABLE IF NOT EXISTS scenario_step_answers (
     id TEXT PRIMARY KEY,
@@ -286,6 +287,8 @@ export const DATABASE_SCHEMA_SQL = `
   ALTER TABLE coding_attempts ADD COLUMN IF NOT EXISTS duration_minutes INTEGER NOT NULL DEFAULT 45;
   ALTER TABLE coding_attempts ADD COLUMN IF NOT EXISTS score INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE coding_attempts ADD COLUMN IF NOT EXISTS time_spent_seconds INTEGER;
+  ALTER TABLE coding_attempts ADD COLUMN IF NOT EXISTS saved_at TIMESTAMPTZ;
+  ALTER TABLE coding_attempts ADD COLUMN IF NOT EXISTS scratch_notes TEXT NOT NULL DEFAULT '';
 
   CREATE TABLE IF NOT EXISTS mock_interviews (
     id TEXT PRIMARY KEY,
@@ -294,17 +297,25 @@ export const DATABASE_SCHEMA_SQL = `
     level TEXT NOT NULL,
     persona TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'started',
+    interview_type TEXT NOT NULL DEFAULT 'mixed',
+    interview_title TEXT NOT NULL DEFAULT 'Mock Interview',
     questions JSONB NOT NULL DEFAULT '[]'::jsonb,
     responses JSONB NOT NULL DEFAULT '[]'::jsonb,
     current_question_index INTEGER NOT NULL DEFAULT 0,
     started_at TIMESTAMPTZ DEFAULT NOW(),
     paused_ms INTEGER NOT NULL DEFAULT 0,
     last_saved_at TIMESTAMPTZ DEFAULT NOW(),
+    duration_minutes INTEGER NOT NULL DEFAULT 45,
+    saved_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
     report_payload JSONB NOT NULL DEFAULT '{}'::jsonb
   );
 
   CREATE INDEX IF NOT EXISTS idx_mock_interviews_user ON mock_interviews(user_id, started_at DESC);
+  ALTER TABLE mock_interviews ADD COLUMN IF NOT EXISTS interview_type TEXT NOT NULL DEFAULT 'mixed';
+  ALTER TABLE mock_interviews ADD COLUMN IF NOT EXISTS interview_title TEXT NOT NULL DEFAULT 'Mock Interview';
+  ALTER TABLE mock_interviews ADD COLUMN IF NOT EXISTS duration_minutes INTEGER NOT NULL DEFAULT 45;
+  ALTER TABLE mock_interviews ADD COLUMN IF NOT EXISTS saved_at TIMESTAMPTZ;
 
   DROP TABLE IF EXISTS track_modules;
   DROP TABLE IF EXISTS practice_tracks;

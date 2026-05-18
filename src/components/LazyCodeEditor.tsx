@@ -29,12 +29,14 @@ export default function LazyCodeEditor({
   editable,
   height = '360px',
   onChange,
+  onEditorReady,
 }: {
   value: string;
   language: EditorLanguage;
   editable: boolean;
   height?: string;
   onChange: (value: string) => void;
+  onEditorReady?: (view: EditorView) => void;
 }) {
   const [extensions, setExtensions] = useState<Extension[]>([]);
 
@@ -84,6 +86,7 @@ export default function LazyCodeEditor({
       style={{ height: '100%' }}
       onChange={onChange}
       basicSetup={{ lineNumbers: true, foldGutter: true, autocompletion: true }}
+      onCreateEditor={(view) => onEditorReady?.(view)}
     />
   );
 }
