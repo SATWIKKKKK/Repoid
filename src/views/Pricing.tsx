@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowRight, Check, ChevronDown, LoaderCircle, Rocket, ShieldCheck, Sparkles, X } from 'lucide-react';
+import { ArrowRight, Check, ChevronDown, LoaderCircle, X } from 'lucide-react';
 import { View } from '../App';
 import { createBillingOrder, fetchSubscription, verifyBillingPayment, type BillingPlan, type SubscriptionState } from '../lib/billing';
 import { getStoredUser } from '../lib/session';
@@ -40,7 +40,6 @@ const PLANS: Array<{
   price: string;
   cadence: string;
   description: string;
-  icon: React.ElementType;
   billingInterval: 'monthly' | 'annual';
   features: string[];
 }> = [
@@ -50,17 +49,15 @@ const PLANS: Array<{
     price: '₹0',
     cadence: 'forever',
     description: 'Every authenticated user starts here.',
-    icon: Sparkles,
     billingInterval: 'monthly',
-    features: ['1 active domain', '20 question-bank questions/day', 'Unlimited practice sessions', '1 GitHub repo scan'],
+    features: ['1 active domain', '20 question-bank questions/day', 'Unlimited practice sessions', '3 GitHub repo scans'],
   },
   {
     id: 'pro',
     name: 'Monthly',
     price: '₹99',
-    cadence: 'per month',
-    description: 'Short sprint access for serious prep.',
-    icon: Rocket,
+    cadence: 'per 3 months',
+    description: 'Quarterly sprint access for serious prep.',
     billingInterval: 'monthly',
     features: ['All domains unlocked', 'Unlimited question bank', 'Coding rounds', 'Mock interviews', '5 GitHub repo scans'],
   },
@@ -70,7 +67,6 @@ const PLANS: Array<{
     price: '₹299',
     cadence: 'for 1 year',
     description: 'Placement-season access without extra filters.',
-    icon: ShieldCheck,
     billingInterval: 'annual',
     features: ['Everything in Monthly', 'Unlimited GitHub repo scans', 'PDF exports', 'Gap reports', 'Priority support'],
   },
@@ -78,20 +74,20 @@ const PLANS: Array<{
 
 const FAQS = [
   {
-    question: 'Can I use the free tier after signup?',
-    answer: 'Yes. Every authenticated user starts on Free tier automatically until they choose a paid plan.',
+    question: 'How does Razorpay checkout work?',
+    answer: 'Choose a paid plan, complete Razorpay Checkout, and your subscription is activated after server-side signature verification.',
   },
   {
-    question: 'What is included in Monthly?',
-    answer: 'Monthly is for short interview sprints with the full prep workflow, all domains, and higher usage limits.',
+    question: 'What does the ₹99 plan cover?',
+    answer: 'The ₹99 plan covers 3 months of Pro access with all domains, unlimited question-bank usage, coding rounds, and mock interviews.',
   },
   {
-    question: 'What is included in Yearly?',
-    answer: 'Yearly keeps access active for one full year and is meant for placement season or longer preparation cycles.',
+    question: 'Can I test payments locally?',
+    answer: 'Yes. Use Razorpay test keys in your local environment, then add production keys in Vercel for live checkout.',
   },
   {
-    question: 'Will checkout work before Razorpay keys are added?',
-    answer: 'The plans are visible now. Checkout needs Razorpay keys in the environment before real payments can be completed.',
+    question: 'When is my plan updated?',
+    answer: 'Your plan updates only after Razorpay returns a payment id and the backend verifies the payment signature.',
   },
 ];
 
@@ -112,7 +108,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
   const [processingPlan, setProcessingPlan] = useState<BillingPlan | null>(null);
   const [selectedPlan, setSelectedPlan] = useState<BillingPlan>('pro');
   const [currentPlanModal, setCurrentPlanModal] = useState<BillingPlan | null>(null);
-  const [openFaq, setOpenFaq] = useState(0);
+  const [openFaq, setOpenFaq] = useState(-1);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -219,7 +215,6 @@ export default function Pricing({ onViewChange }: PricingProps) {
 
         <section className="grid gap-5 lg:grid-cols-3">
           {PLANS.map((plan) => {
-            const Icon = plan.icon;
             const selected = selectedPlan === plan.id;
             const isCurrent = Boolean(user?.loggedIn) && activePlan === plan.id;
             return (
@@ -231,12 +226,9 @@ export default function Pricing({ onViewChange }: PricingProps) {
                   selected && 'border-primary',
                 )}
               >
-                <div className="mb-5 flex h-11 w-11 items-center justify-center rounded-lg border border-blueprint-line bg-[#f5f3f3] text-primary">
-                  <Icon size={20} />
-                </div>
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-ui-label text-blueprint-muted">{plan.name}</p>
-                  {isCurrent ? <span className="rounded-full border border-blueprint-line bg-[#f5f3f3] px-3 py-1 text-ui-label text-primary">Current</span> : null}
+                  {isCurrent ? <span className="rounded-full border border-emerald-500/40 bg-emerald-50 px-3 py-1 text-ui-label text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">Current</span> : null}
                 </div>
                 <h2 className="mt-3 text-headline-lg text-primary not-italic">
                   {plan.price}

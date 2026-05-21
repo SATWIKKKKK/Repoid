@@ -40,6 +40,22 @@
     font-size: 16px;
   }
 
+  button:not(:disabled) {
+    transition-property: color, background-color, border-color, box-shadow, transform, opacity;
+    transition-duration: 180ms;
+    transition-timing-function: ease;
+  }
+
+  button:not(:disabled):hover {
+    transform: translateY(-1px);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.10);
+  }
+
+  button:not(:disabled):active {
+    transform: translateY(0);
+    box-shadow: 0 5px 14px rgba(0, 0, 0, 0.10);
+  }
+
   img,
   svg,
   video,
@@ -443,4 +459,8 @@ nav {
 .dark .surface-inset {
   background: #202020;
   border-color: #3a3a3a;
+}
+
+.dark button:not(:disabled):hover {
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
 }

@@ -379,11 +379,11 @@ const BILLING_INTERVALS = ['monthly', 'annual'] as const;
 
 const PLAN_PRICING: Record<Exclude<BillingPlan, 'free'>, Record<BillingInterval, { amountPaise: number; displayPrice: string; label: string }>> = {
   pro: {
-    monthly: { amountPaise: 9900, displayPrice: '₹99', label: 'Monthly' },
+    monthly: { amountPaise: 9900, displayPrice: '₹99', label: '3-month Pro' },
     annual: { amountPaise: 29900, displayPrice: '₹299', label: 'Yearly' },
   },
   team: {
-    monthly: { amountPaise: 9900, displayPrice: '₹99', label: 'Monthly' },
+    monthly: { amountPaise: 9900, displayPrice: '₹99', label: '3-month Pro' },
     annual: { amountPaise: 29900, displayPrice: '₹299', label: 'Yearly' },
   },
 };
@@ -406,7 +406,7 @@ const PLAN_LIMITS: Record<BillingPlan, {
     mockInterviewsPerMonth: 0,
     codingRoundsPerMonth: 0,
     scenarioRounds: false,
-    githubRepos: 1,
+    githubRepos: 3,
     pdfExport: false,
     teamFeatures: false,
   },
@@ -6110,7 +6110,7 @@ function getPeriodEnd(interval: BillingInterval) {
   if (interval === 'annual') {
     date.setFullYear(date.getFullYear() + 1);
   } else {
-    date.setMonth(date.getMonth() + 1);
+    date.setMonth(date.getMonth() + 3);
   }
   return date.toISOString();
 }
@@ -6265,6 +6265,48 @@ function requireRazorpayCredentials() {
   return { keyId, keySecret };
 }
 
+async function createRazorpayOrder(params: {
+  amountPaise: number;
+  receipt: string;
+  notes: Record<string, string>;
+}) {
+  const { keyId, keySecret } = requireRazorpayCredentials();
+  try {
+    const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<{ default?: unknown }>;
+    const imported = await dynamicImport('razorpay');
+    const RazorpayCtor = imported.default as new (options: { key_id: string; key_secret: string }) => {
+      orders: { create: (payload: Record<string, unknown>) => Promise<{ id?: string }> };
+    };
+    const client = new RazorpayCtor({ key_id: keyId, key_secret: keySecret });
+    const order = await client.orders.create({
+      amount: params.amountPaise,
+      currency: 'INR',
+      receipt: params.receipt,
+      notes: params.notes,
+    });
+    return { keyId, orderId: order.id };
+  } catch {
+    const razorpayResponse = await fetch('https://api.razorpay.com/v1/orders', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString('base64')}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        amount: params.amountPaise,
+        currency: 'INR',
+        receipt: params.receipt,
+        notes: params.notes,
+      }),
+    });
+    const order = await razorpayResponse.json().catch(() => ({})) as { id?: string; error?: { description?: string } };
+    if (!razorpayResponse.ok || !order.id) {
+      throw new Error(order.error?.description ?? 'Unable to create Razorpay order.');
+    }
+    return { keyId, orderId: order.id };
+  }
+}
+
 function verifyRazorpaySignature(orderId: string, paymentId: string, signature: string, keySecret: string) {
   const expected = crypto
     .createHmac('sha256', keySecret)
@@ -6380,44 +6422,32 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
 
     try {
-      const { keyId, keySecret } = requireRazorpayCredentials();
       const unitPricing = PLAN_PRICING[plan][billingInterval];
       const amountPaise = unitPricing.amountPaise * seats;
       const receipt = `repoid_${plan}_${Date.now()}`.slice(0, 40);
-      const razorpayResponse = await fetch('https://api.razorpay.com/v1/orders', {
-        method: 'POST',
-        headers: {
-          Authorization: `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString('base64')}`,
-          'Content-Type': 'application/json',
+      const { keyId, orderId } = await createRazorpayOrder({
+        amountPaise,
+        receipt,
+        notes: {
+          userId: user.id,
+          email: user.email,
+          plan,
+          billingInterval,
+          seats: String(seats),
         },
-        body: JSON.stringify({
-          amount: amountPaise,
-          currency: 'INR',
-          receipt,
-          notes: {
-            userId: user.id,
-            email: user.email,
-            plan,
-            billingInterval,
-            seats: String(seats),
-          },
-        }),
       });
-      const order = await razorpayResponse.json().catch(() => ({})) as { id?: string; error?: { description?: string } };
-      if (!razorpayResponse.ok || !order.id) {
-        throw new Error(order.error?.description ?? 'Unable to create Razorpay order.');
-      }
+      if (!orderId) throw new Error('Unable to create Razorpay order.');
 
       await db.prepare(`
         INSERT INTO billing_orders (
           id, user_id, razorpay_order_id, plan, billing_interval, seats, amount_paise,
           currency, status, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-      `).run(crypto.randomUUID(), user.id, order.id, plan, billingInterval, seats, amountPaise, 'INR', 'created');
+      `).run(crypto.randomUUID(), user.id, orderId, plan, billingInterval, seats, amountPaise, 'INR', 'created');
 
       response.status(201).json({
         keyId,
-        orderId: order.id,
+        orderId,
         amountPaise,
         currency: 'INR',
         plan,
@@ -6491,6 +6521,108 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
+  app.post('/api/payment/create-order', requireUser, async (request, response) => {
+    const planType = String(request.body?.plan ?? '').trim().toLowerCase();
+    request.body.plan = planType === 'yearly' || planType === 'annual' ? 'team' : planType === 'free' ? 'free' : 'pro';
+    request.body.billingInterval = planType === 'yearly' || planType === 'annual' ? 'annual' : 'monthly';
+    const user = (request as AuthedRequest).user!;
+    const plan = normalizeBillingPlan(request.body?.plan);
+    const billingInterval = normalizeBillingInterval(request.body?.billingInterval);
+    const seats = 1;
+
+    if (plan === 'free') {
+      await upsertSubscription({
+        userId: user.id,
+        plan: 'free',
+        status: 'active',
+        provider: 'manual',
+        billingInterval: 'monthly',
+        seats: 1,
+        currentPeriodEnd: null,
+      });
+      response.json({ success: true, subscription: toSubscriptionPayload(await getUserSubscription(user.id)) });
+      return;
+    }
+
+    try {
+      const unitPricing = PLAN_PRICING[plan][billingInterval];
+      const amountPaise = unitPricing.amountPaise * seats;
+      const { keyId, orderId } = await createRazorpayOrder({
+        amountPaise,
+        receipt: `repoid_${plan}_${Date.now()}`.slice(0, 40),
+        notes: { userId: user.id, email: user.email, plan, billingInterval, seats: String(seats) },
+      });
+      if (!orderId) throw new Error('Unable to create Razorpay order.');
+      await db.prepare(`
+        INSERT INTO billing_orders (
+          id, user_id, razorpay_order_id, plan, billing_interval, seats, amount_paise,
+          currency, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      `).run(crypto.randomUUID(), user.id, orderId, plan, billingInterval, seats, amountPaise, 'INR', 'created');
+      response.status(201).json({
+        keyId,
+        orderId,
+        amountPaise,
+        currency: 'INR',
+        plan,
+        billingInterval,
+        seats,
+        name: 'Repoid',
+        description: unitPricing.label,
+        prefill: { name: user.name, email: user.email },
+      });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to create billing order.' });
+    }
+  });
+
+  app.post('/api/payment/verify', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const orderId = String(request.body?.razorpay_order_id ?? '').trim();
+    const paymentId = String(request.body?.razorpay_payment_id ?? '').trim();
+    const signature = String(request.body?.razorpay_signature ?? '').trim();
+    if (!orderId || !paymentId || !signature) {
+      response.status(400).json({ error: 'Razorpay order id, payment id, and signature are required.' });
+      return;
+    }
+    try {
+      const { keySecret } = requireRazorpayCredentials();
+      if (!verifyRazorpaySignature(orderId, paymentId, signature, keySecret)) {
+        response.status(400).json({ error: 'Razorpay signature verification failed.' });
+        return;
+      }
+      const order = await db.prepare(`
+        SELECT plan, billing_interval, seats
+          FROM billing_orders
+         WHERE user_id = ? AND razorpay_order_id = ?
+      `).get<{ plan: BillingPlan; billing_interval: BillingInterval; seats: number }>(user.id, orderId);
+      if (!order) {
+        response.status(404).json({ error: 'Billing order not found.' });
+        return;
+      }
+      const plan = normalizeBillingPlan(order.plan);
+      const billingInterval = normalizeBillingInterval(order.billing_interval);
+      await db.prepare(`
+        UPDATE billing_orders
+           SET status = ?, razorpay_payment_id = ?, verified_at = NOW()
+         WHERE user_id = ? AND razorpay_order_id = ?
+      `).run('paid', paymentId, user.id, orderId);
+      await upsertSubscription({
+        userId: user.id,
+        plan,
+        status: 'active',
+        provider: 'razorpay',
+        billingInterval,
+        seats: Math.max(1, Number(order.seats ?? 1)),
+        currentPeriodEnd: getPeriodEnd(billingInterval),
+        razorpayPaymentId: paymentId,
+      });
+      response.json({ success: true, subscription: toSubscriptionPayload(await getUserSubscription(user.id)) });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to verify payment.' });
+    }
+  });
+
   app.post('/api/webhooks/razorpay', async (request, response) => {
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim();
     if (!webhookSecret) {
@@ -6517,6 +6649,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
   app.get('/api/questions/stats', requireUser, async (_request, response) => {
     try {
       const stats = await listQuestionStats();
+      response.setHeader('Cache-Control', 'private, max-age=60, stale-while-revalidate=300');
       response.json({ stats });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load question stats.' });
@@ -6855,6 +6988,89 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
+  app.post('/api/questions/generate', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const topic = String(request.body?.topic ?? '').trim();
+      const roundType = String(request.body?.roundType ?? '').trim();
+      const requestedDomain = String(request.body?.domain ?? '').trim();
+      const domain = requestedDomain ? normalizeDomain(requestedDomain) : await getUserSelectedDomain(user.id);
+      const domainLabel = domain.replace(/-/g, ' ');
+      const allowedRounds = new Set(['concept-mcq', 'fill-in-the-blank', 'scenario', 'architecture', 'coding-round', 'mock-interview', 'faang-tagged']);
+
+      if (!topic) {
+        response.status(400).json({ error: 'Topic is required.' });
+        return;
+      }
+      if (!allowedRounds.has(roundType)) {
+        response.status(400).json({ error: 'Select a valid round type before searching.' });
+        return;
+      }
+
+      type GeneratedQuestion = { question: string; answer: string; explanation?: string };
+      type GeneratedPayload = { domainMismatch: boolean; reason?: string; questions: GeneratedQuestion[] };
+      const systemPrompt = [
+        'You are a strict domain classifier and interview question generator.',
+        'First decide whether the requested topic belongs to the selected domain.',
+        'If it does not belong, return JSON with domainMismatch true and an empty questions array.',
+        'If it belongs, return domainMismatch false and exactly 30 questions.',
+        'Every generated question must strictly match the selected round type. Do not mix formats.',
+        'Return only JSON: {"domainMismatch": boolean, "reason": string, "questions": [{"question": string, "answer": string, "explanation": string}]}',
+      ].join(' ');
+      const userPrompt = [
+        `Selected domain: ${domainLabel}`,
+        `Topic: ${topic}`,
+        `Round type: ${roundType}`,
+        'Generate high-quality interview preparation content for students. Answers must be detailed but readable.',
+      ].join('\n');
+
+      const ai = await callStructuredModel<GeneratedPayload>(
+        systemPrompt,
+        userPrompt,
+        (payload) => {
+          const source = parseJsonRecord(payload);
+          const questions = Array.isArray(source.questions)
+            ? source.questions.map((item) => {
+              const row = parseJsonRecord(item);
+              return {
+                question: String(row.question ?? '').trim(),
+                answer: String(row.answer ?? '').trim(),
+                explanation: String(row.explanation ?? '').trim(),
+              };
+            }).filter((item) => item.question && item.answer).slice(0, 30)
+            : [];
+          return {
+            domainMismatch: Boolean(source.domainMismatch),
+            reason: String(source.reason ?? '').trim(),
+            questions,
+          };
+        },
+        { maxTokens: 12_000, timeoutMs: 90_000, model: 'deepseek/deepseek-chat', temperature: 0.2 },
+      );
+
+      if (ai.result.domainMismatch) {
+        response.status(422).json({
+          domainMismatch: true,
+          error: ai.result.reason || 'This topic appears to be from a different domain. Please search within your selected domain.',
+        });
+        return;
+      }
+      if (ai.result.questions.length !== 30) {
+        response.status(502).json({ error: 'The AI response did not contain exactly 30 questions. Please try again.' });
+        return;
+      }
+      response.json({
+        domainMismatch: false,
+        domain,
+        roundType,
+        topic,
+        questions: ai.result.questions,
+      });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to generate questions.' });
+    }
+  });
+
   app.get('/api/questions', requireUser, async (request, response) => {
     try {
       const user = (request as AuthedRequest).user!;
@@ -6879,6 +7095,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
         limit: pageSize,
         offset: (page - 1) * pageSize,
       });
+      response.setHeader('Cache-Control', 'private, max-age=30, stale-while-revalidate=120');
       response.json({ ...result, totalReturned: result.questions.length });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load questions.' });

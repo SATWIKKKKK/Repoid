@@ -87,7 +87,7 @@ function ensureExecutionIframe() {
   return iframe;
 }
 
-async function executeBrowserCode(code: string, language: 'javascript' | 'typescript', status?: StatusHandler) {
+async function executeBrowserCode(code: string, language: 'javascript' | 'typescript', status?: StatusHandler): Promise<CodingExecutionResult> {
   let transformedCode = '';
   let notices: string[] = [];
   try {

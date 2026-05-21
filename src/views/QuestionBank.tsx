@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { fetchQuestions, fetchQuestionStats } from '../lib/questionBankApi';
+import { fetchQuestions, fetchQuestionStats, generateTopicQuestions, type GeneratedQuestion } from '../lib/questionBankApi';
 import DomainPickerDialog from '../components/DomainPickerDialog';
 import { QUESTION_TYPES, type BankQuestion, type QuestionType } from '../lib/questionBank';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
@@ -174,6 +174,7 @@ const CURATED_ROUND_FILTERS = [
   { id: 'mock-interview', label: 'Mock Interview' },
   { id: 'faang-tagged', label: 'FAANG Tagged' },
 ];
+const AI_SEARCH_ROUNDS = CURATED_ROUND_FILTERS.filter((item) => item.id !== 'fundamentals');
 const QUESTION_TYPE_LABELS = Object.fromEntries(QUESTION_TYPES.map((item) => [item.id, item.label])) as Record<QuestionType, string>;
 
 function normalizePoint(text: string): string {
@@ -268,6 +269,12 @@ export default function QuestionBank() {
   const [domainDialogOpen, setDomainDialogOpen] = useState(false);
   const [domainError, setDomainError] = useState<string | null>(null);
   const [savingDomain, setSavingDomain] = useState(false);
+  const [aiTopic, setAiTopic] = useState(initialSearch);
+  const [aiRoundType, setAiRoundType] = useState('');
+  const [aiQuestions, setAiQuestions] = useState<GeneratedQuestion[]>([]);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [domainMismatchMessage, setDomainMismatchMessage] = useState<string | null>(null);
 
   const allTypesSelected = selectedTypes.length === ALL_QUESTION_TYPES.length;
   const hasCuratedFilters = ['frontend', 'backend', 'ai-ml', 'cybersecurity', 'data-science', 'data-analytics'].includes(domain);
@@ -413,6 +420,26 @@ export default function QuestionBank() {
     setDomainDialogOpen(false);
   };
 
+  const handleAiSearch = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!aiRoundType || !aiTopic.trim()) return;
+    setAiLoading(true);
+    setAiError(null);
+    setAiQuestions([]);
+    setDomainMismatchMessage(null);
+    const result = await generateTopicQuestions({ domain, roundType: aiRoundType, topic: aiTopic.trim() });
+    setAiLoading(false);
+    if (result.ok === false) {
+      if (/different domain|domain/i.test(result.error)) {
+        setDomainMismatchMessage(result.error);
+      } else {
+        setAiError(result.error);
+      }
+      return;
+    }
+    setAiQuestions(result.data.questions);
+  };
+
   return (
     <>
     <div className="min-h-full bg-background px-4 py-8 sm:px-8 lg:px-16">
@@ -447,6 +474,59 @@ export default function QuestionBank() {
             </div>
           </section>
         ) : null}
+
+        <section className="surface-card space-y-5">
+          <div>
+            <p className="text-ui-label text-blueprint-muted">AI Search</p>
+            <h2 className="mt-2 text-headline-md text-primary not-italic">Generate 30 questions by topic</h2>
+            <p className="mt-2 max-w-3xl text-body-md text-blueprint-muted">
+              Select a round type first, then search a topic inside your current domain.
+            </p>
+          </div>
+          <form onSubmit={handleAiSearch} className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)_auto]">
+            <select
+              value={aiRoundType}
+              onChange={(event) => setAiRoundType(event.target.value)}
+              className="rounded-full border border-blueprint-line bg-card px-4 py-3 text-body-md text-primary outline-none focus:border-primary"
+              aria-label="Select round type"
+            >
+              <option value="">Select round type</option>
+              {AI_SEARCH_ROUNDS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+            </select>
+            <input
+              value={aiTopic}
+              onChange={(event) => setAiTopic(event.target.value)}
+              placeholder="Search a topic, e.g. React hooks, SQL joins, RAG evaluation"
+              className="rounded-full border border-blueprint-line bg-card px-4 py-3 text-body-md text-primary outline-none focus:border-primary"
+            />
+            <button
+              type="submit"
+              disabled={!aiRoundType || !aiTopic.trim() || aiLoading}
+              className="rounded-full bg-primary px-6 py-3 text-ui-label text-white transition-colors hover:bg-[#303031] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {aiLoading ? 'Generating...' : 'Search'}
+            </button>
+          </form>
+          {aiLoading ? (
+            <div className="surface-inset flex items-center gap-3 text-body-md text-primary">
+              <span className="h-5 w-5 animate-spin rounded-full border-2 border-blueprint-line border-t-primary" />
+              Generating questions...
+            </div>
+          ) : null}
+          {aiError ? <p className="text-body-md text-red-600">{aiError}</p> : null}
+          {aiQuestions.length ? (
+            <div className="grid gap-4">
+              {aiQuestions.map((item, index) => (
+                <article key={`${item.question}-${index}`} className="surface-inset">
+                  <p className="text-ui-label text-blueprint-muted">Question {index + 1}</p>
+                  <h3 className="mt-2 text-body-lg font-semibold text-primary">{item.question}</h3>
+                  <p className="mt-3 text-body-md text-primary">{item.answer}</p>
+                  {item.explanation ? <p className="mt-2 text-body-md text-blueprint-muted">{item.explanation}</p> : null}
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </section>
 
         <section className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
           <aside className="space-y-4">
@@ -771,6 +851,19 @@ export default function QuestionBank() {
       }}
       onSave={handleDomainSave}
     />
+    {domainMismatchMessage ? (
+      <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm">
+        <div className="w-full max-w-md rounded-2xl border border-blueprint-line bg-card p-6 text-center shadow-2xl">
+          <p className="text-ui-label text-blueprint-muted">Domain mismatch</p>
+          <p className="mt-3 text-body-md text-primary">
+            {domainMismatchMessage || 'This topic appears to be from a different domain. Please search within your selected domain.'}
+          </p>
+          <button type="button" onClick={() => setDomainMismatchMessage(null)} className="mt-5 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white transition-colors hover:bg-[#303031]">
+            OK
+          </button>
+        </div>
+      </div>
+    ) : null}
     </>
   );
 }

@@ -79,7 +79,7 @@ export async function createBillingOrder(payload: {
   billingInterval: BillingInterval;
   seats?: number;
 }): Promise<ApiResult<BillingOrderResponse>> {
-  return requestJson<BillingOrderResponse>('/api/billing/create-order', {
+  return requestJson<BillingOrderResponse>('/api/payment/create-order', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -90,7 +90,7 @@ export async function verifyBillingPayment(payload: {
   razorpay_payment_id: string;
   razorpay_signature: string;
 }): Promise<ApiResult<SubscriptionState>> {
-  const result = await requestJson<{ success: boolean; subscription: SubscriptionState }>('/api/billing/verify', {
+  const result = await requestJson<{ success: boolean; subscription: SubscriptionState }>('/api/payment/verify', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

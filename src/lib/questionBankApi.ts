@@ -14,6 +14,12 @@ export type QuestionListResponse = {
   totalPages: number;
 };
 
+export type GeneratedQuestion = {
+  question: string;
+  answer: string;
+  explanation?: string;
+};
+
 export type RoundAttemptAnswerInput = {
   questionId: string;
   selectedAnswer?: string | null;
@@ -132,6 +138,19 @@ export async function fetchQuestions(filters: {
       totalPages: result.data.totalPages,
     },
   };
+}
+
+export async function generateTopicQuestions(payload: {
+  domain: string;
+  roundType: string;
+  topic: string;
+}): Promise<ApiResult<{ questions: GeneratedQuestion[]; domainMismatch?: boolean }>> {
+  const result = await requestJson<{ questions: GeneratedQuestion[]; domainMismatch?: boolean }>('/api/questions/generate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  if ('error' in result) return { ok: false, error: result.error };
+  return { ok: true, data: result.data };
 }
 
 export async function startRoundAttempt(payload: {

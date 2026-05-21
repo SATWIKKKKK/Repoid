@@ -65,12 +65,12 @@ export default function DomainPickerDialog({
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-body-md font-semibold">{option.label}</p>
-                    <p className={cn('mt-2 text-sm leading-6', selected ? 'text-gray-300' : 'text-gray-700 dark:text-gray-300')}>
+                    <p className={cn('mt-2 text-sm leading-6', selected ? 'text-neutral-700 dark:text-neutral-800' : 'text-gray-700 dark:text-gray-300')}>
                       {option.description}
                     </p>
                   </div>
-                  <span className={cn('mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2', selected ? 'border-white bg-white/10' : 'border-blueprint-line bg-transparent')}>
-                    {selected ? <span className="h-2.5 w-2.5 rounded-full bg-white" /> : null}
+                  <span className={cn('mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2', selected ? 'border-neutral-900 bg-white/10 dark:border-neutral-900' : 'border-blueprint-line bg-transparent')}>
+                    {selected ? <span className="h-2.5 w-2.5 rounded-full bg-neutral-900" /> : null}
                   </span>
                 </div>
               </button>

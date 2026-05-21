@@ -33,7 +33,7 @@ export default function Settings({ onViewChange, initialTab = 'profile' }: Setti
   const [domainModalOpen, setDomainModalOpen] = useState(false);
   const [domainError, setDomainError] = useState<string | null>(null);
   const [domainSaving, setDomainSaving] = useState(false);
-  const [preferenceMessage, setPreferenceMessage] = useState<string | null>(null);
+  const [preferenceToast, setPreferenceToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [deleteMessage, setDeleteMessage] = useState<string | null>(null);
@@ -135,17 +135,18 @@ export default function Settings({ onViewChange, initialTab = 'profile' }: Setti
   };
 
   const handlePreferenceSave = async () => {
-    setPreferenceMessage(null);
+    setPreferenceToast(null);
     const result = await updateUserPreferences({ sidebarOpen: sidebarExpanded, theme, domain });
     if ('error' in result) {
-      setPreferenceMessage(result.error);
+      setPreferenceToast({ type: 'error', message: result.error });
       return;
     }
 
     updatePrepWorkspace({ selections: { ...getStoredPrepWorkspace().selections, domain: result.data.domain } });
     setDomain(result.data.domain);
     applyThemePreference(theme);
-    setPreferenceMessage('Preferences saved.');
+    window.dispatchEvent(new CustomEvent('repoid-preferences-updated', { detail: result.data }));
+    setPreferenceToast({ type: 'success', message: 'Preferences saved successfully.' });
   };
 
   const handleDomainSave = async (nextDomain: string) => {
@@ -160,7 +161,8 @@ export default function Settings({ onViewChange, initialTab = 'profile' }: Setti
 
     setDomain(result.data.domain);
     updatePrepWorkspace({ selections: { ...getStoredPrepWorkspace().selections, domain: result.data.domain } });
-    setPreferenceMessage(`Domain changed to ${DOMAIN_LABELS[result.data.domain] ?? result.data.domain}.`);
+    window.dispatchEvent(new CustomEvent('repoid-preferences-updated', { detail: result.data }));
+    setPreferenceToast({ type: 'success', message: `Domain changed to ${DOMAIN_LABELS[result.data.domain] ?? result.data.domain}.` });
     setDomainModalOpen(false);
   };
 
@@ -309,8 +311,6 @@ export default function Settings({ onViewChange, initialTab = 'profile' }: Setti
               </div>
             </div>
 
-            {preferenceMessage ? <p className="mt-6 text-sm text-blueprint-muted">{preferenceMessage}</p> : null}
-
             <button type="button" onClick={handlePreferenceSave} className="mt-6 rounded-full bg-primary px-6 py-3 text-ui-label text-white transition-colors hover:bg-[#303031]">
               Save Preferences
             </button>
@@ -349,6 +349,22 @@ export default function Settings({ onViewChange, initialTab = 'profile' }: Setti
         }}
         onSave={handleDomainSave}
       />
+
+      {preferenceToast ? (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 px-4 backdrop-blur-sm">
+          <div className={`w-full max-w-sm rounded-2xl border p-6 text-center shadow-2xl ${
+            preferenceToast.type === 'success'
+              ? 'border-emerald-500/30 bg-emerald-50 text-emerald-900 dark:bg-[#08261b] dark:text-emerald-100'
+              : 'border-red-500/30 bg-red-50 text-red-900 dark:bg-[#2a1010] dark:text-red-100'
+          }`}>
+            <p className="text-ui-label">{preferenceToast.type === 'success' ? 'Success' : 'Error'}</p>
+            <p className="mt-3 text-body-md">{preferenceToast.message}</p>
+            <button type="button" onClick={() => setPreferenceToast(null)} className="mt-5 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white transition-colors hover:bg-[#303031]">
+              OK
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {deleteOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">

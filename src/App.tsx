@@ -241,6 +241,17 @@ function AppShell() {
     };
   }, [user?.loggedIn]);
 
+  useEffect(() => {
+    const handlePreferencesUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ sidebarOpen?: boolean; theme?: string; domain?: string }>).detail;
+      if (typeof detail?.sidebarOpen === 'boolean') setIsSidebarCollapsed(!detail.sidebarOpen);
+      if (detail?.domain) updatePrepWorkspace({ selections: { ...getStoredPrepWorkspace().selections, domain: detail.domain } });
+      if (detail?.theme) applyThemePreference(normalizeThemePreference(detail.theme));
+    };
+    window.addEventListener('repoid-preferences-updated', handlePreferencesUpdated);
+    return () => window.removeEventListener('repoid-preferences-updated', handlePreferencesUpdated);
+  }, []);
+
   const handleSidebarToggle = () => {
     const nextCollapsed = !isSidebarCollapsed;
     setIsSidebarCollapsed(nextCollapsed);
