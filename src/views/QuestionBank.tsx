@@ -534,59 +534,11 @@ export default function QuestionBank() {
               <p className="text-ui-label text-primary">Selected Domain</p>
               <div className="mt-3 rounded-2xl border border-blueprint-line bg-card p-4">
                 <p className="text-body-lg font-semibold text-primary">{selectedStats?.label ?? DOMAIN_LABELS[domain] ?? 'Domain'}</p>
-                <p className="mt-2 text-body-md text-blueprint-muted">
-                  {selectedStats
-                    ? `${selectedStats.total} questions currently available in this track.`
-                    : 'Question counts will appear once the bank loads for this track.'}
-                </p>
               </div>
               <button type="button" onClick={() => setDomainDialogOpen(true)} className="mt-3 text-ui-label text-blueprint-muted underline underline-offset-4 hover:text-primary">
                 Change domain
               </button>
             </div>
-
-            {!hasCuratedFilters ? <div className="surface-card-compact">
-              <p className="text-ui-label text-primary">Round Type</p>
-              <p className="mt-2 text-body-md text-blueprint-muted">
-                Select one or more round types. If a combination does not exist for this domain, the results area will tell you.
-              </p>
-              <div className={`mt-3 flex flex-wrap gap-2 transition-opacity ${faangOnly ? 'pointer-events-none opacity-35' : ''}`}>
-                <button
-                  type="button"
-                  disabled={faangOnly}
-                  onClick={() => setSelectedTypes(ALL_QUESTION_TYPES)}
-                  className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${allTypesSelected ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                >
-                  All
-                </button>
-                {QUESTION_TYPES.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    disabled={faangOnly}
-                    onClick={() => toggleType(item.id)}
-                    className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${selectedTypes.includes(item.id) ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setFaangOnly((value) => !value);
-                  setSelectedTypes(ALL_QUESTION_TYPES);
-                  setPage(1);
-                }}
-                className={`mt-4 rounded-full border px-4 py-2 text-ui-label font-semibold transition-colors ${
-                  faangOnly
-                    ? 'border-amber-400 bg-amber-400/10 text-amber-600 dark:border-amber-400 dark:bg-amber-400/15 dark:text-amber-300'
-                    : 'border-blueprint-line bg-card text-blueprint-muted hover:border-amber-400 hover:bg-amber-400/10 hover:text-amber-600 dark:hover:border-amber-400 dark:hover:bg-amber-400/15 dark:hover:text-amber-300'
-                }`}
-              >
-                ✦ FAANG tagged only
-              </button>
-            </div> : null}
           </aside>
 
           <section className="min-w-0 space-y-4">
@@ -599,12 +551,10 @@ export default function QuestionBank() {
                   </h2>
                   <p className="mt-2 text-body-md text-blueprint-muted">
                     {loading
-                      ? 'Fetching questions for the selected filters…'
+                      ? 'Fetching questions for your selected domain...'
                       : total
-                        ? hasCuratedFilters
-                          ? `${allBackendTopicsSelected ? `All ${curatedDomainLabel} topics selected.` : `${selectedBackendTopics.length} topic${selectedBackendTopics.length === 1 ? '' : 's'} selected.`} ${allBackendRoundsSelected ? `All ${curatedDomainLabel} round types selected.` : `${selectedBackendRounds.length} round type${selectedBackendRounds.length === 1 ? '' : 's'} selected.`}`
-                          : `${allTypesSelected ? 'All round types selected.' : `${selectedTypes.length} round type${selectedTypes.length === 1 ? '' : 's'} selected.`}${faangOnly ? ' FAANG-only filter is active.' : ''}`
-                        : 'This domain and round-type combination does not have matching questions right now. Try enabling more round types or changing the domain.'}
+                        ? 'Use AI Search above for topic-specific practice.'
+                        : 'No matching questions are available for this domain right now. Try AI Search above or change the domain.'}
                   </p>
                 </div>
                 {!loading && totalPages > 0 ? (
@@ -632,58 +582,6 @@ export default function QuestionBank() {
                 ) : null}
               </div>
             )}
-
-            {hasCuratedFilters ? (
-              <div className="surface-card-compact space-y-5">
-                <div>
-                  <p className="text-ui-label text-primary">Topic</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedBackendTopics([])}
-                      className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${allBackendTopicsSelected ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                    >
-                      All
-                    </button>
-                    {curatedTopics.map((topic) => (
-                      <button
-                        key={topic}
-                        type="button"
-                        onClick={() => toggleBackendTopic(topic)}
-                        className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${selectedBackendTopics.includes(topic) ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                      >
-                        {topic}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <p className="text-ui-label text-primary">Round Type</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedBackendRounds([])}
-                      className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${allBackendRoundsSelected ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                    >
-                      All
-                    </button>
-                    {CURATED_ROUND_FILTERS
-                      .filter((item) => !(domain === 'ai-ml' && item.id === 'fundamentals'))
-                      .map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => toggleBackendRound(item.id)}
-                        className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${selectedBackendRounds.includes(item.id) ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ) : null}
 
             {loading ? (
               <div className="grid gap-4 xl:grid-cols-2">
