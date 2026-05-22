@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, CalendarDays, CheckCircle2, Github, Heart, LoaderCircle, Play, TrendingUp, X } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { ArrowRight, CalendarDays, CheckCircle2, Github, Heart, LoaderCircle, Play, Search, TrendingUp, X } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { getGithubScanJob, listGithubRepos } from '../lib/githubRepos';
 import { fetchLatestRoundAttemptSummary, type StoredRoundAttempt } from '../lib/questionBankApi';
 import { fetchPracticeSessions, type PracticeSessionSummary } from '../lib/practiceSessions';
@@ -10,6 +11,7 @@ import {
   getDomainFamily,
 } from '../lib/prep';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
+import { apiUrl } from '../lib/apiBase';
 
 type Recommendation = {
   initials: string;
@@ -18,6 +20,19 @@ type Recommendation = {
   reason: string;
   route: string;
 };
+
+type ActivityRow = { activity_date: string; total: number };
+
+function ReadinessTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  const value = Number(payload[0]?.value ?? 0);
+  return (
+    <div className="rounded-xl border border-blueprint-line bg-[#101010] px-3 py-2 text-sm shadow-xl dark:bg-[#101010]">
+      <p className="font-semibold text-white">{label}</p>
+      <p className="text-emerald-200">Score: {Number.isFinite(value) ? Math.round(value) : 0}%</p>
+    </div>
+  );
+}
 
 function buildRecommendations(domain: string): Recommendation[] {
   switch (domain) {
@@ -90,8 +105,9 @@ function insightFromPracticeSession(session: PracticeSessionSummary) {
 }
 
 function weightedAverage(scores: number[]) {
+  const validScores = scores.filter((score) => Number.isFinite(score));
   const weights = [1, 0.86, 0.72, 0.58, 0.44];
-  const slice = scores.slice(0, weights.length);
+  const slice = validScores.slice(0, weights.length);
   const totalWeight = slice.reduce((sum, _score, index) => sum + weights[index], 0);
   if (!slice.length || !totalWeight) return null;
   const weighted = slice.reduce((sum, score, index) => sum + (score * weights[index]), 0);
@@ -100,6 +116,7 @@ function weightedAverage(scores: number[]) {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const location = useLocation();
   const workspace = usePrepWorkspace();
   const [repoCount, setRepoCount] = useState(0);
   const [attempts, setAttempts] = useState<StoredRoundAttempt[]>([]);
@@ -107,6 +124,11 @@ export default function Dashboard() {
   const [quickStartOpen, setQuickStartOpen] = useState(false);
   const [goalOpen, setGoalOpen] = useState(false);
   const [consistencyOpen, setConsistencyOpen] = useState(false);
+  const [readinessOpen, setReadinessOpen] = useState(false);
+  const [heatmapRange, setHeatmapRange] = useState(30);
+  const [activityRows, setActivityRows] = useState<ActivityRow[]>([]);
+  const [hoveredActivity, setHoveredActivity] = useState<{ key: string; date: Date; count: number } | null>(null);
+  const [paymentNotice, setPaymentNotice] = useState<string | null>(null);
   const [activePracticeId, setActivePracticeId] = useState<string | null>(null);
   const [quickRoute, setQuickRoute] = useState('/scenario-round');
   const [loadingRepos, setLoadingRepos] = useState(true);
@@ -132,19 +154,25 @@ export default function Dashboard() {
       const key = new Date(signal.timestamp).toISOString().slice(0, 10);
       map.set(key, (map.get(key) ?? 0) + 1);
     }
+    for (const row of activityRows) {
+      const key = new Date(row.activity_date).toISOString().slice(0, 10);
+      map.set(key, Number(row.total ?? 0));
+    }
     return map;
-  }, [latestSignals]);
+  }, [activityRows, latestSignals]);
   const heatmapDays = useMemo(() => {
     const today = new Date();
-    return Array.from({ length: 91 }, (_, index) => {
+    return Array.from({ length: heatmapRange }, (_, index) => {
       const date = new Date(today);
-      date.setDate(today.getDate() - (90 - index));
+      date.setDate(today.getDate() - (heatmapRange - 1 - index));
       const key = date.toISOString().slice(0, 10);
-      return { key, count: activityByDate.get(key) ?? 0 };
+      return { key, date, count: activityByDate.get(key) ?? 0 };
     });
-  }, [activityByDate]);
+  }, [activityByDate, heatmapRange]);
   const latestScore = latestSignals[0]?.score;
-  const prepScore = Math.min(96, Math.max(45, weightedAverage(latestSignals.map((signal) => signal.score)) ?? (latestScore ?? (plan ? 72 : 58))));
+  const calculatedScore = weightedAverage(latestSignals.map((signal) => signal.score));
+  const hasAnyActivity = attempts.length > 0 || currentDomainPracticeSessions.length > 0;
+  const prepScore = hasAnyActivity ? Math.min(96, Math.max(0, calculatedScore ?? latestScore ?? 0)) : 0;
   const previousScore = latestSignals[1]?.score ?? Math.max(42, prepScore - 12);
   const scoreDelta = prepScore - previousScore;
   const sparkline = [prepScore - 10, prepScore - 8, prepScore - 6, prepScore - 5, prepScore - 3, previousScore, prepScore].map((score) => Math.min(96, Math.max(38, score)));
@@ -178,6 +206,22 @@ export default function Dashboard() {
       { label: 'Timed Rounds', value: timedAverage },
     ];
   }, [attempts, currentDomainPracticeSessions, domainLabel, practiceSessions, prepScore]);
+  const readinessChartData = useMemo(() => {
+    const timedAverage = attempts.length
+      ? Math.round(attempts.reduce((sum, attempt) => sum + attempt.score, 0) / attempts.length)
+      : 0;
+    const practiceAverage = currentDomainPracticeSessions.length
+      ? Math.round(currentDomainPracticeSessions.reduce((sum, session) => sum + (session.score ?? 0), 0) / currentDomainPracticeSessions.length)
+      : 0;
+    const consistencyScore = heatmapDays.length
+      ? Math.min(100, Math.round((heatmapDays.filter((day) => day.count > 0).length / Math.min(30, heatmapDays.length)) * 100))
+      : 0;
+    return [
+      { name: 'Timed rounds', value: timedAverage, fill: '#10b981' },
+      { name: 'Practice sessions', value: practiceAverage, fill: '#059669' },
+      { name: 'Consistency', value: consistencyScore, fill: '#34d399' },
+    ];
+  }, [attempts, currentDomainPracticeSessions, heatmapDays]);
   const insights = useMemo(() => {
     const practiceInsights = currentDomainPracticeSessions.map(insightFromPracticeSession).filter(Boolean) as Array<{ title: string; body: string; timestamp: string }>;
     const roundInsights = attempts.map(insightFromAttempt).filter(Boolean) as Array<{ title: string; body: string; timestamp: string }>;
@@ -189,7 +233,6 @@ export default function Dashboard() {
     const fromResults = attempts.flatMap((attempt) => Array.isArray(attempt.results) ? attempt.results.filter((result) => !result.isCorrect).map((result) => result.topic) : []);
     return Array.from(new Set([...fromPracticeSessions, ...fromAttempts, ...fromResults])).slice(0, 4);
   }, [attempts, currentDomainPracticeSessions]);
-  const hasAnyActivity = attempts.length || currentDomainPracticeSessions.length;
 
   useEffect(() => {
     let ignore = false;
@@ -204,6 +247,31 @@ export default function Dashboard() {
     }).catch(() => {
       if (!ignore) setLoadingRepos(false);
     });
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('payment') !== 'success') return;
+    const planName = params.get('plan') || 'plan';
+    const expiry = params.get('expiry');
+    const expiryText = expiry ? ` Active until ${new Date(expiry).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}.` : '';
+    setPaymentNotice(`Payment successful! Your ${planName} is now active.${expiryText}`);
+    navigate('/dashboard', { replace: true });
+  }, [location.search, navigate]);
+
+  useEffect(() => {
+    let ignore = false;
+    fetch(apiUrl('/api/activity/heatmap?days=60'), { credentials: 'include' })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Unable to load activity.')))
+      .then((payload) => {
+        if (!ignore) setActivityRows(Array.isArray(payload.rows) ? payload.rows : []);
+      })
+      .catch(() => {
+        if (!ignore) setActivityRows([]);
+      });
     return () => {
       ignore = true;
     };
@@ -260,10 +328,16 @@ export default function Dashboard() {
         <BackgroundRippleEffect rows={10} cols={28} cellSize={66} />
       </div>
       <main className="relative z-10 mx-auto flex w-full max-w-[1320px] flex-col gap-6 px-4 pb-14 pt-6 sm:px-6 lg:px-10">
+        {paymentNotice ? (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-emerald-800 dark:text-emerald-200">
+            <span>{paymentNotice}</span>
+            <button type="button" onClick={() => setPaymentNotice(null)} className="text-emerald-700 hover:text-emerald-900 dark:text-emerald-200"><X size={16} /></button>
+          </div>
+        ) : null}
         <section className="border-b border-blueprint-line/80 pb-6">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl">
-              <h1 className="text-display-xl text-primary">Dashboard</h1>
+              <h1 className="page-title">Dashboard</h1>
               <p className="mt-3 text-body-lg text-blueprint-muted">
                 Your {domainLabel.toLowerCase()} workspace.
               </p>
@@ -274,23 +348,35 @@ export default function Dashboard() {
           </div>
         </section>
 
-        <button type="button" onClick={() => navigate('/github-repos')} className="surface-card text-left transition-colors hover:bg-white/85">
+        <button type="button" onClick={() => navigate('/github-repos')} className={repoCount > 0 ? 'surface-card saved-highlight text-left transition-colors hover:bg-white/85' : 'surface-card text-left transition-colors hover:bg-white/85'}>
           <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-center">
             <div>
               <div className="flex items-center gap-3 text-ui-label text-blueprint-muted">
                 <Github size={18} />
-                GitHub Repo Scanner for Interviews
+                <span className="text-emerald-700 dark:text-emerald-300">GitHub Repo Scanner for Interviews</span>
               </div>
               <h2 className="mt-3 text-headline-md text-primary not-italic">Generate repo-specific interview questions.</h2>
               <p className="mt-2 max-w-3xl text-body-md text-blueprint-muted">
                 Open the scanner to analyze public repositories or connected private repositories.
               </p>
             </div>
-            <span className="inline-flex items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-ui-label text-white">
+            <span className="search-arrow-hover inline-flex items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-ui-label text-white">
               Open Scanner <ArrowRight size={15} />
             </span>
           </div>
-          <p className="mt-4 text-ui-label text-blueprint-muted">{loadingRepos ? 'Loading...' : `View ${repoCount} scanned repos`}</p>
+          <div className="mt-4 flex items-start gap-2 text-blueprint-muted">
+            {loadingRepos ? (
+              <span className="loading-state"><LoaderCircle size={15} className="animate-spin" /> Loading...</span>
+            ) : (
+              <>
+                <Search size={16} className="mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-ui-label">{repoCount} repos scanned yet</p>
+                  {repoCount === 0 ? <p className="mt-1 text-sm">Open the scanner to get started</p> : null}
+                </div>
+              </>
+            )}
+          </div>
         </button>
 
         {(loadingAttempts || loadingPractice) ? (
@@ -300,13 +386,13 @@ export default function Dashboard() {
         ) : null}
 
         <section className="grid gap-5 lg:grid-cols-[minmax(16rem,0.85fr)_minmax(0,1.15fr)]">
-          <article className="surface-card min-h-0">
+          <button type="button" onClick={() => setReadinessOpen(true)} className="surface-card min-h-0 text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
             <div className="flex items-start justify-between gap-4">
               <span className="text-ui-label text-blueprint-muted">Prep Readiness</span>
             </div>
             <div className="mt-6 border-t border-blueprint-line pt-6">
               <p className="font-serif text-[clamp(2.7rem,7vw,64px)] leading-none text-primary">
-                {prepScore}<span className="ml-1 text-headline-md text-blueprint-muted">%</span>
+                {prepScore}<span className="ml-1 align-super text-[clamp(1rem,2vw,1.45rem)] font-sans text-blueprint-muted">%</span>
               </p>
               <div className="mt-4 flex items-center gap-3">
                 <div className="flex h-10 items-end gap-1" aria-label="Last 7 days readiness trend">
@@ -321,10 +407,10 @@ export default function Dashboard() {
               <p className="mt-4 text-body-md text-blueprint-muted">
                 {hasAnyActivity
                   ? `Based on your latest ${domainLabel.toLowerCase()} round scores, saved practice sessions, weak tags, and recent activity.`
-                  : 'Start a timed round to replace this estimate with real attempt data.'}
+                  : 'Complete rounds to build your readiness profile.'}
               </p>
             </div>
-          </article>
+          </button>
 
           <article id="gap-review" className="surface-card min-h-0">
             <div className="flex flex-col gap-2 border-b border-blueprint-line pb-4 sm:flex-row sm:items-center sm:justify-between">
@@ -552,12 +638,98 @@ export default function Dashboard() {
               </div>
               <button type="button" aria-label="Close" onClick={() => setConsistencyOpen(false)} className="text-blueprint-muted hover:text-primary"><X size={18} /></button>
             </div>
-            <div className="mt-5 grid gap-1" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(14px, 1fr))' }}>
+            <div className="mt-5 flex flex-wrap gap-2">
+              {[
+                [7, 'Last 7 Days'],
+                [15, 'Last 15 Days'],
+                [30, 'Last 30 Days'],
+                [45, 'Last 45 Days'],
+                [60, 'Last 2 Months'],
+              ].map(([days, label]) => (
+                <button
+                  key={String(days)}
+                  type="button"
+                  onClick={() => setHeatmapRange(Number(days))}
+                  className={`rounded-full border px-3 py-2 text-ui-label ${heatmapRange === days ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-primary'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="relative mt-5 grid gap-1" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(14px, 1fr))' }}>
               {heatmapDays.map((day) => {
-                return <span key={day.key} title={`${day.key}: ${day.count} activities`} className={`aspect-square rounded-sm border border-blueprint-line ${day.count >= 2 ? 'bg-primary' : day.count === 1 ? 'bg-[#777]' : 'bg-[#f5f3f3]'}`} />;
+                return (
+                  <span
+                    key={day.key}
+                    onMouseEnter={() => setHoveredActivity(day)}
+                    onMouseLeave={() => setHoveredActivity(null)}
+                    onFocus={() => setHoveredActivity(day)}
+                    onBlur={() => setHoveredActivity(null)}
+                    tabIndex={0}
+                    className={`aspect-square rounded-sm border border-blueprint-line outline-none ${day.count >= 3 ? 'bg-emerald-700 dark:bg-emerald-300' : day.count === 2 ? 'bg-emerald-500 dark:bg-emerald-500' : day.count === 1 ? 'bg-emerald-300 dark:bg-emerald-700' : 'bg-[#f5f3f3] dark:bg-[#202020]'}`}
+                  />
+                );
               })}
+              {hoveredActivity ? (
+                <div className="pointer-events-none absolute left-1/2 top-0 z-10 -translate-x-1/2 -translate-y-[calc(100%+8px)] rounded-xl border border-blueprint-line bg-[#101010] px-3 py-2 text-xs text-white shadow-xl">
+                  <p className="font-semibold">{hoveredActivity.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
+                  <p className="text-emerald-200">{hoveredActivity.count === 0 ? 'No activity' : `${hoveredActivity.count} session${hoveredActivity.count === 1 ? '' : 's'}`}</p>
+                </div>
+              ) : null}
             </div>
             <p className="mt-4 text-body-md text-blueprint-muted">Darker squares mean more completed practice activity on that day.</p>
+          </div>
+        </div>
+      ) : null}
+
+      {readinessOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4">
+          <div className="w-full max-w-3xl rounded-2xl border border-blueprint-line bg-card p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-ui-label text-blueprint-muted">Prep Readiness</p>
+                <h2 className="mt-2 text-headline-md text-primary not-italic">How your score is calculated</h2>
+              </div>
+              <button type="button" aria-label="Close" onClick={() => setReadinessOpen(false)} className="text-blueprint-muted hover:text-primary"><X size={18} /></button>
+            </div>
+            <div className="mt-5 grid gap-5 lg:grid-cols-[240px_minmax(0,1fr)]">
+              <div className="surface-inset">
+                <p className="text-ui-label text-blueprint-muted">Overall</p>
+                <p className="mt-3 font-serif text-[48px] leading-none text-primary">{prepScore}<span className="align-super text-lg font-sans text-blueprint-muted">%</span></p>
+                <p className="mt-3 text-body-md text-blueprint-muted">
+                  Recent scored work is weighted most heavily. Empty accounts start at 0 until rounds or practice sessions create signal.
+                </p>
+              </div>
+              <div className="surface-inset min-h-[260px]">
+                <ResponsiveContainer width="100%" height={240}>
+                  <BarChart data={readinessChartData} margin={{ top: 12, right: 12, left: -24, bottom: 0 }}>
+                    <XAxis dataKey="name" tick={{ fill: 'currentColor', fontSize: 12 }} />
+                    <YAxis domain={[0, 100]} tick={{ fill: 'currentColor', fontSize: 12 }} />
+                    <Tooltip cursor={{ fill: 'rgba(16,185,129,0.08)' }} content={<ReadinessTooltip />} />
+                    <Bar dataKey="value" minPointSize={4} radius={[8, 8, 0, 0]}>
+                      {readinessChartData.map((entry) => <Cell key={entry.name} fill={entry.fill} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_220px]">
+              <div className="surface-inset">
+                <p className="text-body-md text-primary">
+                  Formula: the latest five scored signals are averaged with descending weights of 100%, 86%, 72%, 58%, and 44%. Timed rounds and completed practice sessions both count, then weak tags and activity help explain what to work on next.
+                </p>
+              </div>
+              <div className="surface-inset h-[180px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={readinessChartData} dataKey="value" innerRadius={42} outerRadius={70} paddingAngle={3}>
+                      {readinessChartData.map((entry) => <Cell key={entry.name} fill={entry.fill} />)}
+                    </Pie>
+                    <Tooltip content={<ReadinessTooltip />} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}

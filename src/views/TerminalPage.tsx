@@ -583,7 +583,7 @@ export default function TerminalPage(_props: TerminalPageProps) {
         <main className="relative z-10 mx-auto w-full max-w-6xl space-y-6">
           <section className="surface-card">
             <p className="text-ui-label tracking-[0.2em] text-blueprint-muted">MOCK INTERVIEW</p>
-            <h1 className="mt-3 text-display-xl text-primary">Practice a realistic mock interview for {domainLabel}.</h1>
+            <h1 className="mt-3 page-title">Practice a realistic mock interview for {domainLabel}.</h1>
             <span className="mt-3 inline-block rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-sm text-blue-800">
               You're in an interview. Show what you know.
             </span>
@@ -694,7 +694,7 @@ export default function TerminalPage(_props: TerminalPageProps) {
         <main className="relative z-10 mx-auto w-full max-w-6xl space-y-6">
           <section className="surface-card">
             <p className="text-ui-label tracking-[0.2em] text-blueprint-muted">MOCK INTERVIEW</p>
-            <h1 className="mt-3 text-display-xl text-primary">{domainLabel} mock interview setup</h1>
+            <h1 className="mt-3 page-title">{domainLabel} mock interview setup</h1>
             {error ? <p className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-body-md text-red-700">{error}</p> : null}
           </section>
 

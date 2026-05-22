@@ -188,7 +188,7 @@ export default function Settings({ onViewChange, initialTab = 'profile' }: Setti
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
       <main className="relative z-10 mx-auto w-full max-w-6xl space-y-6">
         <header className="border-b border-blueprint-line pb-6">
-          <h1 className="text-display-xl text-primary">Settings</h1>
+          <h1 className="page-title">Settings</h1>
           <p className="mt-2 max-w-2xl text-body-lg text-blueprint-muted">
             Manage your account, security, domain, and device preferences.
           </p>

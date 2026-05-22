@@ -461,4 +461,38 @@ export const DATABASE_SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_billing_orders_user_created ON billing_orders(user_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS admins (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    is_root BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    last_login_at TIMESTAMPTZ
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_admins_email ON admins(email);
+
+  CREATE TABLE IF NOT EXISTS pdf_export_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    export_type TEXT NOT NULL,
+    source_id TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_pdf_export_events_user_created ON pdf_export_events(user_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS question_bank_usage_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    domain TEXT NOT NULL DEFAULT '',
+    question_id TEXT,
+    used_on DATE NOT NULL DEFAULT (NOW() AT TIME ZONE 'UTC')::date,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_question_bank_usage_user_day ON question_bank_usage_events(user_id, used_on);
 `;

@@ -124,18 +124,18 @@ export default function GithubRepos() {
         {repos.length ? (
           <section className="grid gap-4 lg:grid-cols-2">
             {repos.map((repo) => (
-              <article key={repo.id} className="surface-card-compact rounded-2xl">
+              <article key={repo.id} className="surface-card-compact saved-highlight rounded-2xl">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-headline-sm text-primary">{repo.repoName}</p>
                     <p className="mt-2 break-all text-sm text-blueprint-muted">{repo.repoUrl}</p>
                   </div>
-                  <span className="rounded-full border border-blueprint-line bg-card px-3 py-1 text-ui-label text-blueprint-muted">Saved</span>
+                  <span className="rounded-full border border-emerald-500/50 bg-emerald-600 px-3 py-1 text-ui-label text-white">Saved</span>
                 </div>
                 <p className="mt-4 text-body-md text-blueprint-muted">Scanned {new Date(repo.scannedAt).toLocaleDateString()}</p>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {repo.detectedStack.slice(0, 5).map((item) => (
-                    <span key={item} className="rounded-full border border-blueprint-line bg-[#f5f0f0] px-3 py-1 text-ui-label text-blueprint-muted">{item}</span>
+                    <span key={item} className="language-tag rounded-full border px-3 py-1 text-ui-label">{item}</span>
                   ))}
                 </div>
                 <div className="mt-5 grid gap-2 sm:grid-cols-2">

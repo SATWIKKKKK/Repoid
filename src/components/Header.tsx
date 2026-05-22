@@ -144,8 +144,10 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
               {user?.name ? <p className="px-4 py-1 text-sm font-semibold text-primary">{user.name}</p> : null}
               {user?.email ? <p className="px-4 pb-1 text-xs text-blueprint-muted">{user.email}</p> : null}
               <div className="border-b border-blueprint-line px-4 pb-2">
-                <p className="text-xs font-medium text-primary">{roleLabel}</p>
-                <p className="mt-1 text-xs text-blueprint-muted">Plan: {planLabel(currentPlan)}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-blue-700 px-2.5 py-1 text-xs font-semibold leading-none text-white dark:bg-blue-600">{roleLabel}</span>
+                  <span className="rounded-full bg-emerald-700 px-2.5 py-1 text-xs font-semibold leading-none text-white dark:bg-emerald-600">{planLabel(currentPlan)}</span>
+                </div>
               </div>
               <button type="button" onClick={() => { setDropdownOpen(false); setDomainDialogOpen(true); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-sm text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5 sm:hidden">
                 <Layers3 size={14} className="text-blueprint-muted" /> Change domain

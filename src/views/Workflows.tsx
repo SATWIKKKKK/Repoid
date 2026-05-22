@@ -5,13 +5,15 @@ import { DOMAIN_LABELS, updatePrepWorkspace } from '../lib/prep';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 import {
   fetchPracticeOverview,
-  searchPracticeSession,
+  searchPracticeSessionWithOptions,
   togglePracticeSessionSaved,
   type PracticeSessionSummary,
 } from '../lib/practiceSessions';
 import { updateUserPreferences } from '../lib/userPreferences';
 
 const PENDING_PRACTICE_KEY = 'repoid-pending-practice-generation';
+const PRACTICE_CACHE_PREFIX = 'repoid-practice-cache:';
+const PRACTICE_CACHE_TTL_MS = 3 * 60 * 60 * 1000;
 const PRACTICE_GENERATION_ESTIMATED_TOTAL_SECONDS = 70;
 const PRACTICE_GENERATION_PHASE_ONE_SECONDS = 22;
 const PRACTICE_GENERATION_PHASE_TWO_SECONDS = 46;
@@ -45,6 +47,8 @@ export default function Workflows() {
   const generationPhaseRef = useRef<HTMLParagraphElement | null>(null);
   const elapsedRef = useRef<HTMLSpanElement | null>(null);
   const remainingRef = useRef<HTMLSpanElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const lastLaunchRef = useRef(0);
 
   const displayedSuggestions = useMemo(() => {
     const suggestions = overview?.suggestedTopics ?? [];
@@ -139,11 +143,27 @@ export default function Workflows() {
   const launchTopic = async (rawTopic?: string) => {
     const nextTopic = (rawTopic ?? topic).trim();
     if (!nextTopic || !domain) return;
+    const now = Date.now();
+    if (now - lastLaunchRef.current < 450) return;
+    lastLaunchRef.current = now;
     const pendingPayload = {
       domain,
       topic: nextTopic,
       level: workspace.selections.experienceLevel || 'intermediate',
     };
+    const cacheKey = `${PRACTICE_CACHE_PREFIX}${pendingPayload.domain}:${pendingPayload.level}:${pendingPayload.topic.toLowerCase()}`;
+    try {
+      const cached = JSON.parse(window.localStorage.getItem(cacheKey) || 'null') as { expiresAt?: number; session?: { id?: string } } | null;
+      if (cached?.expiresAt && cached.expiresAt > Date.now() && cached.session?.id) {
+        navigate(`/round/practice/${cached.session.id}`);
+        return;
+      }
+    } catch {
+      // Cache is best-effort only.
+    }
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     generationStartedAt.current = Date.now();
     setSubmittingTopic(nextTopic);
     setError(null);
@@ -153,8 +173,10 @@ export default function Workflows() {
     } catch {
       // Retry recovery is a local convenience.
     }
-    const result = await searchPracticeSession(pendingPayload);
+    const result = await searchPracticeSessionWithOptions(pendingPayload, { signal: controller.signal });
+    if (controller.signal.aborted) return;
     setSubmittingTopic(null);
+    abortRef.current = null;
     if (result.ok === false) {
       setError({
         message: result.aiUnavailable
@@ -168,6 +190,7 @@ export default function Workflows() {
     }
     try {
       window.localStorage.removeItem(PENDING_PRACTICE_KEY);
+      window.localStorage.setItem(cacheKey, JSON.stringify({ expiresAt: Date.now() + PRACTICE_CACHE_TTL_MS, session: result.data }));
     } catch {
       // Ignore local cleanup failures.
     }

@@ -34,6 +34,7 @@ const Privacy = lazy(() => import('./views/Legal').then((module) => ({ default: 
 const Terms = lazy(() => import('./views/Legal').then((module) => ({ default: module.Terms })));
 const SecurityPage = lazy(() => import('./views/Legal').then((module) => ({ default: module.SecurityPage })));
 const Contact = lazy(() => import('./views/Legal').then((module) => ({ default: module.Contact })));
+const Admin = lazy(() => import('./views/Admin'));
 
 export type View =
   | 'landing' | 'dashboard' | 'builder' | 'terminal' | 'editor' | 'registry' | 'analytics'
@@ -137,7 +138,8 @@ function AppShell() {
   const isRoundPath = Boolean(matchPath('/round/*', location.pathname));
   const isLiveRoundPath = ['/scenario-round', '/coding-round', '/mock-interview'].includes(location.pathname);
   const isSettingsPath = location.pathname === '/settings' || location.pathname.startsWith('/settings/');
-  const isAuthShellPath = ['/', '/signin', '/login', '/signup', '/onboarding'].includes(location.pathname);
+  const isAdminPath = location.pathname === '/admin' || location.pathname.startsWith('/admin/');
+  const isAuthShellPath = ['/', '/signin', '/login', '/signup', '/onboarding'].includes(location.pathname) || isAdminPath;
   const showAppChrome = Boolean(user?.loggedIn) && !isAuthShellPath && !isRoundPath && !isLiveRoundPath;
 
   const pathToView: Record<string, View> = {
@@ -329,6 +331,8 @@ function AppShell() {
         <main className="flex-1 overflow-y-auto overflow-x-hidden">
           <Suspense fallback={<RouteFallback />}>
             <Routes>
+              <Route path="/admin" element={<Admin />} />
+              <Route path="/admin/login" element={<Admin />} />
               <Route path="/" element={user?.loggedIn ? <Navigate to={hasCompletedOnboarding ? '/dashboard' : '/onboarding'} replace /> : <Landing onStart={() => navigate('/signup')} onViewDocs={() => navigate('/dashboard')} onViewChange={handleViewChange} />} />
             <Route path="/signin" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="login" onAuthSuccess={() => { setUser(getStoredUser()); setOnboardingComplete(isOnboardingComplete()); navigate('/dashboard', { replace: true }); }} onBackToLanding={() => navigate('/', { replace: true })} />} />
             <Route path="/login" element={<Navigate to="/signin" replace />} />

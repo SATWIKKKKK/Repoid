@@ -136,8 +136,16 @@ export async function fetchPracticeSessions(options: { domain?: string; savedOnl
 }
 
 export async function searchPracticeSession(payload: { domain: string; topic: string; level: string }): Promise<ApiResult<PracticeSession>> {
+  return searchPracticeSessionWithOptions(payload);
+}
+
+export async function searchPracticeSessionWithOptions(
+  payload: { domain: string; topic: string; level: string },
+  options: { signal?: AbortSignal } = {},
+): Promise<ApiResult<PracticeSession>> {
   const result = await requestJson<{ session: PracticeSession }>('/api/practice/search', {
     method: 'POST',
+    signal: options.signal,
     body: JSON.stringify(payload),
   });
   if (result.ok === false) return result;

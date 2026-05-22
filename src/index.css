@@ -160,6 +160,35 @@
     background: #f3f0f0;
     padding: 1rem;
   }
+  .page-title {
+    font-family: var(--font-serif);
+    font-size: clamp(1.75rem,5.6vw,40px);
+    line-height: 1.18;
+    font-weight: 400;
+    color: var(--color-primary);
+  }
+  .loading-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.15;
+    letter-spacing: 0;
+    font-weight: 500;
+    text-transform: uppercase;
+    color: var(--color-blueprint-muted);
+  }
+  .saved-highlight {
+    @apply border-emerald-500/70 bg-emerald-50/70 dark:border-emerald-400/70 dark:bg-emerald-500/10;
+  }
+  .scrollbar-hidden {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-hidden::-webkit-scrollbar {
+    display: none;
+  }
   @media (min-width: 640px) {
     .surface-card {
       padding: 1.75rem;
@@ -459,6 +488,21 @@ nav {
 .dark .surface-inset {
   background: #202020;
   border-color: #3a3a3a;
+}
+
+.dark .github-scanner-surface,
+.dark .github-scanner-surface * {
+  color: var(--color-primary);
+}
+
+.language-tag {
+  background-color: #123d8a !important;
+  color: #ffffff !important;
+  border-color: rgba(147, 197, 253, 0.35) !important;
+}
+
+.dark .search-arrow-hover:hover svg {
+  color: #f3ecec !important;
 }
 
 .dark button:not(:disabled):hover {

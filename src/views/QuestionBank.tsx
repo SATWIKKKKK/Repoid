@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
+import { Download, LoaderCircle, Search } from 'lucide-react';
 import { fetchQuestions, fetchQuestionStats } from '../lib/questionBankApi';
 import DomainPickerDialog from '../components/DomainPickerDialog';
 import { QUESTION_TYPES, type BankQuestion, type QuestionType } from '../lib/questionBank';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
 import { DOMAIN_LABELS, updatePrepWorkspace } from '../lib/prep';
 import { updateUserPreferences } from '../lib/userPreferences';
+import { exportQuestionsPdf } from '../lib/pdfExport';
 
 const ALL_QUESTION_TYPES = QUESTION_TYPES.map((item) => item.id);
 const PAGE_SIZE = 12;
@@ -165,7 +167,6 @@ const DATA_ANALYTICS_TOPICS = [
   'Data Analytics FAANG',
 ];
 const CURATED_ROUND_FILTERS = [
-  { id: 'fundamentals', label: 'Fundamentals' },
   { id: 'concept-mcq', label: 'Concept MCQ' },
   { id: 'fill-in-the-blank', label: 'Fill in the Blank' },
   { id: 'scenario', label: 'Scenario' },
@@ -174,6 +175,20 @@ const CURATED_ROUND_FILTERS = [
   { id: 'mock-interview', label: 'Mock Interview' },
   { id: 'faang-tagged', label: 'FAANG Tagged' },
 ];
+const TOPIC_GROUPS = [
+  { domain: 'frontend', label: 'Frontend', topics: FRONTEND_TOPICS },
+  { domain: 'backend', label: 'Backend', topics: BACKEND_TOPICS },
+  { domain: 'ai-ml', label: 'AI/ML', topics: AIML_TOPICS },
+  { domain: 'data-science', label: 'Data Science', topics: DATA_SCIENCE_TOPICS },
+  { domain: 'data-analytics', label: 'Data Analyst', topics: DATA_ANALYTICS_TOPICS },
+  { domain: 'cybersecurity', label: 'Cybersecurity', topics: CYBER_TOPICS },
+];
+const ALL_CURATED_TOPIC_OPTIONS = TOPIC_GROUPS.flatMap((group) => group.topics.map((topic) => ({
+  value: `${group.domain}::${topic}`,
+  topic,
+  domain: group.domain,
+  label: `${group.label} - ${topic}`,
+})));
 const QUESTION_TYPE_LABELS = Object.fromEntries(QUESTION_TYPES.map((item) => [item.id, item.label])) as Record<QuestionType, string>;
 
 function normalizePoint(text: string): string {
@@ -255,6 +270,8 @@ export default function QuestionBank() {
   const [selectedTypes, setSelectedTypes] = useState<QuestionType[]>(() => ALL_QUESTION_TYPES);
   const [selectedBackendTopics, setSelectedBackendTopics] = useState<string[]>([]);
   const [selectedBackendRounds, setSelectedBackendRounds] = useState<string[]>([]);
+  const [topicDropdownValue, setTopicDropdownValue] = useState('');
+  const [roundDropdownValue, setRoundDropdownValue] = useState('');
   const [search, setSearch] = useState(initialSearch);
   const [faangOnly, setFaangOnly] = useState(false);
   const [stats, setStats] = useState<Array<{ id: string; label: string; total: number }>>([]);
@@ -268,6 +285,8 @@ export default function QuestionBank() {
   const [domainDialogOpen, setDomainDialogOpen] = useState(false);
   const [domainError, setDomainError] = useState<string | null>(null);
   const [savingDomain, setSavingDomain] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const allTypesSelected = selectedTypes.length === ALL_QUESTION_TYPES.length;
   const hasCuratedFilters = ['frontend', 'backend', 'ai-ml', 'cybersecurity', 'data-science', 'data-analytics'].includes(domain);
@@ -380,16 +399,35 @@ export default function QuestionBank() {
     });
   };
 
-  const toggleBackendTopic = (topic: string) => {
-    setSelectedBackendTopics((current) => current.includes(topic)
-      ? current.filter((item) => item !== topic)
-      : [...current, topic]);
+  const handleCuratedSearch = () => {
+    const option = ALL_CURATED_TOPIC_OPTIONS.find((item) => item.value === topicDropdownValue);
+    if (!option || !roundDropdownValue) return;
+    setDomain(option.domain);
+    setSelectedBackendTopics([option.topic]);
+    setSelectedBackendRounds([roundDropdownValue]);
+    setSearch('');
+    setPage(1);
   };
 
-  const toggleBackendRound = (roundId: string) => {
-    setSelectedBackendRounds((current) => current.includes(roundId)
-      ? current.filter((item) => item !== roundId)
-      : [...current, roundId]);
+  const handleExportPdf = async () => {
+    setExportingPdf(true);
+    setExportError(null);
+    try {
+      await exportQuestionsPdf({
+        title: `${selectedStats?.label ?? domain} question bank`,
+        domain: selectedStats?.label ?? domain,
+        exportType: 'question-bank',
+        questions: questions.map((question) => ({
+          questionText: question.questionText,
+          correctAnswer: question.correctAnswer,
+          explanation: question.explanation,
+        })),
+      });
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Unable to export PDF.');
+    } finally {
+      setExportingPdf(false);
+    }
   };
 
   const getRoundLabel = (question: BankQuestion) => {
@@ -421,7 +459,7 @@ export default function QuestionBank() {
         <section className="border-b border-blueprint-line pb-8">
           <div>
             <p className="text-ui-label text-blueprint-muted">Question Bank</p>
-            <h1 className="mt-2 text-display-xl text-primary">{selectedStats?.label ?? 'Domain'} interview questions</h1>
+            <h1 className="mt-2 page-title">{selectedStats?.label ?? 'Domain'} interview questions</h1>
             <p className="mt-3 max-w-3xl text-body-lg text-blueprint-muted">
               Questions stay aligned with your selected domain, round types, and search terms. You can switch domains directly from this page.
             </p>
@@ -519,7 +557,7 @@ export default function QuestionBank() {
                   </h2>
                   <p className="mt-2 text-body-md text-blueprint-muted">
                     {loading
-                      ? 'Fetching questions for the selected filters…'
+                      ? <span className="loading-state"><LoaderCircle size={15} className="animate-spin" /> Loading...</span>
                       : total
                         ? hasCuratedFilters
                           ? `${allBackendTopicsSelected ? `All ${curatedDomainLabel} topics selected.` : `${selectedBackendTopics.length} topic${selectedBackendTopics.length === 1 ? '' : 's'} selected.`} ${allBackendRoundsSelected ? `All ${curatedDomainLabel} round types selected.` : `${selectedBackendRounds.length} round type${selectedBackendRounds.length === 1 ? '' : 's'} selected.`}`
@@ -528,7 +566,15 @@ export default function QuestionBank() {
                   </p>
                 </div>
                 {!loading && totalPages > 0 ? (
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleExportPdf}
+                      disabled={!questions.length || exportingPdf}
+                      className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5"
+                    >
+                      {exportingPdf ? <LoaderCircle size={15} className="animate-spin" /> : <Download size={15} />} Export PDF
+                    </button>
                     <button
                       type="button"
                       onClick={() => setPage((current) => Math.max(1, current - 1))}
@@ -552,55 +598,36 @@ export default function QuestionBank() {
                 ) : null}
               </div>
             )}
+            {exportError ? <div className="rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-body-md text-red-700 dark:text-red-200">{exportError}</div> : null}
 
             {hasCuratedFilters ? (
               <div className="surface-card-compact space-y-5">
-                <div>
-                  <p className="text-ui-label text-primary">Topic</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedBackendTopics([])}
-                      className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${allBackendTopicsSelected ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                    >
-                      All
-                    </button>
-                    {curatedTopics.map((topic) => (
-                      <button
-                        key={topic}
-                        type="button"
-                        onClick={() => toggleBackendTopic(topic)}
-                        className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${selectedBackendTopics.includes(topic) ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                      >
-                        {topic}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <p className="text-ui-label text-primary">Round Type</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedBackendRounds([])}
-                      className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${allBackendRoundsSelected ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                    >
-                      All
-                    </button>
-                    {CURATED_ROUND_FILTERS
-                      .filter((item) => !(domain === 'ai-ml' && item.id === 'fundamentals'))
-                      .map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => toggleBackendRound(item.id)}
-                        className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${selectedBackendRounds.includes(item.id) ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
-                  </div>
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)_auto] lg:items-end">
+                  <label className="min-w-0">
+                    <span className="text-ui-label text-primary">Topic</span>
+                    <select value={topicDropdownValue} onChange={(event) => setTopicDropdownValue(event.target.value)} className="mt-2 w-full rounded-xl border border-blueprint-line bg-card px-4 py-3 text-body-md text-primary outline-none focus:border-primary">
+                      <option value="">Select topic</option>
+                      {TOPIC_GROUPS.map((group) => (
+                        <optgroup key={group.domain} label={group.label}>
+                          {group.topics.map((topic) => (
+                            <option key={`${group.domain}-${topic}`} value={`${group.domain}::${topic}`}>{topic}</option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="min-w-0">
+                    <span className="text-ui-label text-primary">Round Type</span>
+                    <select value={roundDropdownValue} onChange={(event) => setRoundDropdownValue(event.target.value)} className="mt-2 w-full rounded-xl border border-blueprint-line bg-card px-4 py-3 text-body-md text-primary outline-none focus:border-primary">
+                      <option value="">Select round type</option>
+                      {CURATED_ROUND_FILTERS.map((item) => (
+                        <option key={item.id} value={item.id}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button type="button" onClick={handleCuratedSearch} disabled={!topicDropdownValue || !roundDropdownValue} className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-ui-label text-white disabled:cursor-not-allowed disabled:opacity-50">
+                    <Search size={16} /> Search
+                  </button>
                 </div>
               </div>
             ) : null}

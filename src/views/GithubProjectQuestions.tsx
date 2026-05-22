@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Check, RefreshCw, Trash2, X } from 'lucide-react';
+import { Check, Download, LoaderCircle, RefreshCw, Trash2, X } from 'lucide-react';
 import { GithubScanOverlay } from '../components/GithubRepoScanner';
 import { deleteGithubRepo, getGithubQuestionSet, RepoQuestion, RepoQuestionSet } from '../lib/githubRepos';
+import { exportQuestionsPdf } from '../lib/pdfExport';
 
 const optionLetters = ['A', 'B', 'C', 'D'];
 
@@ -89,6 +90,8 @@ export default function GithubProjectQuestions() {
   const [showWarning, setShowWarning] = useState(true);
   const [scanRequest, setScanRequest] = useState<{ repoUrl: string; nonce: number } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     void getGithubQuestionSet(repoId).then(setData).catch((err) => setError(err instanceof Error ? err.message : 'Unable to load questions.'));
@@ -118,7 +121,7 @@ export default function GithubProjectQuestions() {
   if (error) {
     return (
       <div className="min-h-full bg-background p-8">
-        <div className="mx-auto max-w-2xl rounded-xl border border-blueprint-line bg-white p-6">
+        <div className="mx-auto max-w-2xl rounded-xl border border-blueprint-line bg-card p-6">
           <h1 className="text-headline-md text-primary">Analysis not ready</h1>
           <p className="mt-3 text-body-md text-blueprint-muted">{error}</p>
           <Link to="/github-repos" className="mt-6 inline-flex rounded-full bg-primary px-5 py-3 text-ui-label text-white">
@@ -128,7 +131,7 @@ export default function GithubProjectQuestions() {
       </div>
     );
   }
-  if (!data) return <div className="min-h-full bg-background p-8 text-blueprint-muted">Loading repository questions...</div>;
+  if (!data) return <div className="min-h-full bg-background p-8"><span className="loading-state"><LoaderCircle size={16} className="animate-spin" /> Loading...</span></div>;
   const questionNumberById = new Map<string, number>();
   data.sections.flatMap((section) => section.questions).forEach((question, index) => {
     questionNumberById.set(question.id, index + 1);
@@ -142,8 +145,28 @@ export default function GithubProjectQuestions() {
     setVisibleAnswers(next);
   };
 
+  const exportPdf = async () => {
+    setExportingPdf(true);
+    setExportError(null);
+    try {
+      await exportQuestionsPdf({
+        title: `${data.repo.repoName} repo questions`,
+        sourceId: data.repo.id,
+        exportType: 'github-repo',
+        questions: data.sections.flatMap((section) => section.questions).map((question) => ({
+          questionText: question.questionText,
+          correctAnswer: question.correctAnswer,
+        })),
+      });
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Unable to export PDF.');
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
   return (
-    <div className="min-h-full scroll-smooth bg-[#fbfafa]">
+    <div className="min-h-full scroll-smooth bg-background">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-25" />
       <div className="relative z-10 mx-auto max-w-[1180px] px-4 py-8 lg:px-8">
         <main className="scroll-smooth">
@@ -158,19 +181,22 @@ export default function GithubProjectQuestions() {
           <div className="border-b border-blueprint-line pb-6">
             <div>
               <div className="flex flex-wrap items-center gap-3">
-                <h1 className="text-display-xl text-primary">{data.repo.repoName}</h1>
+                <h1 className="page-title">{data.repo.repoName}</h1>
                 {(data.detectedDomains ?? []).map((domain) => (
-                  <span key={domain} className="rounded-full border border-blueprint-line bg-white px-3 py-1.5 text-ui-label text-blueprint-muted">{domain}</span>
+                  <span key={domain} className="language-tag rounded-full border px-3 py-1.5 text-ui-label">{domain}</span>
                 ))}
               </div>
               <p className="mt-3 text-ui-label text-blueprint-muted">Brief summary</p>
               <p className="mt-2 max-w-4xl text-body-lg leading-8 text-blueprint-muted">{data.projectSummary}</p>
             </div>
-            <div className="mt-6 flex flex-col gap-3 rounded-xl border border-blueprint-line bg-white/88 p-3 shadow-[0_8px_24px_rgba(0,0,0,0.03)] sm:flex-row sm:items-center sm:justify-between">
+            <div className="mt-6 flex flex-col gap-3 rounded-xl border border-blueprint-line bg-card p-3 shadow-[0_8px_24px_rgba(0,0,0,0.03)] sm:flex-row sm:items-center sm:justify-between">
               <p className="text-ui-label text-blueprint-muted">Question set actions</p>
-              <div className="grid gap-2 sm:grid-cols-3">
-                <button type="button" onClick={() => setAllAnswersVisible(!allAnswersVisible)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-blueprint-line bg-white px-4 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
+              <div className="grid gap-2 sm:grid-cols-4">
+                <button type="button" onClick={() => setAllAnswersVisible(!allAnswersVisible)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-blueprint-line bg-card px-4 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5">
                   <Check size={14} /> {allAnswersVisible ? 'Hide Answers' : 'Show Answers'}
+                </button>
+                <button type="button" disabled={exportingPdf} onClick={exportPdf} className="inline-flex items-center justify-center gap-2 rounded-lg border border-blueprint-line bg-card px-4 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] disabled:opacity-60 dark:hover:bg-white/5">
+                  {exportingPdf ? <LoaderCircle size={14} className="animate-spin" /> : <Download size={14} />} Export PDF
                 </button>
                 <button type="button" onClick={rescan} className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-ui-label text-white transition-colors hover:bg-[#303031]">
                   <RefreshCw size={14} /> Re-scan
@@ -180,6 +206,7 @@ export default function GithubProjectQuestions() {
                 </button>
               </div>
             </div>
+            {exportError ? <div className="mt-4 rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-body-md text-red-700 dark:text-red-200">{exportError}</div> : null}
           </div>
 
           {data.sections.some((section) => section.questions.some((question) => !question.correctAnswer)) ? (
@@ -191,9 +218,9 @@ export default function GithubProjectQuestions() {
             </div>
           ) : null}
 
-          <nav className="sticky top-16 z-30 mt-6 flex gap-2 overflow-x-auto border-b border-blueprint-line bg-[#fbfafa]/95 py-3 backdrop-blur">
+          <nav className="scrollbar-hidden sticky top-16 z-30 mt-6 flex gap-2 overflow-x-auto border-b border-blueprint-line bg-background/95 py-3 backdrop-blur">
             {data.sections.map((section) => (
-              <a key={section.sectionId} href={`#${section.sectionId}`} className="inline-flex shrink-0 items-center gap-2 rounded-full border border-blueprint-line bg-white px-4 py-2 text-ui-label text-primary transition-colors hover:bg-primary hover:text-white">
+              <a key={section.sectionId} href={`#${section.sectionId}`} className="inline-flex shrink-0 items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-primary hover:text-white">
                 <span>{section.sectionTitle}</span>
                 <span className="rounded-full border border-current px-2 py-0.5">{section.questions.length}</span>
               </a>
@@ -209,18 +236,18 @@ export default function GithubProjectQuestions() {
                 </div>
                 <div className="space-y-5">
                   {section.questions.map((question, index) => (
-                    <article key={question.id} className="rounded-lg border border-blueprint-line bg-white/86 p-5 shadow-[0_8px_24px_rgba(0,0,0,0.03)]">
+                    <article key={question.id} className="rounded-lg border border-blueprint-line bg-card p-5 shadow-[0_8px_24px_rgba(0,0,0,0.03)]">
                       <div className="mb-2 flex flex-wrap items-center gap-2">
                         <span className="text-ui-label text-blueprint-muted">Question {questionNumberById.get(question.id) ?? index + 1}</span>
                         <span className={`rounded-full border px-2 py-1 text-ui-label ${difficultyClass(question.difficulty)}`}>{question.difficulty}</span>
-                        <span className="rounded-full bg-[#efeded] px-2 py-1 text-ui-label text-blueprint-muted">{question.conceptTag}</span>
+                        <span className="rounded-full border border-blueprint-line bg-blueprint-bg px-2 py-1 text-ui-label text-blueprint-muted">{question.conceptTag}</span>
                       </div>
                       <QuestionBody question={question} />
                       <div className="mt-4 space-y-2">
                         {question.options?.length ? (
                           <>
                           {question.options.map((option, optionIndex) => (
-                            <div key={option} className="flex gap-3 rounded-lg border border-blueprint-line bg-[#fbfafa] px-3 py-2 text-body-md text-blueprint-muted">
+                            <div key={option} className="flex gap-3 rounded-lg border border-blueprint-line bg-blueprint-bg px-3 py-2 text-body-md text-blueprint-muted">
                               <span className="font-semibold text-primary">{optionLetters[optionIndex] ?? optionIndex + 1}</span>
                               <span>{option}</span>
                             </div>
@@ -232,7 +259,7 @@ export default function GithubProjectQuestions() {
                             <button
                               type="button"
                               onClick={() => setVisibleAnswers((answers) => ({ ...answers, [question.id]: !answers[question.id] }))}
-                              className="mt-2 inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-white px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]"
+                              className="mt-2 inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5"
                             >
                               <Check size={14} /> {visibleAnswers[question.id] ? 'Hide Answer' : 'Show Answer'}
                             </button>

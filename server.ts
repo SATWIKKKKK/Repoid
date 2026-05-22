@@ -1,7 +1,9 @@
 import cors from 'cors';
 import crypto from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import fs from 'node:fs';
 import { jsonrepair } from 'jsonrepair';
 import net from 'node:net';
@@ -48,21 +50,23 @@ if (fs.existsSync(envPath)) {
 }
 
 const SESSION_COOKIE_NAME = 'promptly_session';
+const ADMIN_SESSION_COOKIE_NAME = 'admin_session';
 const AUTH_WINDOW_MS = 60_000;
 const AUTH_MAX_REQUESTS = 20;
+const ADMIN_SESSION_MAX_AGE_SECONDS = 60 * 60 * 8;
 const GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS = Number(process.env.GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS ?? 15000);
-const GITHUB_SCAN_INPUT_CHAR_BUDGET = Number(process.env.GITHUB_SCAN_INPUT_CHAR_BUDGET ?? 240000);
-const GITHUB_SCAN_MAX_TOKENS = Number(process.env.GITHUB_SCAN_MAX_TOKENS ?? 64000);
-const GITHUB_SCAN_MODEL = process.env.GITHUB_SCAN_MODEL?.trim() || 'deepseek/deepseek-v4-pro';
+const GITHUB_SCAN_INPUT_CHAR_BUDGET = Number(process.env.GITHUB_SCAN_INPUT_CHAR_BUDGET ?? 60000);
+const GITHUB_SCAN_MAX_TOKENS = Number(process.env.GITHUB_SCAN_MAX_TOKENS ?? 18000);
+const GITHUB_SCAN_MODEL = process.env.GITHUB_SCAN_MODEL?.trim() || 'deepseek/deepseek-chat';
 const GITHUB_SCAN_FALLBACK_MODELS = String(process.env.GITHUB_SCAN_FALLBACK_MODELS ?? 'openai/gpt-4o')
   .split(',')
   .map((model) => model.trim())
   .filter(Boolean);
-const GITHUB_SCAN_TIMEOUT_MS = Number(process.env.GITHUB_SCAN_TIMEOUT_MS ?? 900000);
+const GITHUB_SCAN_TIMEOUT_MS = Number(process.env.GITHUB_SCAN_TIMEOUT_MS ?? 25000);
 const GITHUB_SCAN_TEMPERATURE = Number(process.env.GITHUB_SCAN_TEMPERATURE ?? 0.1);
 const GITHUB_SCAN_TOP_P = Number(process.env.GITHUB_SCAN_TOP_P ?? 0.95);
-const GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET = Number(process.env.GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET ?? 120000);
-const GITHUB_SCAN_ENGINE_VERSION = 'deepseek-chat-single-flight-2026-05-13';
+const GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET = Number(process.env.GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET ?? 60000);
+const GITHUB_SCAN_ENGINE_VERSION = 'deepseek-chat-trimmed-context-2026-05-22';
 const EMBED_VITE_DEV_SERVER = String(process.env.EMBED_VITE_DEV_SERVER ?? 'true').trim().toLowerCase() !== 'false';
 const SCENARIO_GENERATION_MODEL = process.env.SCENARIO_GENERATION_MODEL?.trim() || 'deepseek/deepseek-chat';
 const SCENARIO_GENERATION_TIMEOUT_MS = Math.max(8_000, Number(process.env.SCENARIO_GENERATION_TIMEOUT_MS ?? 18_000));
@@ -104,6 +108,20 @@ type DbUserRow = {
 type AuthedRequest = express.Request & {
   user?: DbUserRow;
   rawBody?: Buffer;
+};
+
+type AdminRow = {
+  id: string;
+  email: string;
+  password_hash: string;
+  is_root: boolean | null;
+  created_at: string;
+  updated_at: string;
+  last_login_at: string | null;
+};
+
+type AdminRequest = express.Request & {
+  admin?: AdminRow;
 };
 
 type UserPreferencesRow = {
@@ -376,10 +394,12 @@ const DOMAIN_ALIASES = new Map<string, string>([
 
 const BILLING_PLANS = ['free', 'pro', 'team'] as const;
 const BILLING_INTERVALS = ['monthly', 'annual'] as const;
+// Set MONTHLY_PLAN_AMOUNT_PAISE=9900 after the Razorpay Rs.1 production smoke test is complete.
+const MONTHLY_PLAN_AMOUNT_PAISE = Math.max(100, Number(process.env.MONTHLY_PLAN_AMOUNT_PAISE ?? 100) || 100);
 
 const PLAN_PRICING: Record<Exclude<BillingPlan, 'free'>, Record<BillingInterval, { amountPaise: number; displayPrice: string; label: string }>> = {
   pro: {
-    monthly: { amountPaise: 9900, displayPrice: '₹99', label: '3-month Pro' },
+    monthly: { amountPaise: MONTHLY_PLAN_AMOUNT_PAISE, displayPrice: `₹${MONTHLY_PLAN_AMOUNT_PAISE / 100}`, label: '3-month Pro' },
     annual: { amountPaise: 29900, displayPrice: '₹299', label: 'Yearly' },
   },
   team: {
@@ -417,8 +437,8 @@ const PLAN_LIMITS: Record<BillingPlan, {
     mockInterviewsPerMonth: 5,
     codingRoundsPerMonth: 10,
     scenarioRounds: 'unlimited',
-    githubRepos: 5,
-    pdfExport: true,
+    githubRepos: 7,
+    pdfExport: false,
     teamFeatures: false,
   },
   team: {
@@ -484,28 +504,49 @@ function toStringArray(value: unknown, fallback: string[] = []): string[] {
 }
 
 function extractJsonPayload(text: string): string {
-  const trimmed = text.trim();
+  const trimmed = text.trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '');
   if (!trimmed) {
     throw new Error('The model returned an empty response.');
   }
 
-  const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```\s*$/i);
-  if (fencedMatch?.[1]) {
-    return fencedMatch[1].trim();
-  }
+  const findBalancedJson = (source: string, openChar: '{' | '[', closeChar: '}' | ']') => {
+    const start = source.indexOf(openChar);
+    if (start === -1) return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < source.length; index += 1) {
+      const char = source[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === '\\') {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === openChar) depth += 1;
+      if (char === closeChar) depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+    const fallbackEnd = source.lastIndexOf(closeChar);
+    return fallbackEnd > start ? source.slice(start, fallbackEnd + 1) : null;
+  };
 
   const objectStart = trimmed.indexOf('{');
-  const objectEnd = trimmed.lastIndexOf('}');
   const arrayStart = trimmed.indexOf('[');
-  const arrayEnd = trimmed.lastIndexOf(']');
-
-  if (arrayStart !== -1 && arrayEnd > arrayStart && (objectStart === -1 || arrayStart < objectStart)) {
-    return trimmed.slice(arrayStart, arrayEnd + 1);
-  }
-
-  if (objectStart !== -1 && objectEnd > objectStart) {
-    return trimmed.slice(objectStart, objectEnd + 1);
-  }
+  const preferred = arrayStart !== -1 && (objectStart === -1 || arrayStart < objectStart)
+    ? findBalancedJson(trimmed, '[', ']')
+    : findBalancedJson(trimmed, '{', '}');
+  if (preferred) return preferred;
 
   return trimmed;
 }
@@ -4250,6 +4291,7 @@ async function generatePracticeSessionQuestions(params: {
               timeoutMs,
               model: 'deepseek/deepseek-chat',
               temperature: 0.7,
+              stream: true,
             },
           ));
           console.log(`[practice-gen] ${phaseLabel} count:`, generated.result.length);
@@ -4374,7 +4416,7 @@ async function callStructuredModel<T>(
   systemPrompt: string,
   userPrompt: string,
   normalize: (payload: unknown) => T,
-  options: { maxTokens?: number; timeoutMs?: number; model?: string; temperature?: number; topP?: number; abortSignal?: AbortSignal } = {},
+  options: { maxTokens?: number; timeoutMs?: number; model?: string; temperature?: number; topP?: number; abortSignal?: AbortSignal; stream?: boolean } = {},
 ): Promise<{ result: T; provider: string; model: string; rawLength: number }> {
   const config = resolveModelConfig(options.model);
   const abortController = new AbortController();
@@ -4399,6 +4441,7 @@ async function callStructuredModel<T>(
         top_p: options.topP ?? undefined,
         max_tokens: options.maxTokens ?? 4000,
         response_format: { type: 'json_object' },
+        stream: Boolean(options.stream),
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -4406,7 +4449,36 @@ async function callStructuredModel<T>(
       }),
     });
 
-    const responseText = await response.text();
+    if (options.stream) {
+      if (!response.ok) {
+        const responseText = await response.text().catch(() => '');
+        throw new Error(`model_http_${response.status}: ${responseText || 'Prep analysis request failed.'}`);
+      }
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('model_empty_response');
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const payload = trimmed.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          try {
+            const chunk = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: unknown }; message?: { content?: unknown } }> };
+            rawText += readMessageText(chunk.choices?.[0]?.delta?.content ?? chunk.choices?.[0]?.message?.content);
+          } catch {
+            // Ignore keepalive or provider-specific stream lines.
+          }
+        }
+      }
+    } else {
+      const responseText = await response.text();
     const data = (() => {
       try {
         return JSON.parse(responseText) as {
@@ -4422,6 +4494,7 @@ async function callStructuredModel<T>(
     }
 
     rawText = readMessageText(data.choices?.[0]?.message?.content);
+    }
   } else {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.model)}:generateContent?key=${encodeURIComponent(config.apiKey)}`,
@@ -4775,6 +4848,31 @@ type GithubRepoContext = {
 
 type RepoFileCategory = 'auth' | 'schema' | 'routes' | 'stack' | 'readme' | 'env' | 'components' | 'other';
 
+function stripGithubFileForModel(filePath: string, content: string) {
+  const lower = filePath.toLowerCase();
+  if (/\.(css|scss|svg|lock|map|min\.js|d\.ts)$/i.test(lower)) return '';
+  if (/(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb|tailwind\.config|next\.config|vite\.config|tsconfig|postcss\.config)/i.test(lower)) {
+    return '';
+  }
+  const withoutBlockComments = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/<!--[\s\S]*?-->/g, '');
+  return withoutBlockComments
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      if (/^\/\//.test(trimmed) || /^#/.test(trimmed)) return false;
+      if (/^import\s.+from\s+['"][^'"]+['"];?$/.test(trimmed)) return false;
+      if (/^import\s+['"][^'"]+['"];?$/.test(trimmed)) return false;
+      if (/^export\s+type\s+/.test(trimmed) || /^type\s+\w+\s*=/.test(trimmed)) return false;
+      return true;
+    })
+    .join('\n')
+    .slice(0, 18000);
+}
+
 export async function fetchGithubRepoForQuestionSet(repoUrlInput: string, accessToken?: string | null): Promise<GithubRepoContext> {
   const parsed = parseGitHubRepository(repoUrlInput);
   if (!parsed) throw new Error('invalid_github_url');
@@ -4802,18 +4900,18 @@ export async function fetchGithubRepoForQuestionSet(repoUrlInput: string, access
   if (treeResponse?.status === 404) throw new Error('private_repo');
   if (!treeResponse?.ok) throw new Error('github_fetch_failed');
   const treeData = await treeResponse.json().catch(() => ({})) as { tree?: RepoTreeItem[] };
-  const codeExtensions = /\.(tsx?|jsx?|py|go|rs|java|cs|php|rb|sql|prisma|json|md|yml|yaml|toml|css|scss|svelte|vue)$/i;
+  const codeExtensions = /\.(tsx?|jsx?|py|go|rs|java|cs|php|rb|sql|prisma|md|yml|yaml|toml|svelte|vue)$/i;
   const ignored = /(^|\/)(node_modules|dist|build|coverage|\.git|vendor|__pycache__|\.next|target)\//i;
   const categoryForPath = (filePath: string): RepoFileCategory | null => {
     const lower = filePath.toLowerCase();
     const fileName = lower.split('/').pop() ?? lower;
-    if (['package.json', 'requirements.txt', 'pyproject.toml'].includes(fileName)) return 'stack';
+    if (['package.json', 'requirements.txt', 'pyproject.toml', 'go.mod', 'cargo.toml'].includes(fileName)) return 'stack';
     if (lower === 'readme.md') return 'readme';
     if (fileName === '.env.example') return 'env';
     if (/(auth|middleware|guard)/i.test(filePath)) return 'auth';
     if (/(schema|model|migration|prisma)/i.test(filePath)) return 'schema';
     if (/(route|controller|api|handler)/i.test(filePath)) return 'routes';
-    if (/(^|\/)(components|component|views|pages|app|src)\//i.test(filePath) && /\.(tsx|jsx|ts|js|vue|svelte|css|scss)$/i.test(filePath)) return 'components';
+    if (/(^|\/)(components|component|views|pages|app|src)\//i.test(filePath) && /\.(tsx|jsx|ts|js|vue|svelte)$/i.test(filePath)) return 'components';
     if (codeExtensions.test(filePath)) return 'other';
     return null;
   };
@@ -4821,12 +4919,21 @@ export async function fetchGithubRepoForQuestionSet(repoUrlInput: string, access
     auth: 0,
     schema: 1,
     routes: 2,
-    stack: 3,
-    readme: 4,
-    env: 5,
-    components: 6,
+    components: 3,
+    stack: 4,
+    readme: 5,
+    env: 6,
     other: 7,
   })[category];
+  const relevanceScore = (file: { path: string; category: RepoFileCategory }) => {
+    const lower = file.path.toLowerCase();
+    let score = 100 - (priorityScore(file.category) * 10);
+    if (/(route|api|server|controller|handler|auth|middleware|schema|model|db|database|prisma)/i.test(lower)) score += 30;
+    if (/(app|src|lib|server|api)\//i.test(lower)) score += 12;
+    if (/(test|spec|stories|mock|fixture|sample|example)/i.test(lower)) score -= 35;
+    score -= Math.min(20, Math.floor(file.path.length / 12));
+    return score;
+  };
   const files = (treeData.tree ?? [])
     .filter((item) => item.type === 'blob' && item.path && !ignored.test(item.path))
     .map((item) => {
@@ -4834,15 +4941,13 @@ export async function fetchGithubRepoForQuestionSet(repoUrlInput: string, access
       return category ? { path: item.path!, category } : null;
     })
     .filter((item): item is { path: string; category: RepoFileCategory } => Boolean(item))
-    .sort((a, b) => {
-      return priorityScore(a.category) - priorityScore(b.category) || a.path.length - b.path.length || a.path.localeCompare(b.path);
-    })
-    .slice(0, 140);
+    .sort((a, b) => relevanceScore(b) - relevanceScore(a) || a.path.length - b.path.length || a.path.localeCompare(b.path))
+    .slice(0, 24);
   const fetchedFiles = await Promise.all(files.map(async (file) => {
     const rawUrl = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${encodeURIComponent(defaultBranch)}/${file.path.split('/').map(encodeURIComponent).join('/')}`;
     const rawResponse = await fetch(rawUrl, { headers: rawHeaders }).catch(() => null);
     if (!rawResponse?.ok) return null;
-    const content = await rawResponse.text().catch(() => '');
+    const content = stripGithubFileForModel(file.path, await rawResponse.text().catch(() => ''));
     if (!content.trim()) return null;
     return { ...file, content };
   }));
@@ -4857,7 +4962,7 @@ export async function fetchGithubRepoForQuestionSet(repoUrlInput: string, access
 
   for (const file of fetchedFiles.filter(Boolean) as Array<{ path: string; category: RepoFileCategory; content: string }>) {
     if (remainingBudget <= 0) break;
-    const text = file.content.slice(0, remainingBudget);
+    const text = file.content.slice(0, Math.min(remainingBudget, file.category === 'components' || file.category === 'other' ? 10000 : 16000));
     if (!text.trim()) continue;
     remainingBudget -= text.length;
     if (file.category === 'stack') {
@@ -4893,7 +4998,7 @@ export async function fetchGithubRepoForQuestionSet(repoUrlInput: string, access
   };
 }
 
-const GITHUB_REPO_SCAN_SYSTEM_PROMPT = `You are a senior software engineer with 10 years of experience conducting technical interviews at product companies. You have been given the complete file contents of a GitHub repository. Your only job is to generate interview questions that are strictly and exclusively derived from what exists in this specific codebase. You are not allowed to generate generic questions about the technologies used. Every single question must reference something that actually exists in this repo — a specific file, a specific function, a specific pattern, a specific architectural decision, or a specific piece of logic found in the code. If you cannot tie a question directly to something found in the files provided, do not include that question. No generic React questions. No generic Node questions. No generic SQL questions. Only questions that could not exist without this specific repo.`;
+const GITHUB_REPO_SCAN_SYSTEM_PROMPT = `Generate repo-specific interview questions from supplied files only. Return valid JSON only. Every question and answer must cite a concrete file path and implementation detail from the provided context. No generic framework questions.`;
 
 const GITHUB_REPO_SCAN_USER_PROMPT = `REPO NAME: {repoName}
 
@@ -4903,47 +5008,24 @@ DETECTED FILES AND CONTENTS:
 README:
 {readmeContent}
 
-Before generating any questions, detect the primary domain of this repository from the files provided. The domain must be one of: Frontend, Backend, Full Stack, AI and ML, Cybersecurity, Blockchain and Web3, DevOps and Infrastructure, Data Engineering, Mobile, or General Software. You may detect up to two domains if the repo genuinely spans both, for example a Full Stack repo or an AI app with a backend API layer.
-
-Before generating any questions, perform a deep read of every file provided and extract implementation intelligence separately for frontend and backend where those layers exist.
-
-For frontend analysis, identify: every React component and what it renders, every custom hook and what state or side effect it manages, every context provider and what it exposes, every page component and its routing logic, every fetch or API call made from the client side and what endpoint it hits, every form and what validation it performs, every state management pattern used whether useState or useReducer or Zustand or Redux, every use of useEffect and what dependency array it has and what cleanup it performs, every conditional render and what condition controls it, every client side navigation pattern, every loading and error state handling, and every prop drilling chain or context consumption pattern.
-
-For backend analysis, identify: every API route and its HTTP method and what it does, every middleware and what it validates or transforms, every database query and whether it is optimized or could cause N plus 1 problems, every authentication check and whether it is correctly placed, every input validation and whether it is complete or missing fields, every error response and whether it leaks sensitive information, every environment variable usage and whether any are missing or insecure, every async operation and whether errors are properly caught, every data transformation between database and response, and every potential race condition or missing transaction.
-
-Use this intelligence exclusively to generate the questions below. Every frontend question must reference a specific component, hook, page, or client side pattern found in the files. Every backend question must reference a specific route, middleware, query, or server side pattern found in the files.
-
-Generate exactly 56 interview questions divided into seven sections. Return only a valid JSON object. Do not return any prose, explanation, markdown formatting, code fences, or any text outside the JSON object. The JSON object must have exactly this structure:
-
-projectName: string — the repository name.
-
-detectedDomains: array of one or two strings — the detected domain or domains.
-
-projectSummary: string — a single paragraph of 3 to 4 sentences describing what this application does, what stack it uses, and what the two or three most technically interesting aspects of the codebase are. Write this as if you are briefing an interviewer who has 30 seconds to understand the project. Be specific — name actual libraries, actual file names, actual patterns found in the code. Do not write generic descriptions.
-
-sections: array of exactly 7 objects. Each object has: sectionId (string), sectionTitle (string), sectionDescription (string, one sentence describing what this section tests), and questions (array of question objects).
-
-Each question object must have: id (string, q1 through q56 sequentially across all sections), questionText (string, the full question), type (string, one of: mcq, open, coding, scenario), difficulty (string, one of: easy, medium, hard), fileReference (string, the exact file name or path from this repo that this question is based on — this field is mandatory, never null, never generic like "src folder", must be a specific file name found in the provided content), conceptTag (string, short concept name like "JWT refresh token" or "useEffect cleanup" or "Prisma relation query"), and correctAnswer (string, mandatory for every question, containing the proper answer an interviewer would expect for this exact repo-specific question). For type mcq only, also include options (array of 4 strings), and correctAnswer must match one of the options exactly.
-
-Answer rules you must follow without exception: Every question must have a proper, useful correctAnswer. For open questions, correctAnswer must be a concise model answer in 3 to 6 sentences that references the specific file or implementation detail. For scenario questions, correctAnswer must explain the recommended production response, the code area to inspect or change, and the tradeoff involved. For coding questions, correctAnswer must include the completed/fixed/explained code or a precise explanation of the expected fix, grounded in the actual snippet shown in questionText. Do not use vague answers like "answers may vary" or "depends"; give the strongest expected answer based on the repository content.
-
-Section rules you must follow without exception:
-
-Section one: sectionId "project-overview", sectionTitle "Project Overview", exactly 6 questions of type open at difficulty easy or medium. These cover what the app does, the overall architecture, folder structure decisions, technology choices, and how data flows from the client to the database and back. Every question must reference a specific file found in the repo.
-
-Section two: sectionId "frontend-deep-dive", sectionTitle "Frontend Deep Dive" if frontend files exist. If the repo is not frontend-heavy, replace the title with the most accurate detected domain deep dive title, such as "AI and ML Deep Dive", "Security Deep Dive", "Smart Contract Deep Dive", "Infrastructure Deep Dive", "Data Pipeline Deep Dive", or "Mobile Deep Dive". Exactly 10 questions total: 3 open medium questions, 3 coding medium or hard questions, 2 scenario medium questions, and 2 mcq medium questions. Ground every question in actual files.
-
-Section three: sectionId "backend-deep-dive", sectionTitle "Backend Deep Dive" if backend files exist. If the repo is not backend-heavy and section two already covers the primary domain, use the best complementary implementation deep dive title that fits actual files. Exactly 10 questions total: 3 open medium or hard questions, 3 coding hard questions, 2 scenario hard questions, and 2 mcq medium questions. Ground every question in actual route, middleware, query, schema, infrastructure, or service files.
-
-Section four: sectionId "most-probable", sectionTitle "Most Probable Interview Questions", exactly 9 questions mixing open and mcq at medium difficulty. These are the questions that statistically come up in 80 percent of interviews when an interviewer has read this specific type of project.
-
-Section five: sectionId "scenario-based", sectionTitle "Scenario Based Questions", exactly 8 questions of type scenario at medium or hard difficulty. Each scenario must describe a realistic production situation — a bug reported by a user, a performance degradation under load, a security incident, or a failed deployment — and ground it in the specific files and implementation choices of this repo.
-
-Section six: sectionId "technical-deep-dive", sectionTitle "Technical Deep Dive", exactly 8 questions of type open at hard difficulty. These assume the interviewer has thoroughly read the code and wants to test whether the candidate truly understands the implications of every decision made.
-
-Section seven: sectionId "red-flags-improvements", sectionTitle "Red Flags and Improvements", exactly 5 questions of type open at hard difficulty. These are questions about real weaknesses found in this specific codebase. The model must identify actual problems — missing input validation on a specific route, an in-memory store that breaks under horizontal scaling, a component that fetches on every render, a missing database index on a frequently queried field, an auth check that can be bypassed, or another genuine issue — and ask the candidate to explain the problem and propose a fix. Every question in this section must cite the specific file and specific code pattern where the issue exists. Do not invent problems; only flag things that are genuinely present in the provided files.
-
-Additional rules you must never violate: Do not generate any question that could appear in a generic domain interview without referencing this specific repo. Every question must be answerable by someone who has thoroughly read this codebase. The fileReference field is not optional on any question — if you cannot cite a specific file, drop the question and replace it with one you can cite. The correctAnswer field is not optional on any question — if you cannot provide a specific, repo-grounded answer, drop the question and replace it with one you can answer properly. Questions about database must reference actual schema or model files found in the content. Questions about auth must reference the actual auth implementation files found. Questions about components must reference actual component files found. If the repo has no auth layer, generate zero auth questions. If the repo has no database files, generate zero database questions. Only generate questions about what actually exists in the provided files. The coding-based questions must embed actual code from the provided files inside the questionText — do not write fictional code. If a section genuinely cannot be filled with repo-specific questions due to limited file content, reduce its count and add a warnings array at the root of the JSON listing which sections were reduced and why.`;
+Return one JSON object:
+{
+  "projectName": string,
+  "detectedDomains": string[],
+  "projectSummary": "3-4 specific sentences naming files/libraries/patterns",
+  "sections": [
+    {"sectionId":"project-overview","sectionTitle":"Project Overview","sectionDescription":string,"questions":[6 open easy/medium]},
+    {"sectionId":"frontend-deep-dive","sectionTitle":"Frontend Deep Dive or best domain title","sectionDescription":string,"questions":[10 mixed: 3 open, 3 coding, 2 scenario, 2 mcq]},
+    {"sectionId":"backend-deep-dive","sectionTitle":"Backend Deep Dive or complementary domain title","sectionDescription":string,"questions":[10 mixed: 3 open, 3 coding, 2 scenario, 2 mcq]},
+    {"sectionId":"most-probable","sectionTitle":"Most Probable Interview Questions","sectionDescription":string,"questions":[9 open/mcq]},
+    {"sectionId":"scenario-based","sectionTitle":"Scenario Based Questions","sectionDescription":string,"questions":[8 scenario]},
+    {"sectionId":"technical-deep-dive","sectionTitle":"Technical Deep Dive","sectionDescription":string,"questions":[8 open hard]},
+    {"sectionId":"red-flags-improvements","sectionTitle":"Red Flags and Improvements","sectionDescription":string,"questions":[5 open hard]}
+  ],
+  "warnings": string[]
+}
+Question shape: {id:"q1", questionText, type:"mcq"|"open"|"coding"|"scenario", difficulty:"easy"|"medium"|"hard", fileReference, conceptTag, correctAnswer, options?}.
+Rules: exactly 56 questions when enough context exists; otherwise reduce and add warnings. fileReference must be an exact provided path. correctAnswer must be concrete and cite the implementation. MCQ options must be 4 strings and correctAnswer must equal one option. Do not invent files, auth, database, or problems not present. Return JSON only.`;
 
 const GITHUB_REPO_SCAN_PROFILE_PROMPT = `REPO NAME: {repoName}
 
@@ -5740,6 +5822,12 @@ async function assertGithubScanJobActive(jobId: string, userId: string) {
   }
 }
 
+async function updateGithubScanStage(jobId: string, message: string) {
+  await db.prepare('UPDATE repo_scan_jobs SET error_message = ? WHERE id = ? AND status = ?')
+    .run(message, jobId, 'pending')
+    .catch(() => undefined);
+}
+
 export async function completeGithubScanJob(params: {
   jobId: string;
   userId: string;
@@ -5748,6 +5836,7 @@ export async function completeGithubScanJob(params: {
   accessToken?: string | null;
 }) {
   try {
+    await updateGithubScanStage(params.jobId, 'Fetching repository files...');
     console.info('GitHub repo scan stage started', {
       jobId: params.jobId,
       repoUrl: params.repoUrl,
@@ -5765,6 +5854,7 @@ export async function completeGithubScanJob(params: {
     });
     await assertGithubScanJobActive(params.jobId, params.userId);
     const repoId = params.existingRepoId ?? crypto.randomUUID();
+    await updateGithubScanStage(params.jobId, 'Analyzing codebase...');
     console.info('GitHub repo scan stage started', {
       jobId: params.jobId,
       repoUrl: params.repoUrl,
@@ -5772,6 +5862,7 @@ export async function completeGithubScanJob(params: {
     });
     let result: GithubQuestionSet;
     try {
+      await updateGithubScanStage(params.jobId, 'Generating questions...');
       result = await generateGithubQuestionSet(context, params.jobId, params.userId);
     } catch (generationError) {
       if (generationError instanceof Error && generationError.message === 'scan_job_replaced') {
@@ -5892,6 +5983,87 @@ function verifyPassword(password: string, storedHash: string): boolean {
   if (!salt || !expectedHash) return false;
   const actualHash = crypto.scryptSync(password, salt, 64).toString('hex');
   return crypto.timingSafeEqual(Buffer.from(actualHash, 'hex'), Buffer.from(expectedHash, 'hex'));
+}
+
+function getAdminSessionSecret() {
+  return process.env.ADMIN_SESSION_SECRET?.trim() || process.env.SESSION_SECRET?.trim() || process.env.AUTH_SECRET?.trim() || 'repoid-local-admin-session-secret';
+}
+
+function signAdminSession(admin: Pick<AdminRow, 'id' | 'email'>) {
+  const payload = {
+    id: admin.id,
+    email: admin.email,
+    exp: Date.now() + ADMIN_SESSION_MAX_AGE_SECONDS * 1000,
+  };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto.createHmac('sha256', getAdminSessionSecret()).update(encoded).digest('base64url');
+  return `${encoded}.${signature}`;
+}
+
+function verifyAdminSessionToken(token: string): { id: string; email: string } | null {
+  const [encoded, signature] = String(token ?? '').split('.');
+  if (!encoded || !signature) return null;
+  const expected = crypto.createHmac('sha256', getAdminSessionSecret()).update(encoded).digest('base64url');
+  if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as { id?: string; email?: string; exp?: number };
+    if (!payload.id || !payload.email || !payload.exp || payload.exp < Date.now()) return null;
+    return { id: payload.id, email: payload.email };
+  } catch {
+    return null;
+  }
+}
+
+function setAdminSessionCookie(response: express.Response, token: string) {
+  response.cookie(ADMIN_SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: ADMIN_SESSION_MAX_AGE_SECONDS * 1000,
+    path: '/',
+  });
+}
+
+function clearAdminSessionCookie(response: express.Response) {
+  response.clearCookie(ADMIN_SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+  });
+}
+
+async function bootstrapRootAdmin() {
+  const email = normalizeEmail(process.env.ADMIN_EMAIL);
+  if (!email) return;
+  const passwordHash = process.env.ADMIN_PASSWORD_HASH?.trim() || (process.env.ADMIN_PASSWORD ? await bcrypt.hash(String(process.env.ADMIN_PASSWORD), 12) : '');
+  if (!passwordHash) return;
+  await db.prepare(`
+    INSERT INTO admins (id, email, password_hash, is_root, created_at, updated_at)
+    VALUES (?, ?, ?, TRUE, NOW(), NOW())
+    ON CONFLICT (email) DO UPDATE SET
+      password_hash = EXCLUDED.password_hash,
+      is_root = TRUE,
+      updated_at = NOW()
+  `).run(crypto.randomUUID(), email, passwordHash);
+}
+
+async function requireAdmin(request: express.Request, response: express.Response, next: express.NextFunction) {
+  const cookies = parseCookies(request.headers.cookie);
+  const session = verifyAdminSessionToken(cookies[ADMIN_SESSION_COOKIE_NAME] ?? '');
+  if (!session) {
+    response.status(401).json({ error: 'Admin authentication required.' });
+    return;
+  }
+  const admin = await db.prepare('SELECT id, email, password_hash, is_root, created_at, updated_at, last_login_at FROM admins WHERE id = ? AND email = ?')
+    .get<AdminRow>(session.id, session.email);
+  if (!admin) {
+    clearAdminSessionCookie(response);
+    response.status(401).json({ error: 'Admin authentication required.' });
+    return;
+  }
+  (request as AdminRequest).admin = admin;
+  next();
 }
 
 function otpKey(email: string, purpose: EmailOtpPurpose) {
@@ -6112,6 +6284,8 @@ function getPeriodEnd(interval: BillingInterval) {
   } else {
     date.setMonth(date.getMonth() + 3);
   }
+  date.setDate(date.getDate() - 1);
+  date.setHours(23, 59, 59, 999);
   return date.toISOString();
 }
 
@@ -6209,6 +6383,16 @@ async function getGithubRepoUsage(userId: string) {
   return Number(row?.total ?? 0);
 }
 
+async function getGithubRepoUsageThisMonth(userId: string) {
+  const row = await db.prepare(`
+    SELECT COUNT(*)::int AS total
+      FROM github_repos
+     WHERE user_id = ?
+       AND created_at >= date_trunc('month', NOW())
+  `).get<{ total: number }>(userId);
+  return Number(row?.total ?? 0);
+}
+
 async function getEntitlement(userId: string, feature: string) {
   const plan = await getEffectivePlan(userId);
   const limits = PLAN_LIMITS[plan];
@@ -6219,28 +6403,38 @@ async function getEntitlement(userId: string, feature: string) {
 
   if (feature === 'mock-interview') {
     usage.mockInterviewsThisMonth = await getMonthlyRoundUsage(userId, 'mock-interview');
-    hasAccess = true;
-    reason = null;
-    suggestedPlan = null;
+    hasAccess = plan !== 'free';
+    reason = hasAccess ? null : 'This round type requires a Monthly or Yearly plan. Upgrade to unlock.';
+    suggestedPlan = 'pro';
   } else if (feature === 'coding-round') {
     usage.codingRoundsThisMonth = await getMonthlyRoundUsage(userId, 'coding-round');
-    hasAccess = true;
-    reason = null;
-    suggestedPlan = null;
+    hasAccess = plan !== 'free';
+    reason = hasAccess ? null : 'This round type requires a Monthly or Yearly plan. Upgrade to unlock.';
+    suggestedPlan = 'pro';
   } else if (feature === 'scenario-round') {
-    hasAccess = true;
-    reason = null;
-    suggestedPlan = null;
+    hasAccess = plan !== 'free';
+    reason = hasAccess ? null : 'This round type requires a Monthly or Yearly plan. Upgrade to unlock.';
+    suggestedPlan = 'pro';
   } else if (feature === 'github-scan') {
-    usage.githubRepos = await getGithubRepoUsage(userId);
     const limit = limits.githubRepos;
-    hasAccess = limit === 'unlimited' || usage.githubRepos < limit;
-    reason = hasAccess ? null : 'You have reached the GitHub repository scan limit for your plan.';
-    suggestedPlan = plan === 'free' ? 'pro' : 'team';
+    if (plan === 'pro') {
+      usage.githubReposThisMonth = await getGithubRepoUsageThisMonth(userId);
+      hasAccess = limit === 'unlimited' || usage.githubReposThisMonth < limit;
+      const resetDate = new Date();
+      resetDate.setMonth(resetDate.getMonth() + 1, 1);
+      resetDate.setHours(0, 0, 0, 0);
+      reason = hasAccess ? null : `You've used all 7 GitHub repo scans for this month. Your limit resets on ${resetDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}.`;
+      suggestedPlan = 'team';
+    } else {
+      usage.githubRepos = await getGithubRepoUsage(userId);
+      hasAccess = limit === 'unlimited' || usage.githubRepos < limit;
+      reason = hasAccess ? null : 'Free Tier allows 3 GitHub repo scans. Upgrade to scan more.';
+      suggestedPlan = plan === 'free' ? 'pro' : 'team';
+    }
   } else if (feature === 'pdf-export') {
     hasAccess = limits.pdfExport;
-    reason = hasAccess ? null : 'PDF report export is available on Pro and Team.';
-    suggestedPlan = 'pro';
+    reason = hasAccess ? null : 'PDF exports are available on the Yearly plan. Upgrade to unlock.';
+    suggestedPlan = 'team';
   }
 
   return {
@@ -6329,6 +6523,7 @@ async function ensureRuntimeSchemaReady() {
 export async function createApp(options: { listen?: boolean } = {}) {
   const listen = options.listen ?? true;
   await ensureRuntimeSchemaReady();
+  await bootstrapRootAdmin();
   const app = express();
   app.disable('x-powered-by');
   app.use(cors({ origin: true, credentials: true }));
@@ -6354,6 +6549,263 @@ export async function createApp(options: { listen?: boolean } = {}) {
         contextCharBudget: GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET,
       },
     });
+  });
+
+  const adminLoginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many admin login attempts. Please retry in 15 minutes.' },
+  });
+
+  app.post('/api/admin/login', adminLoginLimiter, async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
+    const password = String(request.body?.password ?? '');
+    if (!email || !password) {
+      response.status(400).json({ error: 'Email and password are required.' });
+      return;
+    }
+    const admin = await db.prepare('SELECT id, email, password_hash, is_root, created_at, updated_at, last_login_at FROM admins WHERE email = ?')
+      .get<AdminRow>(email);
+    if (!admin || !(await bcrypt.compare(password, admin.password_hash))) {
+      response.status(401).json({ error: 'Invalid admin credentials.' });
+      return;
+    }
+    await db.prepare('UPDATE admins SET last_login_at = NOW(), updated_at = NOW() WHERE id = ?').run(admin.id);
+    setAdminSessionCookie(response, signAdminSession(admin));
+    response.json({ admin: { id: admin.id, email: admin.email, isRoot: Boolean(admin.is_root) } });
+  });
+
+  app.post('/api/admin/logout', requireAdmin, async (_request, response) => {
+    clearAdminSessionCookie(response);
+    response.json({ success: true });
+  });
+
+  app.get('/api/admin/me', requireAdmin, async (request, response) => {
+    const admin = (request as AdminRequest).admin!;
+    response.json({ admin: { id: admin.id, email: admin.email, isRoot: Boolean(admin.is_root) } });
+  });
+
+  app.get('/api/admin/overview', requireAdmin, async (_request, response) => {
+    const [users, rounds, practice, repos, questions, pdfs, revenue] = await Promise.all([
+      db.prepare('SELECT COUNT(*)::int AS total FROM users').get<{ total: number }>(),
+      db.prepare(`
+        SELECT (
+          (SELECT COUNT(*) FROM round_attempts WHERE status IN ('submitted','completed')) +
+          (SELECT COUNT(*) FROM scenario_attempts WHERE completed_at IS NOT NULL OR status IN ('completed','submitted')) +
+          (SELECT COUNT(*) FROM coding_attempts WHERE submitted_at IS NOT NULL OR status IN ('completed','submitted')) +
+          (SELECT COUNT(*) FROM mock_interviews WHERE completed_at IS NOT NULL OR status IN ('completed','submitted'))
+        )::int AS total
+      `).get<{ total: number }>(),
+      db.prepare("SELECT COUNT(*)::int AS total FROM open_practice_sessions WHERE completed_at IS NOT NULL OR status = 'completed'").get<{ total: number }>(),
+      db.prepare("SELECT COUNT(*)::int AS total FROM github_repos WHERE status IN ('complete','completed','ready')").get<{ total: number }>(),
+      db.prepare(`
+        SELECT (
+          (SELECT COUNT(*) FROM question_history) +
+          (SELECT COUNT(*) FROM question_bank_usage_events) +
+          (SELECT COALESCE(SUM(total_questions),0) FROM round_attempts) +
+          (SELECT COALESCE(SUM(jsonb_array_length(questions)),0) FROM repo_question_sets)
+        )::int AS total
+      `).get<{ total: number }>(),
+      db.prepare('SELECT COUNT(*)::int AS total FROM pdf_export_events').get<{ total: number }>(),
+      db.prepare(`
+        SELECT COALESCE(SUM(amount_paise),0)::int AS total_paise,
+               COALESCE(SUM(amount_paise) FILTER (WHERE billing_interval = 'monthly'),0)::int AS monthly_paise,
+               COALESCE(SUM(amount_paise) FILTER (WHERE billing_interval = 'annual'),0)::int AS yearly_paise
+          FROM billing_orders
+         WHERE status IN ('paid','verified','captured','success')
+      `).get<{ total_paise: number; monthly_paise: number; yearly_paise: number }>(),
+    ]);
+    response.setHeader('Cache-Control', 'no-store');
+    response.json({
+      users: users?.total ?? 0,
+      roundsCompleted: rounds?.total ?? 0,
+      practiceSessions: practice?.total ?? 0,
+      repoScans: repos?.total ?? 0,
+      questionsGenerated: questions?.total ?? 0,
+      pdfExports: pdfs?.total ?? 0,
+      revenue: {
+        totalRupees: Number(revenue?.total_paise ?? 0) / 100,
+        monthlyRupees: Number(revenue?.monthly_paise ?? 0) / 100,
+        yearlyRupees: Number(revenue?.yearly_paise ?? 0) / 100,
+      },
+    });
+  });
+
+  app.get('/api/admin/users', requireAdmin, async (request, response) => {
+    const page = Math.max(1, Number(request.query.page ?? 1));
+    const pageSize = Math.min(50, Math.max(5, Number(request.query.pageSize ?? 10)));
+    const search = `%${String(request.query.search ?? '').trim().toLowerCase()}%`;
+    const sortMap: Record<string, string> = {
+      name: 'u.name',
+      email: 'u.email',
+      joined: 'u.created_at',
+      plan: 'COALESCE(s.plan, $$free$$)',
+      rounds: 'rounds_completed',
+      lastActive: 'last_active_at',
+    };
+    const sort = sortMap[String(request.query.sort ?? 'joined')] ?? 'u.created_at';
+    const dir = String(request.query.dir ?? 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const where = "WHERE LOWER(u.name) LIKE ? OR LOWER(u.email) LIKE ?";
+    const total = await db.prepare(`SELECT COUNT(*)::int AS total FROM users u ${where}`).get<{ total: number }>(search, search);
+    const rows = await db.prepare(`
+      SELECT u.id, u.name, u.email, u.created_at AS joined_at, u.updated_at AS last_active_at,
+             COALESCE(up.domain, '') AS domain,
+             COALESCE(s.plan, 'free') AS plan,
+             s.current_period_end AS plan_expiry,
+             COALESCE((SELECT COUNT(*) FROM round_attempts ra WHERE ra.user_id = u.id AND ra.status IN ('submitted','completed')),0)::int AS rounds_completed,
+             COALESCE((SELECT COUNT(*) FROM open_practice_sessions ps WHERE ps.user_id = u.id AND (ps.completed_at IS NOT NULL OR ps.status = 'completed')),0)::int AS practice_sessions,
+             COALESCE((SELECT COUNT(*) FROM question_assignments qa WHERE qa.user_id = u.id AND qa.completed_at IS NOT NULL),0)::int AS questions_attempted,
+             COALESCE((SELECT COUNT(*) FROM github_repos gr WHERE gr.user_id = u.id),0)::int AS repo_scans
+        FROM users u
+        LEFT JOIN user_preferences up ON up.user_id = u.id
+        LEFT JOIN subscriptions s ON s.user_id = u.id
+       ${where}
+       ORDER BY ${sort} ${dir}
+       LIMIT ? OFFSET ?
+    `).all(search, search, pageSize, (page - 1) * pageSize);
+    response.setHeader('Cache-Control', 'no-store');
+    response.json({ rows, total: total?.total ?? 0, page, pageSize });
+  });
+
+  app.get('/api/admin/users/:userId', requireAdmin, async (request, response) => {
+    const userId = String(request.params.userId ?? '');
+    const user = await db.prepare(`
+      SELECT u.id, u.name, u.email, u.created_at AS joined_at, COALESCE(up.domain, '') AS domain,
+             COALESCE(s.plan, 'free') AS plan, s.current_period_end AS plan_expiry
+        FROM users u
+        LEFT JOIN user_preferences up ON up.user_id = u.id
+        LEFT JOIN subscriptions s ON s.user_id = u.id
+       WHERE u.id = ?
+    `).get(userId);
+    if (!user) {
+      response.status(404).json({ error: 'User not found.' });
+      return;
+    }
+    const [rounds, practice, repos, generated, payments] = await Promise.all([
+      db.prepare('SELECT id, round_type, domain, status, score, total_questions, created_at, submitted_at FROM round_attempts WHERE user_id = ? ORDER BY created_at DESC LIMIT 100').all(userId),
+      db.prepare('SELECT id, domain, topic, status, score, generated_at, completed_at FROM open_practice_sessions WHERE user_id = ? ORDER BY generated_at DESC LIMIT 100').all(userId),
+      db.prepare('SELECT id, repo_name, repo_url, detected_stack, scanned_at, status FROM github_repos WHERE user_id = ? ORDER BY scanned_at DESC LIMIT 100').all(userId),
+      db.prepare('SELECT id, domain, round_type, question_text, seen_at FROM question_history WHERE user_id = ? ORDER BY seen_at DESC LIMIT 100').all(userId),
+      db.prepare('SELECT id, plan, billing_interval, amount_paise, status, razorpay_payment_id, verified_at, created_at FROM billing_orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 100').all(userId),
+    ]);
+    response.setHeader('Cache-Control', 'no-store');
+    response.json({ user, rounds, practice, repos, generatedQuestions: generated, payments });
+  });
+
+  app.get('/api/admin/rounds', requireAdmin, async (_request, response) => {
+    const [byType, byDomain, topUsers] = await Promise.all([
+      db.prepare(`
+        SELECT round_type, COUNT(*)::int AS total FROM (
+          SELECT round_type FROM round_attempts WHERE status IN ('submitted','completed')
+          UNION ALL SELECT 'Scenario' FROM scenario_attempts WHERE completed_at IS NOT NULL OR status IN ('completed','submitted')
+          UNION ALL SELECT 'Coding Round' FROM coding_attempts WHERE submitted_at IS NOT NULL OR status IN ('completed','submitted')
+          UNION ALL SELECT 'Mock Interview' FROM mock_interviews WHERE completed_at IS NOT NULL OR status IN ('completed','submitted')
+        ) x GROUP BY round_type ORDER BY total DESC
+      `).all(),
+      db.prepare('SELECT domain, round_type, COUNT(*)::int AS total FROM round_attempts GROUP BY domain, round_type ORDER BY domain, total DESC').all(),
+      db.prepare(`
+        SELECT u.id, u.name, u.email, COUNT(ra.id)::int AS rounds_completed
+          FROM users u
+          JOIN round_attempts ra ON ra.user_id = u.id AND ra.status IN ('submitted','completed')
+         GROUP BY u.id, u.name, u.email
+         ORDER BY rounds_completed DESC
+         LIMIT 10
+      `).all(),
+    ]);
+    response.setHeader('Cache-Control', 'no-store');
+    response.json({ byType, byDomain, topUsers });
+  });
+
+  app.get('/api/admin/domains', requireAdmin, async (_request, response) => {
+    const rows = await db.prepare(`
+      SELECT d.domain,
+             COALESCE(users_count,0)::int AS users,
+             COALESCE(rounds_count,0)::int AS rounds,
+             COALESCE(search_count,0)::int AS searches
+        FROM (
+          SELECT domain FROM user_preferences
+          UNION SELECT domain FROM round_attempts
+          UNION SELECT domain FROM question_bank_usage_events
+        ) d
+        LEFT JOIN (SELECT domain, COUNT(*) AS users_count FROM user_preferences GROUP BY domain) u ON u.domain = d.domain
+        LEFT JOIN (SELECT domain, COUNT(*) AS rounds_count FROM round_attempts GROUP BY domain) r ON r.domain = d.domain
+        LEFT JOIN (SELECT domain, COUNT(*) AS search_count FROM question_bank_usage_events GROUP BY domain) q ON q.domain = d.domain
+       WHERE d.domain IS NOT NULL AND d.domain <> ''
+       ORDER BY users DESC, rounds DESC
+    `).all();
+    response.setHeader('Cache-Control', 'no-store');
+    response.json({ rows });
+  });
+
+  app.get('/api/admin/payments', requireAdmin, async (_request, response) => {
+    const [summary, rows] = await Promise.all([
+      db.prepare("SELECT COALESCE(SUM(amount_paise),0)::int AS total_paise FROM billing_orders WHERE status IN ('paid','verified','captured','success')").get<{ total_paise: number }>(),
+      db.prepare(`
+        SELECT bo.id, u.name, u.email, bo.plan, bo.billing_interval, bo.amount_paise, bo.razorpay_payment_id,
+               COALESCE(bo.verified_at, bo.created_at) AS payment_date, s.current_period_end AS plan_expiry
+          FROM billing_orders bo
+          JOIN users u ON u.id = bo.user_id
+          LEFT JOIN subscriptions s ON s.user_id = bo.user_id
+         WHERE bo.status IN ('paid','verified','captured','success')
+         ORDER BY COALESCE(bo.verified_at, bo.created_at) DESC
+         LIMIT 500
+      `).all(),
+    ]);
+    response.setHeader('Cache-Control', 'no-store');
+    response.json({ totalRupees: Number(summary?.total_paise ?? 0) / 100, rows });
+  });
+
+  app.get('/api/admin/github-scans', requireAdmin, async (_request, response) => {
+    const rows = await db.prepare(`
+      SELECT gr.id, u.name, u.email, gr.repo_name, gr.repo_url, gr.scanned_at, gr.status, gr.detected_stack,
+             COALESCE(jsonb_array_length(rqs.questions),0)::int AS questions_generated
+        FROM github_repos gr
+        JOIN users u ON u.id = gr.user_id
+        LEFT JOIN repo_question_sets rqs ON rqs.repo_id = gr.id
+       ORDER BY gr.scanned_at DESC
+       LIMIT 500
+    `).all();
+    const total = await db.prepare('SELECT COUNT(*)::int AS total FROM github_repos').get<{ total: number }>();
+    response.setHeader('Cache-Control', 'no-store');
+    response.json({ total: total?.total ?? 0, rows });
+  });
+
+  app.get('/api/admin/admins', requireAdmin, async (_request, response) => {
+    const rows = await db.prepare('SELECT id, email, is_root, created_at, updated_at, last_login_at FROM admins ORDER BY is_root DESC, created_at DESC').all();
+    response.setHeader('Cache-Control', 'no-store');
+    response.json({ rows, rootEmail: normalizeEmail(process.env.ADMIN_EMAIL) });
+  });
+
+  app.post('/api/admin/admins', requireAdmin, async (request, response) => {
+    const email = normalizeEmail(request.body?.email);
+    const password = String(request.body?.password ?? '');
+    if (!email || password.length < 8) {
+      response.status(400).json({ error: 'Email and a password of at least 8 characters are required.' });
+      return;
+    }
+    const passwordHash = await bcrypt.hash(password, 12);
+    await db.prepare(`
+      INSERT INTO admins (id, email, password_hash, is_root, created_at, updated_at)
+      VALUES (?, ?, ?, FALSE, NOW(), NOW())
+      ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, updated_at = NOW()
+    `).run(crypto.randomUUID(), email, passwordHash);
+    response.status(201).json({ success: true });
+  });
+
+  app.delete('/api/admin/admins/:id', requireAdmin, async (request, response) => {
+    const admin = await db.prepare('SELECT id, email, is_root FROM admins WHERE id = ?').get<AdminRow>(String(request.params.id ?? ''));
+    if (!admin) {
+      response.status(404).json({ error: 'Admin not found.' });
+      return;
+    }
+    if (admin.is_root || normalizeEmail(admin.email) === normalizeEmail(process.env.ADMIN_EMAIL)) {
+      response.status(403).json({ error: 'Root admin access cannot be removed.' });
+      return;
+    }
+    await db.prepare('DELETE FROM admins WHERE id = ?').run(admin.id);
+    response.json({ success: true });
   });
 
   app.get('/api/billing/plans', (_request, response) => {
@@ -6399,6 +6851,26 @@ export async function createApp(options: { listen?: boolean } = {}) {
       return;
     }
     response.json({ entitlement: await getEntitlement(user.id, feature) });
+  });
+
+  app.post('/api/pdf-export-events', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const entitlement = await getEntitlement(user.id, 'pdf-export');
+    if (!entitlement.hasAccess) {
+      response.status(403).json({ entitlement, error: entitlement.reason });
+      return;
+    }
+    await db.prepare(`
+      INSERT INTO pdf_export_events (id, user_id, export_type, source_id, title, created_at)
+      VALUES (?, ?, ?, ?, ?, NOW())
+    `).run(
+      crypto.randomUUID(),
+      user.id,
+      String(request.body?.exportType ?? 'questions').slice(0, 80),
+      request.body?.sourceId ? String(request.body.sourceId).slice(0, 160) : null,
+      String(request.body?.title ?? 'Repoid export').slice(0, 240),
+    );
+    response.status(201).json({ success: true });
   });
 
   app.post('/api/billing/create-order', requireUser, async (request, response) => {
@@ -6988,6 +7460,47 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
+  app.get('/api/activity/heatmap', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const days = Math.min(90, Math.max(7, Number(request.query.days ?? 60)));
+    const since = new Date();
+    since.setDate(since.getDate() - days + 1);
+    since.setHours(0, 0, 0, 0);
+    const rows = await db.prepare(`
+      SELECT activity_date, SUM(total)::int AS total
+        FROM (
+          SELECT DATE(COALESCE(submitted_at, updated_at, created_at)) AS activity_date, COUNT(*)::int AS total
+            FROM round_attempts
+           WHERE user_id = ? AND status IN ('submitted','completed') AND COALESCE(submitted_at, updated_at, created_at) >= ?
+           GROUP BY activity_date
+          UNION ALL
+          SELECT DATE(COALESCE(completed_at, started_at)) AS activity_date, COUNT(*)::int AS total
+            FROM scenario_attempts
+           WHERE user_id = ? AND (completed_at IS NOT NULL OR status IN ('completed','submitted')) AND COALESCE(completed_at, started_at) >= ?
+           GROUP BY activity_date
+          UNION ALL
+          SELECT DATE(COALESCE(submitted_at, started_at)) AS activity_date, COUNT(*)::int AS total
+            FROM coding_attempts
+           WHERE user_id = ? AND (submitted_at IS NOT NULL OR status IN ('completed','submitted')) AND COALESCE(submitted_at, started_at) >= ?
+           GROUP BY activity_date
+          UNION ALL
+          SELECT DATE(COALESCE(completed_at, started_at)) AS activity_date, COUNT(*)::int AS total
+            FROM mock_interviews
+           WHERE user_id = ? AND (completed_at IS NOT NULL OR status IN ('completed','submitted')) AND COALESCE(completed_at, started_at) >= ?
+           GROUP BY activity_date
+          UNION ALL
+          SELECT DATE(COALESCE(completed_at, generated_at, created_at)) AS activity_date, COUNT(*)::int AS total
+            FROM open_practice_sessions
+           WHERE user_id = ? AND (completed_at IS NOT NULL OR status = 'completed') AND COALESCE(completed_at, generated_at, created_at) >= ?
+           GROUP BY activity_date
+        ) activity
+       GROUP BY activity_date
+       ORDER BY activity_date
+    `).all(user.id, since, user.id, since, user.id, since, user.id, since, user.id, since);
+    response.setHeader('Cache-Control', 'no-store');
+    response.json({ rows });
+  });
+
   app.get('/api/questions', requireUser, async (request, response) => {
     try {
       const user = (request as AuthedRequest).user!;
@@ -6998,9 +7511,27 @@ export async function createApp(options: { listen?: boolean } = {}) {
       const search = String(request.query.search ?? '');
       const topics = toStringArray(request.query.topics);
       const roundTags = toStringArray(request.query.roundTags);
-      const pageSize = Math.min(60, Math.max(1, Number(request.query.pageSize ?? request.query.limit ?? 12)));
+      const requestedPageSize = Math.min(60, Math.max(1, Number(request.query.pageSize ?? request.query.limit ?? 12)));
       const page = Math.max(1, Number(request.query.page ?? 1));
       const faangOnly = String(request.query.faangOnly ?? 'false') === 'true';
+      const plan = await getEffectivePlan(user.id);
+      let pageSize = requestedPageSize;
+      if (plan === 'free') {
+        const usage = await db.prepare(`
+          SELECT COUNT(*)::int AS total
+            FROM question_bank_usage_events
+           WHERE user_id = ? AND used_on = (NOW() AT TIME ZONE 'UTC')::date
+        `).get<{ total: number }>(user.id);
+        const remaining = Math.max(0, 20 - Number(usage?.total ?? 0));
+        if (remaining <= 0) {
+          response.status(403).json({
+            error: "You've reached your daily limit of 20 questions. Upgrade to unlock unlimited access.",
+            upgradeRequired: true,
+          });
+          return;
+        }
+        pageSize = Math.min(pageSize, remaining);
+      }
       const result = await listQuestions({
         domain,
         types: types.length ? types : undefined,
@@ -7012,7 +7543,15 @@ export async function createApp(options: { listen?: boolean } = {}) {
         limit: pageSize,
         offset: (page - 1) * pageSize,
       });
-      response.setHeader('Cache-Control', 'private, max-age=30, stale-while-revalidate=120');
+      if (plan === 'free' && result.questions.length) {
+        for (const question of result.questions) {
+          await db.prepare(`
+            INSERT INTO question_bank_usage_events (id, user_id, domain, question_id, used_on, created_at)
+            VALUES (?, ?, ?, ?, (NOW() AT TIME ZONE 'UTC')::date, NOW())
+          `).run(crypto.randomUUID(), user.id, domain ?? '', question.id ?? null);
+        }
+      }
+      response.setHeader('Cache-Control', 'no-store');
       response.json({ ...result, totalReturned: result.questions.length });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load questions.' });
@@ -8601,7 +9140,11 @@ export async function createApp(options: { listen?: boolean } = {}) {
     const themeValue = typeof request.body?.theme === 'string' ? request.body.theme : null;
     const theme = themeValue && ['light', 'dark', 'system'].includes(themeValue) ? themeValue : null;
     const domain = request.body?.domain === undefined ? null : normalizeOptionalDomain(request.body.domain);
-    const existing = await db.prepare('SELECT user_id FROM user_preferences WHERE user_id = ?').get<{ user_id: string }>(user.id);
+    const existing = await db.prepare('SELECT user_id, domain FROM user_preferences WHERE user_id = ?').get<{ user_id: string; domain: string | null }>(user.id);
+    if (domain && existing?.domain && normalizeOptionalDomain(existing.domain) !== domain && await getEffectivePlan(user.id) === 'free') {
+      response.status(403).json({ error: 'Upgrade to access multiple domains.', upgradeRequired: true });
+      return;
+    }
 
     if (existing) {
       await db.prepare('UPDATE user_preferences SET sidebar_open = COALESCE(?, sidebar_open), theme = COALESCE(?, theme), domain = COALESCE(?, domain), updated_at = NOW() WHERE user_id = ?')

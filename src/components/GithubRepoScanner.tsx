@@ -115,6 +115,11 @@ export function GithubScanOverlay({ repoUrl, force = false, onClose, onError, on
           return;
         }
 
+        if (job.status === 'pending') {
+          setResult({ status: 'pending', message: job.message ?? 'Generating questions...' });
+          return;
+        }
+
         if (job.status === 'failed') {
           setPendingJobId(null);
           setTakingLonger(false);
@@ -157,9 +162,9 @@ export function GithubScanOverlay({ repoUrl, force = false, onClose, onError, on
     ? (result.message ?? 'We had trouble analyzing this repository. Please try again.')
     : null;
   const infoMessage = result?.status === 'pending'
-    ? (takingLonger
+    ? (result.message || (takingLonger
       ? 'Still working on this repository.'
-      : 'Preparing your repository questions.')
+      : 'Preparing your repository questions.'))
     : null;
   const canForceRestart = result?.status === 'pending' && !force && restartCount === 0;
   const progress = result?.status === 'complete'
@@ -193,7 +198,7 @@ export function GithubScanOverlay({ repoUrl, force = false, onClose, onError, on
           <X size={18} />
         </button>
       ) : null}
-      <div className="relative mx-auto flex min-h-full w-full max-w-5xl items-center">
+      <div className="github-scanner-surface relative mx-auto flex min-h-full w-full max-w-5xl items-center">
         <div className="w-full rounded-3xl border border-blueprint-line bg-card p-5 shadow-[0_28px_80px_rgba(0,0,0,0.12)] sm:p-6">
           <div className="flex flex-col gap-5 border-b border-blueprint-line pb-5 sm:flex-row sm:items-end sm:justify-between">
             <div>
@@ -204,19 +209,19 @@ export function GithubScanOverlay({ repoUrl, force = false, onClose, onError, on
               <h1 className="mt-3 text-headline-lg text-primary">Preparing your repository questions</h1>
               <p className="mt-2 max-w-2xl text-body-md text-blueprint-muted">We will open the question set as soon as it is ready.</p>
             </div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-[#f7f2f2] px-4 py-2 text-ui-label text-primary">
+            <div className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary">
               {result?.status === 'complete' ? <CheckCircle2 size={15} /> : result?.status && result.status !== 'pending' ? <AlertCircle size={15} /> : <Loader2 size={15} className="animate-spin" />}
               {statusLabel}
             </div>
           </div>
 
           <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
-            <section className="rounded-2xl border border-blueprint-line bg-[#faf7f7] p-4 sm:p-5">
+            <section className="rounded-2xl border border-blueprint-line bg-card p-4 sm:p-5">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <p className="text-ui-label text-blueprint-muted">Progress</p>
                 <span className="text-ui-label text-blueprint-muted">{progress}%</span>
               </div>
-              <div className="h-2 overflow-hidden rounded-full bg-[#e6dfdf]">
+              <div className="h-2 overflow-hidden rounded-full bg-blueprint-line/40">
                 <div className="h-full rounded-full bg-primary transition-all duration-500" style={{ width: `${progress}%` }} />
               </div>
               <div className="mt-5 space-y-2 font-mono text-[13px] leading-6 text-blueprint-muted">
@@ -229,12 +234,12 @@ export function GithubScanOverlay({ repoUrl, force = false, onClose, onError, on
               </div>
               {!errorMessage && result?.status !== 'complete' ? (
                 <div className="mt-5 rounded-xl border border-blueprint-line bg-card px-4 py-3 text-body-md text-blueprint-muted">
-                  {takingLonger ? 'Still running. You can leave this page and return from GitHub Repos.' : 'Scanning files and generating questions.'}
+                  {result?.message || (takingLonger ? 'Still running. You can leave this page and return from GitHub Repos.' : 'Scanning files and generating questions.')}
                 </div>
               ) : null}
             </section>
 
-            <aside className="space-y-3 rounded-2xl border border-blueprint-line bg-[#f7f4f4] p-4">
+            <aside className="space-y-3 rounded-2xl border border-blueprint-line bg-card p-4">
               <div className="rounded-xl border border-blueprint-line bg-card p-4">
                 <p className="text-ui-label text-blueprint-muted">Repository</p>
                 <p className="mt-2 break-all text-body-md text-primary">{repoUrl}</p>
@@ -262,15 +267,15 @@ export function GithubScanOverlay({ repoUrl, force = false, onClose, onError, on
                     ? 'The question set is ready and this screen will redirect now.'
                     : errorMessage
                       ? 'The scan stopped before a usable question set could be saved.'
-                      : takingLonger
+                      : result?.message || (takingLonger
                         ? 'Still running.'
-                        : 'The scan is active and still building the question set.'}
+                        : 'The scan is active and still building the question set.')}
                 </p>
               </div>
             </aside>
           </div>
 
-          <div className="mt-4 rounded-2xl border border-blueprint-line bg-[#faf7f7] p-4 sm:p-5">
+          <div className="mt-4 rounded-2xl border border-blueprint-line bg-card p-4 sm:p-5">
             {errorMessage ? (
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-3">

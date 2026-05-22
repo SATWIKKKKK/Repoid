@@ -73,7 +73,7 @@ export default function SavedSessions() {
           <div className="flex flex-col gap-5 border-b border-blueprint-line pb-5 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <p className="text-ui-label text-blueprint-muted">Saved</p>
-              <h1 className="mt-2 text-display-xl text-primary">Saved sessions</h1>
+              <h1 className="mt-2 page-title">Saved sessions</h1>
               <p className="mt-3 max-w-2xl text-body-lg text-blueprint-muted">
                 Resume or review saved work across practice, scenario, coding, and mock interview rounds.
               </p>
@@ -85,7 +85,7 @@ export default function SavedSessions() {
             ) : null}
           </div>
 
-          <div className="mt-5 flex gap-2 overflow-x-auto pb-1">
+          <div className="scrollbar-hidden mt-5 flex gap-2 overflow-x-auto pb-1">
             {ROUND_FILTERS.map((filter) => (
               <button
                 key={filter.id}
@@ -98,7 +98,7 @@ export default function SavedSessions() {
             ))}
           </div>
 
-          <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
+          <div className="scrollbar-hidden mt-4 flex gap-2 overflow-x-auto pb-1">
             <button
               type="button"
               onClick={() => setSelectedDomain('all')}
@@ -126,7 +126,7 @@ export default function SavedSessions() {
             {sessions.map((session) => {
               const completed = statusLabel(session) === 'completed';
               return (
-                <article key={`${session.roundType}-${session.id}`} className="surface-card-compact">
+                <article key={`${session.roundType}-${session.id}`} className="surface-card-compact saved-highlight">
                   <div className="flex items-start justify-between gap-4">
                     <div>
                       <div className="flex flex-wrap gap-2">
@@ -138,7 +138,7 @@ export default function SavedSessions() {
                         Saved {formatDate(session.savedAt)} · {session.score === null ? statusLabel(session) : `${session.score}/10`}
                       </p>
                     </div>
-                    <span className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-primary">
+                    <span className="inline-flex items-center gap-2 rounded-full border border-emerald-500/50 bg-emerald-600 px-3 py-1.5 text-ui-label text-white">
                       <BookmarkCheck size={14} /> {statusLabel(session)}
                     </span>
                   </div>

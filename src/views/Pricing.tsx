@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowRight, Check, ChevronDown, LoaderCircle, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { View } from '../App';
 import { createBillingOrder, fetchSubscription, verifyBillingPayment, type BillingPlan, type SubscriptionState } from '../lib/billing';
 import { getStoredUser } from '../lib/session';
@@ -55,11 +56,11 @@ const PLANS: Array<{
   {
     id: 'pro',
     name: 'Monthly',
-    price: '₹99',
+    price: '₹1',
     cadence: 'per 3 months',
     description: 'Quarterly sprint access for serious prep.',
     billingInterval: 'monthly',
-    features: ['All domains unlocked', 'Unlimited question bank', 'Coding rounds', 'Mock interviews', '5 GitHub repo scans'],
+    features: ['All domains unlocked', 'Unlimited question bank', 'Access to all rounds — 15 questions each', 'Mock interviews', '7 GitHub repo scans per month'],
   },
   {
     id: 'team',
@@ -68,26 +69,26 @@ const PLANS: Array<{
     cadence: 'for 1 year',
     description: 'Placement-season access without extra filters.',
     billingInterval: 'annual',
-    features: ['Everything in Monthly', 'Unlimited GitHub repo scans', 'PDF exports', 'Gap reports', 'Priority support'],
+    features: ['Everything in Monthly', 'Access to all rounds', 'Unlimited GitHub repo scans', 'PDF exports', 'Priority support'],
   },
 ];
 
 const FAQS = [
   {
-    question: 'How does Razorpay checkout work?',
-    answer: 'Choose a paid plan, complete Razorpay Checkout, and your subscription is activated after server-side signature verification.',
+    question: 'What happens when I use all 20 free daily questions?',
+    answer: 'Your Free tier stays active forever, but the question bank pauses for the rest of that day after 20 questions. You can come back the next day when your daily limit refreshes, or upgrade if you want unlimited question-bank practice without waiting.',
   },
   {
-    question: 'What does the ₹99 plan cover?',
-    answer: 'The ₹99 plan covers 3 months of Pro access with all domains, unlimited question-bank usage, coding rounds, and mock interviews.',
+    question: 'Can I upgrade or downgrade whenever I want?',
+    answer: 'Yes. You can move from Free to Monthly or Yearly whenever you are ready. If you switch plans later, your saved sessions, repo scans, practice history, and readiness progress stay with your account so your prep work is not lost.',
   },
   {
-    question: 'Can I test payments locally?',
-    answer: 'Yes. Use Razorpay test keys in your local environment, then add production keys in Vercel for live checkout.',
+    question: 'What is the difference between Monthly and Yearly for repo scans and PDF exports?',
+    answer: 'Monthly gives you 5 GitHub repo scans for a 3-month prep sprint, which is useful if you want to analyze a few portfolio projects. Yearly unlocks unlimited GitHub repo scans and PDF exports, so it is better if you plan to revise many projects, keep downloadable notes, or prepare across a full placement season.',
   },
   {
-    question: 'When is my plan updated?',
-    answer: 'Your plan updates only after Razorpay returns a payment id and the backend verifies the payment signature.',
+    question: 'Do you offer refunds?',
+    answer: 'If a payment succeeds but your plan is not activated, or you were charged by mistake, contact support with your account email and Razorpay payment ID. Refunds are reviewed case by case, and eligible refunds are processed back through Razorpay according to the payment provider timeline.',
   },
 ];
 
@@ -103,6 +104,7 @@ function loadRazorpayCheckout() {
 }
 
 export default function Pricing({ onViewChange }: PricingProps) {
+  const navigate = useNavigate();
   const user = getStoredUser();
   const [subscription, setSubscription] = useState<SubscriptionState | null>(null);
   const [processingPlan, setProcessingPlan] = useState<BillingPlan | null>(null);
@@ -182,7 +184,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
             return;
           }
           setSubscription(result.data);
-          setMessage(`${plan.name} is active. Your account limits are updated.`);
+          navigate(`/dashboard?payment=success&plan=${encodeURIComponent(plan.name)}&expiry=${encodeURIComponent(result.data.currentPeriodEnd ?? '')}`, { replace: true });
         });
       },
       modal: { ondismiss: () => setProcessingPlan(null) },
@@ -201,7 +203,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
       <main className="relative z-10 mx-auto flex w-full max-w-360 flex-col gap-8 px-4 py-10 sm:px-8 lg:px-12">
         <section className="border-b border-blueprint-line pb-8">
           <p className="text-ui-label text-blueprint-muted">Pricing</p>
-          <h1 className="mt-3 text-display-xl text-primary">Simple plans.</h1>
+          <h1 className="mt-3 page-title">Simple plans.</h1>
           <p className="mt-4 max-w-2xl text-body-lg text-blueprint-muted">
             Free, monthly, or yearly. No extra filters.
           </p>
@@ -244,6 +246,11 @@ export default function Pricing({ onViewChange }: PricingProps) {
                     </li>
                   ))}
                 </ul>
+                {isCurrent && subscription?.currentPeriodEnd ? (
+                  <p className={cn('mt-5 rounded-xl border px-3 py-2 text-body-sm', subscription.status === 'expired' ? 'border-red-300/40 bg-red-500/10 text-red-600 dark:text-red-300' : 'border-emerald-300/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300')}>
+                    {subscription.status === 'expired' ? 'Expired on' : 'Active until'} {new Date(subscription.currentPeriodEnd).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                  </p>
+                ) : null}
                 <button
                   type="button"
                   disabled={processingPlan !== null}
