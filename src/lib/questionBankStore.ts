@@ -99,6 +99,8 @@ export type StoredRoundAttempt = {
 };
 
 const questionSliceSeedPromises = new Map<string, Promise<void>>();
+const DEEPSEEK_CHAT_MODEL = 'deepseek-chat';
+const DEEPSEEK_BASE_URL = (process.env.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com').replace(/\/$/, '');
 
 type AiEvaluation = {
   score?: number;
@@ -106,6 +108,15 @@ type AiEvaluation = {
   observations?: string[];
   explanation?: string;
 };
+
+function normalizeDeepSeekModel(model?: string | null) {
+  const trimmed = String(model ?? '').trim();
+  if (!trimmed) return DEEPSEEK_CHAT_MODEL;
+  const withoutProvider = trimmed.replace(/^deepseek\//i, '');
+  if (/^(anthropic|openai|google|gemini)\//i.test(trimmed)) return DEEPSEEK_CHAT_MODEL;
+  if (/^(claude-|gpt-|gemini-)/i.test(trimmed)) return DEEPSEEK_CHAT_MODEL;
+  return withoutProvider;
+}
 
 function matchesSeedFilters(question: BankQuestion, filters: {
   domain?: string;
@@ -543,16 +554,15 @@ function evaluateSubjectiveAnswer(question: BankQuestion, answer: RoundAttemptAn
 }
 
 async function evaluateWithDeepSeek(question: BankQuestion, answer: RoundAttemptAnswerInput | undefined, fallback: RoundAttemptDetail): Promise<RoundAttemptDetail> {
-  const apiKey = process.env.AICREDITS_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim();
-  const baseUrl = (process.env.AICREDITS_BASE_URL?.trim() || process.env.OPENAI_COMPAT_BASE_URL?.trim() || 'https://api.aicredits.in/v1').replace(/\/$/, '');
-  const model = process.env.CODE_EVALUATION_MODEL?.trim() || 'deepseek/deepseek-chat';
+  const apiKey = process.env.DEEPSEEK_API_KEY?.trim() || process.env.AICREDITS_API_KEY?.trim();
+  const model = normalizeDeepSeekModel(process.env.CODE_EVALUATION_MODEL?.trim() || DEEPSEEK_CHAT_MODEL);
   const submittedAnswer = String(answer?.codeAnswer ?? answer?.selectedAnswer ?? answer?.notes ?? '').trim();
   if (!apiKey || !submittedAnswer || !['coding', 'mock', 'scenario', 'system_design'].includes(question.type)) return fallback;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Number(process.env.CODE_EVALUATION_TIMEOUT_MS ?? 20000));
+  const timeout = setTimeout(() => controller.abort(), Number(process.env.CODE_EVALUATION_TIMEOUT_MS ?? 8000));
   try {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -562,7 +572,8 @@ async function evaluateWithDeepSeek(question: BankQuestion, answer: RoundAttempt
       body: JSON.stringify({
         model,
         temperature: 0.1,
-        max_tokens: Number(process.env.CODE_EVALUATION_MAX_TOKENS ?? 900),
+        max_tokens: Number(process.env.CODE_EVALUATION_MAX_TOKENS ?? 500),
+        response_format: { type: 'json_object' },
         messages: [
           {
             role: 'system',
@@ -643,38 +654,6 @@ export async function ensureQuestionBankSeeded() {
   const dataScienceCurated = loadDataScienceCuratedQuestions();
   const dataAnalyticsCurated = loadDataAnalyticsCuratedQuestions();
   const generatedWithoutCuratedDomains = QUESTION_BANK.filter((question) => !['frontend', 'backend', 'ai-ml', 'cybersecurity', 'data-science', 'data-analytics'].includes(question.domain));
-
-  await withClient(async (client) => {
-    await client.query(
-      `DELETE FROM questions
-        WHERE domain = 'frontend'`,
-    );
-    await client.query(
-      `DELETE FROM questions
-        WHERE domain = 'backend'
-          AND id NOT LIKE 'backend-curated-%'`,
-    );
-    await client.query(
-      `DELETE FROM questions
-        WHERE domain = 'ai-ml'
-          AND id NOT LIKE 'aiml-curated-%'`,
-    );
-    await client.query(
-      `DELETE FROM questions
-        WHERE domain = 'cybersecurity'
-          AND id NOT LIKE 'cyber-curated-%'`,
-    );
-    await client.query(
-      `DELETE FROM questions
-        WHERE domain = 'data-science'
-          AND id NOT LIKE 'data-science-curated-%'`,
-    );
-    await client.query(
-      `DELETE FROM questions
-        WHERE domain = 'data-analytics'
-          AND id NOT LIKE 'data-analytics-curated-%'`,
-    );
-  });
 
   await upsertSeedQuestions([
     ...generatedWithoutCuratedDomains,

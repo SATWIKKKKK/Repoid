@@ -28,8 +28,19 @@ function ReadinessTooltip({ active, payload, label }: any) {
   const value = Number(payload[0]?.value ?? 0);
   return (
     <div className="rounded-xl border border-blueprint-line bg-[#101010] px-3 py-2 text-sm shadow-xl dark:bg-[#101010]">
-      <p className="font-semibold text-white">{label}</p>
-      <p className="text-emerald-200">Score: {Number.isFinite(value) ? Math.round(value) : 0}%</p>
+      <p className="font-semibold text-primary dark:text-white">{label}</p>
+      <p className="text-primary dark:text-[#d8ffe9]">Score: {Number.isFinite(value) ? Math.round(value) : 0}%</p>
+    </div>
+  );
+}
+
+function ActivityTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  const total = Number(payload[0]?.value ?? 0);
+  return (
+    <div className="rounded-xl border border-blueprint-line bg-[#101010] px-3 py-2 text-sm shadow-xl dark:bg-[#101010]">
+      <p className="font-semibold text-primary dark:text-white">{label}</p>
+      <p className="text-primary dark:text-[#d8ffe9]">{total} completed session{total === 1 ? '' : 's'}</p>
     </div>
   );
 }
@@ -128,7 +139,6 @@ export default function Dashboard() {
   const [heatmapRange, setHeatmapRange] = useState(30);
   const [activityRows, setActivityRows] = useState<ActivityRow[]>([]);
   const [hoveredActivity, setHoveredActivity] = useState<{ key: string; date: Date; count: number } | null>(null);
-  const [paymentNotice, setPaymentNotice] = useState<string | null>(null);
   const [activePracticeId, setActivePracticeId] = useState<string | null>(null);
   const [quickRoute, setQuickRoute] = useState('/scenario-round');
   const [loadingRepos, setLoadingRepos] = useState(true);
@@ -169,6 +179,13 @@ export default function Dashboard() {
       return { key, date, count: activityByDate.get(key) ?? 0 };
     });
   }, [activityByDate, heatmapRange]);
+  const activityTrendData = useMemo(() => {
+    return heatmapDays.slice(-14).map((day) => ({
+      label: day.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+      shortLabel: day.date.toLocaleDateString('en-IN', { day: '2-digit' }),
+      total: day.count,
+    }));
+  }, [heatmapDays]);
   const latestScore = latestSignals[0]?.score;
   const calculatedScore = weightedAverage(latestSignals.map((signal) => signal.score));
   const hasAnyActivity = attempts.length > 0 || currentDomainPracticeSessions.length > 0;
@@ -253,16 +270,6 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    if (params.get('payment') !== 'success') return;
-    const planName = params.get('plan') || 'plan';
-    const expiry = params.get('expiry');
-    const expiryText = expiry ? ` Active until ${new Date(expiry).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}.` : '';
-    setPaymentNotice(`Payment successful! Your ${planName} is now active.${expiryText}`);
-    navigate('/dashboard', { replace: true });
-  }, [location.search, navigate]);
-
-  useEffect(() => {
     let ignore = false;
     fetch(apiUrl('/api/activity/heatmap?days=60'), { credentials: 'include' })
       .then((response) => response.ok ? response.json() : Promise.reject(new Error('Unable to load activity.')))
@@ -291,7 +298,7 @@ export default function Dashboard() {
     void fetchLatestRoundAttemptSummary(domain).then((result) => {
       if (ignore) return;
       setLoadingAttempts(false);
-      setAttempts(result.ok ? result.data.filter((attempt) => attempt.domain === domain) : []);
+      setAttempts(result.ok ? (result.data ?? []).filter((attempt) => attempt.domain === domain) : []);
     }).catch(() => {
       if (!ignore) setLoadingAttempts(false);
     });
@@ -328,12 +335,6 @@ export default function Dashboard() {
         <BackgroundRippleEffect rows={10} cols={28} cellSize={66} />
       </div>
       <main className="relative z-10 mx-auto flex w-full max-w-[1320px] flex-col gap-6 px-4 pb-14 pt-6 sm:px-6 lg:px-10">
-        {paymentNotice ? (
-          <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-emerald-800 dark:text-emerald-200">
-            <span>{paymentNotice}</span>
-            <button type="button" onClick={() => setPaymentNotice(null)} className="text-emerald-700 hover:text-emerald-900 dark:text-emerald-200"><X size={16} /></button>
-          </div>
-        ) : null}
         <section className="border-b border-blueprint-line/80 pb-6">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl">
@@ -353,7 +354,7 @@ export default function Dashboard() {
             <div>
               <div className="flex items-center gap-3 text-ui-label text-blueprint-muted">
                 <Github size={18} />
-                <span className="text-emerald-700 dark:text-emerald-300">GitHub Repo Scanner for Interviews</span>
+                <span className="text-primary dark:text-emerald-300">GitHub Repo Scanner for Interviews</span>
               </div>
               <h2 className="mt-3 text-headline-md text-primary not-italic">Generate repo-specific interview questions.</h2>
               <p className="mt-2 max-w-3xl text-body-md text-blueprint-muted">
@@ -459,7 +460,7 @@ export default function Dashboard() {
             <p className="mt-4 text-headline-md text-primary not-italic">{hasAnyActivity ? '1-day streak' : '0-day streak'}</p>
             <div className="mt-4 grid grid-cols-7 gap-1">
               {heatmapDays.slice(-7).map((day) => (
-                <span key={day.key} className={`h-7 rounded border border-blueprint-line ${day.count > 1 ? 'bg-primary' : day.count === 1 ? 'bg-[#777]' : 'bg-[#f5f3f3]'}`} />
+                <span key={day.key} className={`h-7 rounded border border-blueprint-line ${day.count >= 3 ? 'bg-emerald-700 dark:bg-emerald-300' : day.count === 2 ? 'bg-emerald-500 dark:bg-emerald-500' : day.count === 1 ? 'bg-emerald-300 dark:bg-emerald-700' : 'bg-[#111111] dark:bg-[#0d0d0d]'}`} />
               ))}
             </div>
           </button>
@@ -470,6 +471,28 @@ export default function Dashboard() {
               <p className="text-body-md text-primary">Add your interview date later; for now, focus on one scenario and one review round this week.</p>
             </div>
           </article>
+        </section>
+
+        <section className="surface-card">
+          <div className="border-b border-blueprint-line pb-4">
+            <p className="text-ui-label text-blueprint-muted">Live Activity</p>
+            <h2 className="mt-1 text-headline-md text-primary not-italic">Recent sessions</h2>
+            <p className="mt-2 text-body-md text-blueprint-muted">Updated from your latest saved sessions and timed round completions.</p>
+          </div>
+          <div className="mt-5 h-[250px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={activityTrendData} margin={{ top: 8, right: 12, left: -24, bottom: 0 }}>
+                <XAxis dataKey="shortLabel" tick={{ fill: 'currentColor', fontSize: 12 }} />
+                <YAxis allowDecimals={false} tick={{ fill: 'currentColor', fontSize: 12 }} />
+                <Tooltip cursor={{ fill: 'rgba(16,185,129,0.08)' }} content={<ActivityTooltip />} />
+                <Bar dataKey="total" minPointSize={4} radius={[8, 8, 0, 0]}>
+                  {activityTrendData.map((entry, index) => (
+                    <Cell key={`${entry.label}-${index}`} fill={entry.total >= 3 ? '#047857' : entry.total === 2 ? '#10b981' : entry.total === 1 ? '#6ee7b7' : '#cfcaca'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </section>
 
         <section className="surface-card">
@@ -666,14 +689,14 @@ export default function Dashboard() {
                     onFocus={() => setHoveredActivity(day)}
                     onBlur={() => setHoveredActivity(null)}
                     tabIndex={0}
-                    className={`aspect-square rounded-sm border border-blueprint-line outline-none ${day.count >= 3 ? 'bg-emerald-700 dark:bg-emerald-300' : day.count === 2 ? 'bg-emerald-500 dark:bg-emerald-500' : day.count === 1 ? 'bg-emerald-300 dark:bg-emerald-700' : 'bg-[#f5f3f3] dark:bg-[#202020]'}`}
+                    className={`aspect-square rounded-sm border border-blueprint-line outline-none ${day.count >= 3 ? 'bg-emerald-700 dark:bg-emerald-300' : day.count === 2 ? 'bg-emerald-500 dark:bg-emerald-500' : day.count === 1 ? 'bg-emerald-300 dark:bg-emerald-700' : 'bg-[#111111] dark:bg-[#202020]'}`}
                   />
                 );
               })}
               {hoveredActivity ? (
-                <div className="pointer-events-none absolute left-1/2 top-0 z-10 -translate-x-1/2 -translate-y-[calc(100%+8px)] rounded-xl border border-blueprint-line bg-[#101010] px-3 py-2 text-xs text-white shadow-xl">
-                  <p className="font-semibold">{hoveredActivity.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
-                  <p className="text-emerald-200">{hoveredActivity.count === 0 ? 'No activity' : `${hoveredActivity.count} session${hoveredActivity.count === 1 ? '' : 's'}`}</p>
+                <div className="pointer-events-none absolute left-1/2 top-0 z-10 -translate-x-1/2 -translate-y-[calc(100%+8px)] rounded-xl border border-blueprint-line bg-[#101010] px-3 py-2 text-xs shadow-xl">
+                  <p className="font-semibold text-primary dark:text-white">{hoveredActivity.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
+                  <p className="text-primary dark:text-[#d8ffe9]">{hoveredActivity.count === 0 ? 'No activity' : `${hoveredActivity.count} session${hoveredActivity.count === 1 ? '' : 's'}`}</p>
                 </div>
               ) : null}
             </div>

@@ -1,6 +1,7 @@
 import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BrowserRouter, Navigate, Route, Routes, matchPath, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { CheckCircle2, X } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import PageProgress from './components/PageProgress';
@@ -104,6 +105,7 @@ function AppShell() {
   const [sessionChecked, setSessionChecked] = useState(() => Boolean(getStoredUser()));
   const [onboardingComplete, setOnboardingComplete] = useState(() => isOnboardingComplete());
   const [blockedPracticeId, setBlockedPracticeId] = useState<string | null>(null);
+  const [paymentNotice, setPaymentNotice] = useState<{ planName: string; expiry: string | null } | null>(null);
 
   useEffect(() => {
     let ignore = false;
@@ -219,9 +221,33 @@ function AppShell() {
       contact: '/contact',
     } as Record<View, string>)[view];
 
+    const navigateOptions = view === 'pricing'
+      ? { state: { returnTo: `${location.pathname}${location.search}${location.hash}` } }
+      : undefined;
+
     setIsMobileSidebarOpen(false);
-    navigate(destination);
+    navigate(destination, navigateOptions);
   };
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('payment') !== 'success') return;
+
+    setPaymentNotice({
+      planName: params.get('plan') || 'plan',
+      expiry: params.get('expiry'),
+    });
+
+    params.delete('payment');
+    params.delete('plan');
+    params.delete('expiry');
+
+    navigate({
+      pathname: location.pathname,
+      search: params.toString() ? `?${params.toString()}` : '',
+      hash: location.hash,
+    }, { replace: true, state: location.state });
+  }, [location.hash, location.pathname, location.search, location.state, navigate]);
 
   useEffect(() => {
     if (!user?.loggedIn) return;
@@ -333,7 +359,7 @@ function AppShell() {
             <Routes>
               <Route path="/admin" element={<Admin />} />
               <Route path="/admin/login" element={<Admin />} />
-              <Route path="/" element={user?.loggedIn ? <Navigate to={hasCompletedOnboarding ? '/dashboard' : '/onboarding'} replace /> : <Landing onStart={() => navigate('/signup')} onViewDocs={() => navigate('/dashboard')} onViewChange={handleViewChange} />} />
+              <Route path="/" element={<Landing onStart={() => navigate('/signup')} onViewDocs={() => navigate('/dashboard')} onViewChange={handleViewChange} />} />
             <Route path="/signin" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="login" onAuthSuccess={() => { setUser(getStoredUser()); setOnboardingComplete(isOnboardingComplete()); navigate('/dashboard', { replace: true }); }} onBackToLanding={() => navigate('/', { replace: true })} />} />
             <Route path="/login" element={<Navigate to="/signin" replace />} />
             <Route path="/signup" element={user?.loggedIn ? <Navigate to={hasCompletedOnboarding ? '/dashboard' : '/onboarding'} replace /> : <Auth initialMode="signup" onAuthSuccess={() => { setUser(getStoredUser()); setOnboardingComplete(false); navigate('/onboarding', { replace: true }); }} onBackToLanding={() => navigate('/', { replace: true })} />} />
@@ -407,6 +433,45 @@ function AppShell() {
             >
               Go back to session
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {paymentNotice ? (
+        <div className="fixed inset-0 z-140 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-[28px] border border-blueprint-line bg-card p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-full border border-emerald-300/50 bg-emerald-50 p-2 text-emerald-700 dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-emerald-300">
+                  <CheckCircle2 size={18} />
+                </div>
+                <div>
+                  <p className="text-ui-label text-blueprint-muted">Payment successful</p>
+                  <h2 className="mt-1 text-headline-md text-primary not-italic">{paymentNotice.planName} activated.</h2>
+                  <p className="mt-2 text-body-md text-blueprint-muted">
+                    Your payment went through and your current plan is now active.
+                    {paymentNotice.expiry ? ` Active until ${new Date(paymentNotice.expiry).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}.` : ''}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPaymentNotice(null)}
+                className="rounded-full border border-blueprint-line p-2 text-blueprint-muted transition-colors hover:border-primary hover:text-primary"
+                aria-label="Close payment success popup"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="mt-6 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setPaymentNotice(null)}
+                className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white transition-colors hover:bg-[#303031]"
+              >
+                Continue
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

@@ -99,6 +99,32 @@
         linear-gradient(to bottom, rgba(26, 26, 26, 0.12) 1px, transparent 1px);
   }
 
+  .landing-blueprint-grid {
+    background-image:
+      linear-gradient(to right, rgba(17, 24, 39, 0.07) 1.25px, transparent 1.25px),
+      linear-gradient(to bottom, rgba(17, 24, 39, 0.07) 1.25px, transparent 1.25px);
+    background-size: 40px 40px;
+    background-position: center top;
+  }
+
+  .dark .landing-blueprint-grid {
+    background-image:
+      linear-gradient(to right, rgba(255, 255, 255, 0.05) 1.25px, transparent 1.25px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1.25px, transparent 1.25px);
+  }
+
+  .landing-ripple-theme {
+    --cell-border-color: rgba(17, 24, 39, 0.08);
+    --cell-fill-color: rgba(255, 255, 255, 0.28);
+    --cell-shadow-color: rgba(15, 23, 42, 0.06);
+  }
+
+  .dark .landing-ripple-theme {
+    --cell-border-color: rgba(255, 255, 255, 0.07);
+    --cell-fill-color: rgba(15, 23, 42, 0.06);
+    --cell-shadow-color: rgba(56, 189, 248, 0.10);
+  }
+
   /* Custom Scrollbar */
   ::-webkit-scrollbar {
     width: 6px;
@@ -111,7 +137,15 @@
     @apply bg-blueprint-line rounded-full hover:bg-blueprint-muted/50 transition-colors;
   }
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
+  }
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  [tabindex]:focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring/70;
   }
   html {
     @apply font-sans;
@@ -143,14 +177,14 @@
   .surface-card {
     border: 1.25px solid var(--color-blueprint-line);
     border-radius: 0.75rem;
-    background: rgba(255, 255, 255, 0.96);
+    background: var(--card);
     padding: 1.5rem;
     box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.035), 0 14px 34px rgba(0, 0, 0, 0.08);
   }
   .surface-card-compact {
     border: 1.25px solid var(--color-blueprint-line);
     border-radius: 0.75rem;
-    background: rgba(255, 255, 255, 0.96);
+    background: var(--card);
     padding: 1rem 1.25rem;
     box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.035), 0 10px 26px rgba(0, 0, 0, 0.07);
   }
@@ -180,7 +214,8 @@
     color: var(--color-blueprint-muted);
   }
   .saved-highlight {
-    @apply border-emerald-500/70 bg-emerald-50/70 dark:border-emerald-400/70 dark:bg-emerald-500/10;
+    border-color: var(--color-blueprint-line);
+    background: var(--card);
   }
   .scrollbar-hidden {
     scrollbar-width: none;
@@ -336,6 +371,36 @@ nav {
   background-color: #fbf9f9;
 }
 
+html:not(.dark) .bg-emerald-50,
+html:not(.dark) .bg-emerald-50\/70,
+html:not(.dark) .bg-emerald-500\/10,
+html:not(.dark) .bg-emerald-500\/15 {
+  background-color: var(--card) !important;
+}
+
+html:not(.dark) .border-emerald-100,
+html:not(.dark) .border-emerald-200,
+html:not(.dark) .border-emerald-300,
+html:not(.dark) .border-emerald-500,
+html:not(.dark) .border-emerald-500\/30,
+html:not(.dark) .border-emerald-500\/40,
+html:not(.dark) .border-emerald-500\/50,
+html:not(.dark) .border-emerald-500\/70 {
+  border-color: #c7c0c0 !important;
+}
+
+html:not(.dark) .text-emerald-900,
+html:not(.dark) .text-emerald-800,
+html:not(.dark) .text-emerald-700,
+html:not(.dark) .text-emerald-600 {
+  color: #1a1a1a !important;
+}
+
+html:not(.dark) .bg-emerald-600,
+html:not(.dark) .bg-emerald-700 {
+  background-color: #1a1a1a !important;
+}
+
 header {
   box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.12);
 }
@@ -400,6 +465,16 @@ nav {
   box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.08);
 }
 
+.landing-navbar {
+  background-color: var(--card);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.08);
+}
+
+.dark .landing-navbar {
+  background-color: var(--card);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.35);
+}
+
 .dark .bg-white,
 .dark .bg-white\/80,
 .dark .bg-white\/85,
@@ -436,7 +511,12 @@ nav {
 
 .dark .text-emerald-900,
 .dark .text-emerald-700 {
-  color: #b8f7d7 !important;
+  color: #d8ffe9 !important;
+}
+
+.dark .text-emerald-300,
+.dark .text-emerald-200 {
+  color: #e6fff1 !important;
 }
 
 .dark .bg-red-50 {
@@ -457,6 +537,50 @@ nav {
 
 .dark .text-white {
   color: #111111 !important;
+}
+
+.landing-primary-action {
+  background-color: #111111 !important;
+  color: #ffffff !important;
+}
+
+.landing-primary-action:hover {
+  background-color: #303031 !important;
+}
+
+.dark .landing-primary-action {
+  background-color: #f3ecec !important;
+  color: #111111 !important;
+}
+
+.dark .landing-primary-action:hover {
+  background-color: #e9dddd !important;
+}
+
+.landing-cta-panel {
+  border-color: #f3ecec !important;
+  background: #050505 !important;
+  color: #ffffff !important;
+  outline: 1px solid rgba(243, 236, 236, 0.86);
+  outline-offset: 3px;
+}
+
+.landing-cta-title {
+  color: #ffffff !important;
+}
+
+.landing-cta-copy {
+  color: rgba(255, 255, 255, 0.78) !important;
+}
+
+.landing-cta-button {
+  border-color: #ffffff !important;
+  background-color: #ffffff !important;
+  color: #111111 !important;
+}
+
+.landing-cta-button:hover {
+  background-color: #f5f3f3 !important;
 }
 
 .dark .border-primary {
@@ -481,8 +605,13 @@ nav {
 
 .dark .surface-card,
 .dark .surface-card-compact {
-  background: rgba(28, 28, 28, 0.94);
+  background: var(--card);
   border-color: #3a3a3a;
+}
+
+.dark .saved-highlight {
+  border-color: rgba(52, 211, 153, 0.45);
+  background: rgba(16, 185, 129, 0.12);
 }
 
 .dark .surface-inset {

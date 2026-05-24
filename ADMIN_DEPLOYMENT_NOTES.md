@@ -8,4 +8,4 @@
 - OAuth callback paths must match the actual Express route paths, not assumed NextAuth paths. The exact paths depend on whether the app uses Passport.js or a custom OAuth handler, so check the implemented Express routes before updating Google and GitHub OAuth consoles.
 - The Vercel tool does not expose secret-setting here, so production verification assumes secrets are added through Vercel dashboard or CLI before deploy.
 - Ensure `vercel.json` routes API traffic to the Express entry point and that Express serves the Vite `dist` folder with fallback routing. This keeps direct navigation to `/admin` and nested React routes from 404ing in production.
-- Monthly test pricing is controlled by `MONTHLY_PLAN_AMOUNT_PAISE=100`. After the Razorpay Rs.1 smoke test passes, change only this value to `9900`.
+- Monthly pricing is controlled by `MONTHLY_PLAN_AMOUNT_PAISE=9900`.

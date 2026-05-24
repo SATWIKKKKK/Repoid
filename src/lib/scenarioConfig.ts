@@ -3,7 +3,7 @@ import {
   PRACTICE_DOMAIN_LABELS,
   toPracticeDomain,
   type PracticeDomainId,
-} from './practiceSessionConfig';
+} from './practiceSessionConfig.js';
 
 export type ScenarioDomainId = PracticeDomainId;
 

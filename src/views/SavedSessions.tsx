@@ -138,7 +138,7 @@ export default function SavedSessions() {
                         Saved {formatDate(session.savedAt)} · {session.score === null ? statusLabel(session) : `${session.score}/10`}
                       </p>
                     </div>
-                    <span className="inline-flex items-center gap-2 rounded-full border border-emerald-500/50 bg-emerald-600 px-3 py-1.5 text-ui-label text-white">
+                    <span className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-primary dark:border-emerald-500/50 dark:bg-emerald-600 dark:text-white">
                       <BookmarkCheck size={14} /> {statusLabel(session)}
                     </span>
                   </div>

@@ -23,10 +23,14 @@ export type GithubRepo = {
   detectedStack: string[];
   scannedAt: string;
   status: 'pending' | 'complete' | 'failed';
+  versionNumber?: number;
+  scanCount?: number;
+  isLatestVersion?: boolean;
 };
 
 export type RepoQuestionSet = {
   repo: GithubRepo;
+  versions?: GithubRepo[];
   projectSummary: string;
   totalQuestions: number;
   detectedDomains?: string[];

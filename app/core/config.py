@@ -18,7 +18,10 @@ class Settings(BaseSettings):
     FERNET_KEY: str = "kU2xV1oR4DqF8zZ0cM7nL3wP5yB9sJ6tH2aK1gV8bI=" # Must be 32 url-safe base64
     
     # LLM APIs
-    ANTHROPIC_API_KEY: str = ""
+    DEEPSEEK_API_KEY: str = ""
+    AICREDITS_API_KEY: str = ""  # Legacy env name; now expected to contain the DeepSeek key.
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
+    DEEPSEEK_MODEL: str = "deepseek-chat"
     
     # Temporal
     TEMPORAL_HOST: str = "localhost:7233"

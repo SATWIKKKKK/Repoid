@@ -383,11 +383,12 @@ export const DATABASE_SCHEMA_SQL = `
     status TEXT NOT NULL DEFAULT 'pending',
     raw_analysis_json JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE (user_id, repo_url)
+    updated_at TIMESTAMPTZ DEFAULT NOW()
   );
 
+  ALTER TABLE github_repos DROP CONSTRAINT IF EXISTS github_repos_user_id_repo_url_key;
   CREATE INDEX IF NOT EXISTS idx_github_repos_user_scanned ON github_repos(user_id, scanned_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_github_repos_user_url_scanned ON github_repos(user_id, repo_url, scanned_at DESC);
 
   CREATE TABLE IF NOT EXISTS repo_question_sets (
     id TEXT PRIMARY KEY,

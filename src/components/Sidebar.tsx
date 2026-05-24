@@ -90,7 +90,7 @@ export default function Sidebar({ currentView, onViewChange, isCollapsed, onTogg
         ))}
       </div>
 
-      <div className="mt-6 border-t border-blueprint-line pt-4 px-2">
+      <div className="mt-6 flex flex-col gap-1 border-t border-blueprint-line px-2 pt-4">
         <NavButton id="saved" label="Saved" Icon={BookmarkCheck} currentView={currentView} onViewChange={onViewChange} isCollapsed={isCollapsed} />
         <NavButton id="settings" label="Settings" Icon={Settings} currentView={currentView} onViewChange={onViewChange} isCollapsed={isCollapsed} />
       </div>

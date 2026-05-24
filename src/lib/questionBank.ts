@@ -1,4 +1,4 @@
-import { DOMAIN_OPTIONS, type DomainFamily } from './prep';
+import { DOMAIN_OPTIONS, type DomainFamily } from './prep.js';
 
 export type QuestionType = 'fundamentals' | 'mcq' | 'fill_blank' | 'scenario' | 'system_design' | 'coding' | 'mock';
 

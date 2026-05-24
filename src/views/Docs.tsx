@@ -167,7 +167,7 @@ nodes:
       query: "Top 10 AI startups in London"
   - id: analyze_impact
     type: llm_call
-    model: claude-3-5-sonnet
+    model: deepseek-chat
     system: "You are a VC analyst..."
     input: "{{ fetch_search_results.output }}"
 edges:

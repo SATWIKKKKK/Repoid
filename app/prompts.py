@@ -20,9 +20,9 @@ TEMPLATING SYNTAX:
 - {{ trigger.timestamp }}      → ISO timestamp of when run started
 
 COST OPTIMIZATION RULES:
-- Use claude-haiku-3-5-20251001 for evaluator nodes always
-- Use claude-haiku-3-5-20251001 for tasks that are pure formatting, extraction, or simple summarization
-- Use claude-sonnet-4-20250514 only when multi-step reasoning is needed
+- Use deepseek-chat for evaluator nodes always
+- Use deepseek-chat for tasks that are pure formatting, extraction, or simple summarization
+- Use deepseek-chat for multi-step reasoning unless the user explicitly configures another model
 - Set max_tokens as tight as possible — do not over-allocate
 - Prefer tool_call over llm_call wherever data can be fetched directly
 

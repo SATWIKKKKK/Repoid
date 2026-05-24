@@ -90,6 +90,7 @@ export default function GithubProjectQuestions() {
   const [showWarning, setShowWarning] = useState(true);
   const [scanRequest, setScanRequest] = useState<{ repoUrl: string; nonce: number } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
@@ -105,12 +106,12 @@ export default function GithubProjectQuestions() {
 
   const removeRepo = async () => {
     if (!data) return;
-    const confirmed = window.confirm(`Delete the saved scan for ${data.repo.repoName}? This removes its generated questions.`);
-    if (!confirmed) return;
     setDeleting(true);
     try {
+      const fallbackVersion = (data.versions ?? []).find((version) => version.id !== data.repo.id);
       await deleteGithubRepo(data.repo.id);
-      navigate('/github-repos');
+      setDeleteDialogOpen(false);
+      navigate(fallbackVersion ? `/github-project-qs/${fallbackVersion.id}` : '/github-repos', { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to delete this repository scan.');
     } finally {
@@ -190,7 +191,26 @@ export default function GithubProjectQuestions() {
               <p className="mt-2 max-w-4xl text-body-lg leading-8 text-blueprint-muted">{data.projectSummary}</p>
             </div>
             <div className="mt-6 flex flex-col gap-3 rounded-xl border border-blueprint-line bg-card p-3 shadow-[0_8px_24px_rgba(0,0,0,0.03)] sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-ui-label text-blueprint-muted">Question set actions</p>
+              <div className="flex flex-col gap-3">
+                <p className="text-ui-label text-blueprint-muted">Question set actions</p>
+                {(data.versions?.length ?? 0) > 1 ? (
+                  <div>
+                    <label htmlFor="repo-version" className="text-ui-label text-blueprint-muted">Saved scan version</label>
+                    <select
+                      id="repo-version"
+                      value={data.repo.id}
+                      onChange={(event) => navigate(`/github-project-qs/${event.target.value}`)}
+                      className="mt-2 w-full rounded-xl border border-blueprint-line bg-card px-3 py-2.5 text-body-md text-primary outline-none transition-colors focus:border-primary sm:min-w-[260px]"
+                    >
+                      {(data.versions ?? []).map((version) => (
+                        <option key={version.id} value={version.id}>
+                          {`Version ${version.versionNumber ?? 1}${version.isLatestVersion ? ' (latest)' : ''} • ${new Date(version.scannedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+              </div>
               <div className="grid gap-2 sm:grid-cols-4">
                 <button type="button" onClick={() => setAllAnswersVisible(!allAnswersVisible)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-blueprint-line bg-card px-4 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5">
                   <Check size={14} /> {allAnswersVisible ? 'Hide Answers' : 'Show Answers'}
@@ -201,7 +221,7 @@ export default function GithubProjectQuestions() {
                 <button type="button" onClick={rescan} className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-ui-label text-white transition-colors hover:bg-[#303031]">
                   <RefreshCw size={14} /> Re-scan
                 </button>
-                <button type="button" disabled={deleting} onClick={() => void removeRepo()} className="inline-flex items-center justify-center gap-2 rounded-lg border border-red-100 bg-red-50 px-4 py-2.5 text-ui-label text-red-700 transition-colors hover:bg-red-100 disabled:opacity-60">
+                <button type="button" disabled={deleting} onClick={() => setDeleteDialogOpen(true)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-red-100 bg-red-50 px-4 py-2.5 text-ui-label text-red-700 transition-colors hover:bg-red-100 disabled:opacity-60">
                   <Trash2 size={14} /> Delete
                 </button>
               </div>
@@ -288,6 +308,34 @@ export default function GithubProjectQuestions() {
           onClose={() => setScanRequest(null)}
           onError={setError}
         />
+      ) : null}
+
+      {deleteDialogOpen ? (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-[28px] border border-blueprint-line bg-card p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-ui-label text-blueprint-muted">Delete saved scan</p>
+                <h2 className="mt-2 text-headline-md text-primary not-italic">{data.repo.repoName}</h2>
+                <p className="mt-3 text-body-md text-blueprint-muted">
+                  This removes the current saved scan and its generated questions.
+                  {(data.versions?.length ?? 0) > 1 ? ` The remaining versions for this repo will stay available in the version selector.` : ''}
+                </p>
+              </div>
+              <button type="button" onClick={() => setDeleteDialogOpen(false)} aria-label="Close" className="rounded-full border border-blueprint-line p-2 text-blueprint-muted transition-colors hover:border-primary hover:text-primary">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button type="button" onClick={() => setDeleteDialogOpen(false)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5">
+                Cancel
+              </button>
+              <button type="button" disabled={deleting} onClick={() => void removeRepo()} className="inline-flex items-center gap-2 rounded-full bg-red-700 px-5 py-2.5 text-ui-label text-white transition-colors hover:bg-red-800 disabled:opacity-60">
+                <Trash2 size={14} /> Delete scan
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );

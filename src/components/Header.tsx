@@ -146,7 +146,7 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
               <div className="border-b border-blueprint-line px-4 pb-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-full bg-blue-700 px-2.5 py-1 text-xs font-semibold leading-none text-white dark:bg-blue-600">{roleLabel}</span>
-                  <span className="rounded-full bg-emerald-700 px-2.5 py-1 text-xs font-semibold leading-none text-white dark:bg-emerald-600">{planLabel(currentPlan)}</span>
+                  <span className="rounded-full border border-blueprint-line bg-card px-2.5 py-1 text-xs font-semibold leading-none text-primary dark:border-emerald-500/40 dark:bg-emerald-600 dark:text-white">{planLabel(currentPlan)}</span>
                 </div>
               </div>
               <button type="button" onClick={() => { setDropdownOpen(false); setDomainDialogOpen(true); }} className="flex w-full items-center gap-2 px-4 py-2.5 text-sm text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5 sm:hidden">

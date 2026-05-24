@@ -9,7 +9,6 @@ import { jsonrepair } from 'jsonrepair';
 import net from 'node:net';
 import nodemailer from 'nodemailer';
 import path from 'node:path';
-import { createServer as createViteServer } from 'vite';
 import db from './src/lib/db.js';
 import { DATABASE_SCHEMA_SQL } from './src/lib/dbSchema.js';
 import {
@@ -54,42 +53,46 @@ const ADMIN_SESSION_COOKIE_NAME = 'admin_session';
 const AUTH_WINDOW_MS = 60_000;
 const AUTH_MAX_REQUESTS = 20;
 const ADMIN_SESSION_MAX_AGE_SECONDS = 60 * 60 * 8;
-const GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS = Number(process.env.GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS ?? 15000);
+const DEEPSEEK_CHAT_MODEL = 'deepseek-chat';
+const DEEPSEEK_BASE_URL = (process.env.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com').replace(/\/$/, '');
+const GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS = Number(process.env.GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS ?? 8000);
 const GITHUB_SCAN_INPUT_CHAR_BUDGET = Number(process.env.GITHUB_SCAN_INPUT_CHAR_BUDGET ?? 60000);
 const GITHUB_SCAN_MAX_TOKENS = Number(process.env.GITHUB_SCAN_MAX_TOKENS ?? 18000);
-const GITHUB_SCAN_MODEL = process.env.GITHUB_SCAN_MODEL?.trim() || 'deepseek/deepseek-chat';
-const GITHUB_SCAN_FALLBACK_MODELS = String(process.env.GITHUB_SCAN_FALLBACK_MODELS ?? 'openai/gpt-4o')
+const GITHUB_SCAN_MODEL = normalizeDeepSeekModel(process.env.GITHUB_SCAN_MODEL?.trim() || DEEPSEEK_CHAT_MODEL);
+const GITHUB_SCAN_FALLBACK_MODELS = String(process.env.GITHUB_SCAN_FALLBACK_MODELS ?? '')
   .split(',')
   .map((model) => model.trim())
+  .filter(Boolean)
+  .map((model) => normalizeDeepSeekModel(model))
   .filter(Boolean);
 const GITHUB_SCAN_TIMEOUT_MS = Number(process.env.GITHUB_SCAN_TIMEOUT_MS ?? 25000);
 const GITHUB_SCAN_TEMPERATURE = Number(process.env.GITHUB_SCAN_TEMPERATURE ?? 0.1);
 const GITHUB_SCAN_TOP_P = Number(process.env.GITHUB_SCAN_TOP_P ?? 0.95);
 const GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET = Number(process.env.GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET ?? 60000);
-const GITHUB_SCAN_ENGINE_VERSION = 'deepseek-chat-trimmed-context-2026-05-22';
+const GITHUB_SCAN_ENGINE_VERSION = 'direct-deepseek-chat-2026-05-24';
 const EMBED_VITE_DEV_SERVER = String(process.env.EMBED_VITE_DEV_SERVER ?? 'true').trim().toLowerCase() !== 'false';
-const SCENARIO_GENERATION_MODEL = process.env.SCENARIO_GENERATION_MODEL?.trim() || 'deepseek/deepseek-chat';
-const SCENARIO_GENERATION_TIMEOUT_MS = Math.max(8_000, Number(process.env.SCENARIO_GENERATION_TIMEOUT_MS ?? 18_000));
+const SCENARIO_GENERATION_MODEL = normalizeDeepSeekModel(process.env.SCENARIO_GENERATION_MODEL?.trim() || DEEPSEEK_CHAT_MODEL);
+const SCENARIO_GENERATION_TIMEOUT_MS = Math.max(5_000, Number(process.env.SCENARIO_GENERATION_TIMEOUT_MS ?? 12_000));
 const SCENARIO_GENERATION_ROUTE_TIMEOUT_MS = Math.max(
-  SCENARIO_GENERATION_TIMEOUT_MS + 4_000,
-  Number(process.env.SCENARIO_GENERATION_ROUTE_TIMEOUT_MS ?? (SCENARIO_GENERATION_TIMEOUT_MS + 4_000)),
+  SCENARIO_GENERATION_TIMEOUT_MS + 2_000,
+  Number(process.env.SCENARIO_GENERATION_ROUTE_TIMEOUT_MS ?? (SCENARIO_GENERATION_TIMEOUT_MS + 2_000)),
 );
 const SCENARIO_GENERATION_MAX_TOKENS = Math.max(600, Number(process.env.SCENARIO_GENERATION_MAX_TOKENS ?? 800));
 const SCENARIO_GENERATION_TEMPERATURE = Number(process.env.SCENARIO_GENERATION_TEMPERATURE ?? 0.6);
 const SCENARIO_GENERATION_MAX_ATTEMPTS = Math.min(2, Math.max(1, Number(process.env.SCENARIO_GENERATION_MAX_ATTEMPTS ?? 2)));
-const SCENARIO_STEP_EVALUATION_MODEL = process.env.SCENARIO_STEP_EVALUATION_MODEL?.trim() || 'deepseek/deepseek-chat';
-const CODING_PROBLEM_GENERATION_MODEL = process.env.CODING_PROBLEM_GENERATION_MODEL?.trim() || 'deepseek/deepseek-chat';
-const CODING_PROBLEM_GENERATION_TIMEOUT_MS = Math.max(10_000, Number(process.env.CODING_PROBLEM_GENERATION_TIMEOUT_MS ?? 20_000));
-const CODING_PROBLEM_GENERATION_MAX_TOKENS = Math.max(1_200, Number(process.env.CODING_PROBLEM_GENERATION_MAX_TOKENS ?? 2_000));
+const SCENARIO_STEP_EVALUATION_MODEL = normalizeDeepSeekModel(process.env.SCENARIO_STEP_EVALUATION_MODEL?.trim() || DEEPSEEK_CHAT_MODEL);
+const CODING_PROBLEM_GENERATION_MODEL = normalizeDeepSeekModel(process.env.CODING_PROBLEM_GENERATION_MODEL?.trim() || DEEPSEEK_CHAT_MODEL);
+const CODING_PROBLEM_GENERATION_TIMEOUT_MS = Math.max(6_000, Number(process.env.CODING_PROBLEM_GENERATION_TIMEOUT_MS ?? 12_000));
+const CODING_PROBLEM_GENERATION_MAX_TOKENS = Math.max(1_000, Number(process.env.CODING_PROBLEM_GENERATION_MAX_TOKENS ?? 1_600));
 const CODING_PROBLEM_GENERATION_MAX_ATTEMPTS = Math.min(2, Math.max(1, Number(process.env.CODING_PROBLEM_GENERATION_MAX_ATTEMPTS ?? 2)));
 const CODING_PROBLEM_GENERATION_ROUTE_TIMEOUT_MS = Math.max(
-  (CODING_PROBLEM_GENERATION_TIMEOUT_MS * CODING_PROBLEM_GENERATION_MAX_ATTEMPTS) + 8_000,
+  (CODING_PROBLEM_GENERATION_TIMEOUT_MS * CODING_PROBLEM_GENERATION_MAX_ATTEMPTS) + 3_000,
   Number(
     process.env.CODING_PROBLEM_GENERATION_ROUTE_TIMEOUT_MS
-      ?? ((CODING_PROBLEM_GENERATION_TIMEOUT_MS * CODING_PROBLEM_GENERATION_MAX_ATTEMPTS) + 8_000),
+      ?? ((CODING_PROBLEM_GENERATION_TIMEOUT_MS * CODING_PROBLEM_GENERATION_MAX_ATTEMPTS) + 3_000),
   ),
 );
-const CODING_EVALUATION_MODEL = 'deepseek/deepseek-chat';
+const CODING_EVALUATION_MODEL = normalizeDeepSeekModel(process.env.CODING_EVALUATION_MODEL?.trim() || DEEPSEEK_CHAT_MODEL);
 const oauthStates = new Map<string, { provider: 'google' | 'github'; createdAt: number; nextPath?: string }>();
 const activeGithubScanRequests = new Map<string, string>();
 let runtimeSchemaReadyPromise: Promise<void> | null = null;
@@ -246,6 +249,15 @@ function wait(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function normalizeDeepSeekModel(model?: string | null) {
+  const trimmed = String(model ?? '').trim();
+  if (!trimmed) return DEEPSEEK_CHAT_MODEL;
+  const withoutProvider = trimmed.replace(/^deepseek\//i, '');
+  if (/^(anthropic|openai|google|gemini)\//i.test(trimmed)) return DEEPSEEK_CHAT_MODEL;
+  if (/^(claude-|gpt-|gemini-)/i.test(trimmed)) return DEEPSEEK_CHAT_MODEL;
+  return withoutProvider;
+}
+
 function isRequestAbortedError(error: unknown) {
   if (!error || typeof error !== 'object') return false;
   const type = String((error as { type?: unknown }).type ?? '').trim().toLowerCase();
@@ -394,8 +406,7 @@ const DOMAIN_ALIASES = new Map<string, string>([
 
 const BILLING_PLANS = ['free', 'pro', 'team'] as const;
 const BILLING_INTERVALS = ['monthly', 'annual'] as const;
-// Set MONTHLY_PLAN_AMOUNT_PAISE=9900 after the Razorpay Rs.1 production smoke test is complete.
-const MONTHLY_PLAN_AMOUNT_PAISE = Math.max(100, Number(process.env.MONTHLY_PLAN_AMOUNT_PAISE ?? 100) || 100);
+const MONTHLY_PLAN_AMOUNT_PAISE = Math.max(100, Number(process.env.MONTHLY_PLAN_AMOUNT_PAISE ?? 9900) || 9900);
 
 const PLAN_PRICING: Record<Exclude<BillingPlan, 'free'>, Record<BillingInterval, { amountPaise: number; displayPrice: string; label: string }>> = {
   pro: {
@@ -850,36 +861,23 @@ function normalizeGithubQuestionSet(payload: unknown): GithubQuestionSet {
 }
 
 function resolveModelConfig(modelOverride?: string): ModelConfig {
-  const compatBaseUrl = process.env.AICREDITS_BASE_URL?.trim()
-    || process.env.OPENAI_COMPAT_BASE_URL?.trim()
-    || 'https://api.aicredits.in/v1';
-  const compatApiKey = process.env.AICREDITS_API_KEY?.trim()
-    || process.env.OPENAI_API_KEY?.trim()
-    || process.env.ANTHROPIC_API_KEY?.trim();
-  if (compatApiKey) {
+  const deepseekApiKey = process.env.DEEPSEEK_API_KEY?.trim()
+    || process.env.AICREDITS_API_KEY?.trim();
+  if (deepseekApiKey) {
     return {
       provider: 'openai-compat',
-      apiKey: compatApiKey,
-      baseUrl: compatBaseUrl.replace(/\/$/, ''),
-      model: modelOverride
+      apiKey: deepseekApiKey,
+      baseUrl: DEEPSEEK_BASE_URL,
+      model: normalizeDeepSeekModel(modelOverride
+        || process.env.DEEPSEEK_MODEL?.trim()
         || process.env.PREP_MODEL?.trim()
         || process.env.INTERVIEW_ANALYST_MODEL?.trim()
         || process.env.WORKFLOW_SUMMARY_MODEL?.trim()
-        || process.env.ANTHROPIC_MODEL?.trim()
-        || 'deepseek/deepseek-chat',
+        || DEEPSEEK_CHAT_MODEL),
     };
   }
 
-  const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
-  if (geminiApiKey) {
-    return {
-      provider: 'gemini',
-      apiKey: geminiApiKey,
-      model: modelOverride || process.env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash',
-    };
-  }
-
-  throw new Error('No compatible LLM provider is configured for prep analysis.');
+  throw new Error('DeepSeek is not configured. Set DEEPSEEK_API_KEY or the legacy AICREDITS_API_KEY env var.');
 }
 
 function parseJsonArray(value: unknown): string[] {
@@ -1641,7 +1639,7 @@ async function validatePracticeTopicForDomain(userId: string, topic: string, dom
           reason: String(source.reason ?? '').trim(),
         };
       },
-      { maxTokens: 100, timeoutMs: 12000, model: 'deepseek/deepseek-chat', temperature: 0 },
+      { maxTokens: 100, timeoutMs: 6000, model: DEEPSEEK_CHAT_MODEL, temperature: 0 },
     );
     if (classification.result.valid) return { valid: true as const };
     return {
@@ -2234,7 +2232,7 @@ async function validateScenarioTopicForDomain(userId: string, topic: string, dom
           : String(payload ?? '').trim().toLowerCase();
         return normalized.startsWith('yes') ? 'yes' : 'no';
       },
-      { maxTokens: 100, timeoutMs: 12000, model: 'deepseek/deepseek-chat', temperature: 0 },
+      { maxTokens: 100, timeoutMs: 6000, model: DEEPSEEK_CHAT_MODEL, temperature: 0 },
     );
     if (classification.result === 'yes') return { valid: true as const };
     return {
@@ -3302,9 +3300,9 @@ async function evaluateCodingSubmission(params: {
     'The candidate submitted this code:',
     params.code || '(no code submitted)',
     `Their notes: ${params.notes || 'none provided'}.`,
-    'Evaluate strictly. For correctness: actually read the code line by line and determine if it correctly implements the requirements. If the code is incomplete (has TODO comments not implemented, missing return statements, empty function bodies), state this explicitly and score correctness below 4. For edge cases: identify specific edge cases the problem requires and state whether each is handled or not. For code quality: evaluate naming, structure, and whether an interviewer would approve. For model solution sketch: write a concrete 3-4 sentence description of what a correct optimal solution looks like - specific to this problem, not generic.',
+    'Evaluate strictly. For correctness: actually read the code line by line and determine if it correctly implements the requirements. If the code is incomplete (has TODO comments not implemented, missing return statements, empty function bodies), state this explicitly and score correctness below 4. For edge cases: identify specific edge cases the problem requires and state whether each is handled or not. For code quality: evaluate naming, structure, and whether an interviewer would approve. Include the model solution sketch and complete model solution code in this same response so no second model call is needed.',
     CODING_SCORING_RUBRIC,
-    "Return JSON: { score: number (1-10), verdict: 'pass' | 'needs-work' | 'fail', correctness: string (specific - does this code actually work? what does it do correctly and what is wrong?), codeQuality: string (specific feedback on the actual code structure), edgeCases: string (list the specific edge cases and whether each is handled), bestPractices: string, dimensionScores: { correctness: number, codeQuality: number, edgeCases: number, bestPractices: number }, improvements: string[] (3-5 concrete specific improvements for this exact code), modelSolutionSketch: string (3-4 sentences describing the optimal approach for this specific problem) }",
+    "Return JSON: { score: number (1-10), verdict: 'pass' | 'needs-work' | 'fail', correctness: string (specific - does this code actually work? what does it do correctly and what is wrong?), codeQuality: string (specific feedback on the actual code structure), edgeCases: string (list the specific edge cases and whether each is handled), bestPractices: string, dimensionScores: { correctness: number, codeQuality: number, edgeCases: number, bestPractices: number }, improvements: string[] (3-5 concrete specific improvements for this exact code), modelSolutionSketch: string (3-4 sentences describing the optimal approach for this specific problem), modelSolutionCode: string (complete runnable solution code in the submitted language, no markdown fences) }",
   ].join('\n');
 
   const startedAt = Date.now();
@@ -3324,39 +3322,12 @@ async function evaluateCodingSubmission(params: {
         userPrompt,
         (payload) => normalizeCodingEvaluationPayload(payload),
         {
-          maxTokens: 900,
-          timeoutMs: 20_000,
+          maxTokens: 1400,
+          timeoutMs: 12_000,
           model: CODING_EVALUATION_MODEL,
-          temperature: 0.6,
+          temperature: 0.35,
         },
       );
-      if (ai.result.modelSolutionSketch.trim().length < 80) {
-        ai.result.modelSolutionSketch = await expandCodingModelSolutionSketch({
-          userId: params.userId,
-          problem: params.problem,
-          language: params.language,
-          existingSketch: ai.result.modelSolutionSketch,
-        });
-      }
-      try {
-        await checkAiRateLimit(params.userId, 'coding-model-solution', 1);
-        const solution = await callTextModel(
-          'Return only code. No markdown fences. No explanation.',
-          [
-            `Problem title: ${params.problem.title}.`,
-            `Language: ${formatCodingLanguageLabel(params.language)}.`,
-            `Problem statement: ${params.problem.problemStatement}.`,
-            'Requirements:',
-            formatNumberedList(params.problem.requirements),
-            'Provide a complete correct implementation. The code must be complete, runnable, and implement all requirements.',
-          ].join('\n'),
-          { maxTokens: 900, timeoutMs: 20_000, model: CODING_EVALUATION_MODEL, temperature: 0.35 },
-        );
-        ai.result.modelSolutionCode = solution.text.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
-      } catch (solutionError) {
-        ai.result.modelSolutionCode = '';
-        console.warn('[coding-eval] model solution generation failed', { error: solutionError instanceof Error ? solutionError.message : String(solutionError) });
-      }
       console.log('[coding-eval] done', { score: ai.result.score, verdict: ai.result.verdict, durationMs: Date.now() - startedAt });
       return ai.result;
     } catch (error) {
@@ -4118,9 +4089,9 @@ async function generateMockInterviewForUser(params: { userId: string; domain: st
     `Domain: ${domainLabel}. Level: ${mockLevelLabel(params.level)}. Interview type: ${mockInterviewTypeLabel(params.interviewType)}. Previously seen question hashes for this user+domain: ${JSON.stringify(seenRows.map((row) => row.question_hash))}. These question angles have been used: ${JSON.stringify(usedAngles)}. Draw your 3 questions from this relevant pool: ${JSON.stringify(seeds)}. Generate exactly 3 questions in this exact type mix: 1 technical, 1 ${secondaryType}, 1 behavioral. Never repeat a type. Never return two questions of the same type. For behavioral questions, ask for a real past example. For situational questions, present a concrete tradeoff scenario. For design questions, present a realistic system or architecture prompt. Return JSON: { interviewTitle: string, questions: [ { id, question, type: 'technical'|'design'|'behavioral'|'situational', whatWeAreLookingFor: string, followUpIfStrong: string, followUpIfWeak: string } ] }`,
     (payload) => normalizeMockQuestions(payload, params.interviewType),
     {
-      maxTokens: 800,
-      timeoutMs: 30_000,
-      model: 'deepseek/deepseek-chat',
+      maxTokens: 650,
+      timeoutMs: 10_000,
+      model: DEEPSEEK_CHAT_MODEL,
       temperature: 0.6,
     },
   );
@@ -4187,6 +4158,7 @@ async function generatePracticeSessionQuestions(params: {
   domain: PracticeDomainId;
   topic: string;
   level: string;
+  abortSignal?: AbortSignal;
 }) {
   const roundType = `practice:${normalizePracticeTopic(params.topic).replace(/\s+/g, '-')}`;
   const seenRows = await db.query<{ question_hash: string; question_text: string }>(`
@@ -4202,8 +4174,8 @@ async function generatePracticeSessionQuestions(params: {
   const repoContext = await getLatestRepoContext(params.userId);
 
   const maxAttempts = 2;
-  const comprehensionPhaseTimeoutMs = 45_000;
-  const codeReadingSubphaseTimeoutMs = 40_000;
+  const comprehensionPhaseTimeoutMs = Math.max(8_000, Number(process.env.PRACTICE_COMPREHENSION_TIMEOUT_MS ?? 18_000));
+  const codeReadingSubphaseTimeoutMs = Math.max(8_000, Number(process.env.PRACTICE_CODE_READING_TIMEOUT_MS ?? 18_000));
   let questions: PracticeSessionQuestion[] = [];
   let lastError: string | null = null;
 
@@ -4236,7 +4208,7 @@ async function generatePracticeSessionQuestions(params: {
         const phaseSeed = phase === 'phase1' ? 'phase-1' : phase === 'phase2a' ? 'phase-2a' : 'phase-2b';
         const codeReadingBatch = phase === 'phase2b' ? '2 of 2' : '1 of 2';
         const promptSeenHashes = JSON.stringify([...seenHashes, ...extraSeenHashes]);
-        const modelConfig = resolveModelConfig('deepseek/deepseek-chat');
+        const modelConfig = resolveModelConfig(DEEPSEEK_CHAT_MODEL);
         const endpoint = modelConfig.provider === 'openai-compat'
           ? `${modelConfig.baseUrl}/chat/completions`
           : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelConfig.model)}:generateContent`;
@@ -4289,9 +4261,10 @@ async function generatePracticeSessionQuestions(params: {
             {
               maxTokens,
               timeoutMs,
-              model: 'deepseek/deepseek-chat',
+              model: DEEPSEEK_CHAT_MODEL,
               temperature: 0.7,
               stream: true,
+              abortSignal: params.abortSignal,
             },
           ));
           console.log(`[practice-gen] ${phaseLabel} count:`, generated.result.length);
@@ -4302,10 +4275,10 @@ async function generatePracticeSessionQuestions(params: {
         }
       };
 
-      const comprehensionQuestions = await generatePhase('phase1');
-      const phase2aQuestions = await generatePhase('phase2a');
-      const phase2aHashes = phase2aQuestions.map((question) => practiceQuestionHistoryHash(question));
-      const phase2bQuestions = await generatePhase('phase2b', phase2aHashes);
+      const [comprehensionQuestions, [phase2aQuestions, phase2bQuestions]] = await Promise.all([
+        generatePhase('phase1'),
+        Promise.all([generatePhase('phase2a'), generatePhase('phase2b')]),
+      ]);
 
       console.log('[practice-gen] done', { topic: params.topic, domain: params.domain, durationMs: Date.now() - start });
       const mcq = comprehensionQuestions.filter((question) => question.type === 'mcq').slice(0, 10);
@@ -5525,7 +5498,7 @@ function assertUsableGithubQuestionSet(result: GithubQuestionSet) {
 
 export async function generateGithubQuestionSet(context: GithubRepoContext, jobId: string, userId?: string): Promise<GithubQuestionSet> {
   let lastError: unknown = null;
-  const stagedFullOnly = process.env.GITHUB_SCAN_STAGED_FULL === 'true' || GITHUB_SCAN_MODEL === 'deepseek/deepseek-v4-pro';
+  const stagedFullOnly = process.env.GITHUB_SCAN_STAGED_FULL === 'true' || GITHUB_SCAN_MODEL === 'deepseek-v4-pro';
   if (stagedFullOnly) {
     lastError = new Error('model_empty_response');
   } else {
@@ -5826,6 +5799,39 @@ async function updateGithubScanStage(jobId: string, message: string) {
   await db.prepare('UPDATE repo_scan_jobs SET error_message = ? WHERE id = ? AND status = ?')
     .run(message, jobId, 'pending')
     .catch(() => undefined);
+}
+
+function formatGithubRepoRowsWithVersions(rows: Array<{
+  id: string;
+  repo_url: string;
+  repo_name: string;
+  detected_stack: unknown;
+  scanned_at: string;
+  status: string;
+}>) {
+  const totals = new Map<string, number>();
+  for (const row of rows) {
+    totals.set(row.repo_url, (totals.get(row.repo_url) ?? 0) + 1);
+  }
+
+  const seen = new Map<string, number>();
+  return rows.map((row) => {
+    const seenCount = (seen.get(row.repo_url) ?? 0) + 1;
+    const scanCount = totals.get(row.repo_url) ?? 1;
+    seen.set(row.repo_url, seenCount);
+
+    return {
+      id: row.id,
+      repoUrl: row.repo_url,
+      repoName: row.repo_name,
+      detectedStack: Array.isArray(row.detected_stack) ? row.detected_stack : [],
+      scannedAt: row.scanned_at,
+      status: row.status,
+      versionNumber: Math.max(1, scanCount - seenCount + 1),
+      scanCount,
+      isLatestVersion: seenCount === 1,
+    };
+  });
 }
 
 export async function completeGithubScanJob(params: {
@@ -6545,7 +6551,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
         version: GITHUB_SCAN_ENGINE_VERSION,
         model: GITHUB_SCAN_MODEL,
         fallbackModels: GITHUB_SCAN_FALLBACK_MODELS,
-        stagedFull: process.env.GITHUB_SCAN_STAGED_FULL === 'true' || GITHUB_SCAN_MODEL === 'deepseek/deepseek-v4-pro',
+        stagedFull: process.env.GITHUB_SCAN_STAGED_FULL === 'true' || GITHUB_SCAN_MODEL === 'deepseek-v4-pro',
         contextCharBudget: GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET,
       },
     });
@@ -7292,8 +7298,9 @@ export async function createApp(options: { listen?: boolean } = {}) {
   });
 
   app.post('/api/practice/search', requireUser, async (request, response) => {
+    const requestAbortHandle = createRequestAbortHandle(request, response);
     try {
-      const practiceSearchTimeoutMs = 130_000;
+      const practiceSearchTimeoutMs = Math.max(25_000, Number(process.env.PRACTICE_GENERATION_ROUTE_TIMEOUT_MS ?? 55_000));
       request.setTimeout(practiceSearchTimeoutMs);
       response.setTimeout(practiceSearchTimeoutMs);
       const user = (request as AuthedRequest).user!;
@@ -7326,7 +7333,16 @@ export async function createApp(options: { listen?: boolean } = {}) {
       }
 
       const level = String(request.body?.level ?? '').trim().toLowerCase() || 'intermediate';
-      const questions = await generatePracticeSessionQuestions({ userId: user.id, domain, topic, level });
+      const questions = await withOperationTimeout('practice_generation', practiceSearchTimeoutMs, () => generatePracticeSessionQuestions({
+        userId: user.id,
+        domain,
+        topic,
+        level,
+        abortSignal: requestAbortHandle.signal,
+      }));
+      if (requestAbortHandle.signal.aborted || request.aborted || response.destroyed) {
+        return;
+      }
       const sessionId = crypto.randomUUID();
       await db.prepare(`
         INSERT INTO open_practice_sessions (
@@ -7339,11 +7355,20 @@ export async function createApp(options: { listen?: boolean } = {}) {
       response.status(201).json({ session });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to generate a practice session.';
+      if (message === 'request_aborted') {
+        return;
+      }
+      if (message === 'practice_generation_timeout' || message === 'analysis_timeout') {
+        response.status(504).json({ aiUnavailable: true, error: 'Practice question generation timed out. Please retry with a more specific topic.' });
+        return;
+      }
       if (message.startsWith('aiUnavailable:')) {
         response.status(503).json({ aiUnavailable: true, error: message.replace(/^aiUnavailable:\s*/, '') });
         return;
       }
       response.status(500).json({ error: message });
+    } finally {
+      requestAbortHandle.cleanup();
     }
   });
 
@@ -7837,8 +7862,8 @@ export async function createApp(options: { listen?: boolean } = {}) {
             `Scenario context: ${attempt.scenario.context}. Role: ${attempt.scenario.role}. Topic: ${attempt.scenario.topic}. Question type: ${attempt.scenario.type}. Question: ${attempt.scenario.question}. Candidate answer: ${answer}. Return JSON: { score: number (1-10), feedback: string, whatWorked: string, whatWasMissed: string, seniorEngineerWouldSay: string }. The response must be specific to this exact topic and question, not generic interview advice.`,
             (payload) => normalizeSingleScenarioEvaluationPayload(payload),
             {
-              maxTokens: 500,
-              timeoutMs: 20000,
+              maxTokens: 420,
+              timeoutMs: 8_000,
               model: SCENARIO_STEP_EVALUATION_MODEL,
               temperature: 0.7,
             },
@@ -8146,7 +8171,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
           if (!starterCode) throw new Error('starter_code_empty');
           return starterCode.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
         },
-        { maxTokens: 600, timeoutMs: 20_000, model: CODING_PROBLEM_GENERATION_MODEL, temperature: 0.6 },
+        { maxTokens: 500, timeoutMs: 10_000, model: CODING_PROBLEM_GENERATION_MODEL, temperature: 0.6 },
       );
       response.json({ starterCode: ai.result });
     } catch (error) {
@@ -8331,7 +8356,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
             mockPersonaSystemPrompt(interview.persona),
             `Domain: ${interview.domainLabel}. Level: ${mockLevelLabel(interview.level)}. Question: ${question.question}. Looking for: ${question.whatWeAreLookingFor}. Answer: ${trimmedAnswer}. Follow-up answer: ${followUpAnswer || 'none'}. Return JSON: { spokenResponse: string (1-2 sentences in persona voice), followUpQuestion: string | null, internalScore: number | null, internalFlags: string[] (what they missed) }`,
             normalizeMockResponsePayload,
-            { maxTokens: 250, timeoutMs: 15_000, model: 'deepseek/deepseek-chat', temperature: 0.75 },
+            { maxTokens: 220, timeoutMs: 8_000, model: DEEPSEEK_CHAT_MODEL, temperature: 0.75 },
           );
           responsePayload = {
             ...ai.result,
@@ -8404,7 +8429,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
                 'You are a strict technical interviewer writing a candidate assessment. Be brutally honest. Short sentences. No padding. No encouragement that is not earned. If the candidate answered poorly, say so directly. Return only valid JSON.',
                 `Domain: ${interview.domainLabel}. Level: ${mockLevelLabel(interview.level)}. The candidate answered ${answeredCount} of 3 questions. ${partialInstruction} Here are the actual answers with scores: ${JSON.stringify(promptResponses)}. Questions not answered have answer: null. Generate a short honest report. Each dimension string must be 1-2 sentences maximum - specific to what the candidate actually said, not generic. If a question was not answered, say 'Not answered' for that dimension. Do not fabricate performance. Return JSON: { overallScore: number (average of non-null internalScores, 0 if none), readinessVerdict: 'not-ready'|'borderline'|'ready'|'strong-yes', technicalDepth: string (1-2 sentences MAX), communicationClarity: string (1-2 sentences MAX), designThinking: string (1-2 sentences MAX), behavioralMaturity: string (1-2 sentences MAX), topThreeStrengths: string[] (empty array if nothing earned), topThreeWeaknesses: string[], criticalGaps: string[], studyPlan: [ { area, action, estimatedDays } ], hiringPanelSummary: string (1-2 sentences MAX, honest), isPartial: boolean, answeredCount: number }`,
                 normalizeMockReportPayload,
-                { maxTokens: 600, timeoutMs: 20_000, model: 'deepseek/deepseek-chat', temperature: 0.5 },
+                { maxTokens: 520, timeoutMs: 10_000, model: DEEPSEEK_CHAT_MODEL, temperature: 0.5 },
               );
               aiReport = ai.result;
               break;
@@ -8639,9 +8664,9 @@ export async function createApp(options: { listen?: boolean } = {}) {
           userPrompt,
           (payload) => normalizeRoundFeedbackPayload(mode, payload),
           {
-            maxTokens: 400,
-            timeoutMs: 20000,
-            model: process.env.CODE_EVALUATION_MODEL?.trim() || 'deepseek/deepseek-chat',
+            maxTokens: 350,
+            timeoutMs: 8_000,
+            model: CODING_EVALUATION_MODEL,
             temperature: 0.2,
           },
         );
@@ -9161,12 +9186,13 @@ export async function createApp(options: { listen?: boolean } = {}) {
     const user = (request as AuthedRequest).user!;
     await expireStaleGithubScanJobs(user.id);
     const githubConnected = Boolean(await getGithubAccessToken(user.id));
-    const repos = await db.prepare(`
+    const repoRows = await db.prepare(`
       SELECT id, repo_url, repo_name, detected_stack, scanned_at, status
       FROM github_repos
       WHERE user_id = ? AND status = 'complete'
       ORDER BY scanned_at DESC
     `).all<{ id: string; repo_url: string; repo_name: string; detected_stack: unknown; scanned_at: string; status: string }>(user.id);
+    const repos = formatGithubRepoRowsWithVersions(repoRows);
     const pendingJobs = await db.prepare(`
       SELECT id, repo_url
       FROM repo_scan_jobs
@@ -9178,11 +9204,14 @@ export async function createApp(options: { listen?: boolean } = {}) {
       githubConnected,
       repos: repos.map((repo) => ({
         id: repo.id,
-        repoUrl: repo.repo_url,
-        repoName: repo.repo_name,
-        detectedStack: Array.isArray(repo.detected_stack) ? repo.detected_stack : [],
-        scannedAt: repo.scanned_at,
+        repoUrl: repo.repoUrl,
+        repoName: repo.repoName,
+        detectedStack: repo.detectedStack,
+        scannedAt: repo.scannedAt,
         status: repo.status,
+        versionNumber: repo.versionNumber,
+        scanCount: repo.scanCount,
+        isLatestVersion: repo.isLatestVersion,
       })),
       pendingJobs: pendingJobs.map((job) => ({
         id: job.id,
@@ -9213,6 +9242,24 @@ export async function createApp(options: { listen?: boolean } = {}) {
       response.status(409).json({ error: 'This repository analysis is not complete. Please re-scan the repo from GitHub Repos.' });
       return;
     }
+    const versionRows = await db.prepare(`
+      SELECT id, repo_url, repo_name, detected_stack, scanned_at, status
+      FROM github_repos
+      WHERE user_id = ? AND repo_url = ? AND status = 'complete'
+      ORDER BY scanned_at DESC
+    `).all<{ id: string; repo_url: string; repo_name: string; detected_stack: unknown; scanned_at: string; status: string }>(user.id, row.repo_url);
+    const versions = formatGithubRepoRowsWithVersions(versionRows);
+    const currentVersion = versions.find((version) => version.id === row.id) ?? {
+      id: row.id,
+      repoUrl: row.repo_url,
+      repoName: row.repo_name,
+      detectedStack: Array.isArray(row.detected_stack) ? row.detected_stack : [],
+      scannedAt: row.scanned_at,
+      status: row.status,
+      versionNumber: 1,
+      scanCount: 1,
+      isLatestVersion: true,
+    };
     const sections = Array.isArray(row.sections_json) ? row.sections_json as GithubQuestionSection[] : [];
     const viewedQuestionIds = sections.flatMap((section) => section.questions.map((question) => question.id)).filter(Boolean);
     await Promise.all(viewedQuestionIds.map((questionId) => (
@@ -9221,13 +9268,17 @@ export async function createApp(options: { listen?: boolean } = {}) {
     )));
     response.json({
       repo: {
-        id: row.id,
-        repoUrl: row.repo_url,
-        repoName: row.repo_name,
-        detectedStack: Array.isArray(row.detected_stack) ? row.detected_stack : [],
-        scannedAt: row.scanned_at,
-        status: row.status,
+        id: currentVersion.id,
+        repoUrl: currentVersion.repoUrl,
+        repoName: currentVersion.repoName,
+        detectedStack: currentVersion.detectedStack,
+        scannedAt: currentVersion.scannedAt,
+        status: currentVersion.status,
+        versionNumber: currentVersion.versionNumber,
+        scanCount: currentVersion.scanCount,
+        isLatestVersion: currentVersion.isLatestVersion,
       },
+      versions,
       projectSummary: row.project_summary ?? 'Analysis is still processing.',
       totalQuestions: row.total_questions ?? 0,
       sections,
@@ -9256,7 +9307,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
 
     const repo = job.status === 'complete'
-      ? await db.prepare('SELECT id, repo_name FROM github_repos WHERE user_id = ? AND repo_url = ? AND status = ?')
+      ? await db.prepare('SELECT id, repo_name FROM github_repos WHERE user_id = ? AND repo_url = ? AND status = ? ORDER BY scanned_at DESC LIMIT 1')
         .get<{ id: string; repo_name: string }>(user.id, job.repo_url, 'complete')
       : null;
 
@@ -9321,7 +9372,13 @@ export async function createApp(options: { listen?: boolean } = {}) {
       }
     };
     activeGithubScanRequests.set(singleFlightKey, jobId);
-    const existing = await db.prepare('SELECT id, repo_name, status FROM github_repos WHERE user_id = ? AND repo_url = ?')
+    const existing = await db.prepare(`
+      SELECT id, repo_name, status
+      FROM github_repos
+      WHERE user_id = ? AND repo_url = ? AND status = 'complete'
+      ORDER BY scanned_at DESC
+      LIMIT 1
+    `)
       .get<{ id: string; repo_name: string; status: string }>(user.id, repoUrl);
     if (existing?.status === 'complete' && !force) {
       releaseSingleFlight();
@@ -9369,7 +9426,6 @@ export async function createApp(options: { listen?: boolean } = {}) {
       jobId,
       userId: user.id,
       repoUrl,
-      existingRepoId: existing?.id,
       accessToken,
     });
     scanPromise.catch((error) => {
@@ -9570,6 +9626,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
       response.sendFile(path.join(distPath, 'index.html'));
     });
   } else if (EMBED_VITE_DEV_SERVER) {
+    const { createServer: createViteServer } = await import('vite');
     const requestedHmrPort = readPort('VITE_HMR_PORT', 24679);
     const hmrPort = process.env.DISABLE_HMR === 'true'
       ? requestedHmrPort

@@ -15,6 +15,7 @@ export default function GithubRepos() {
   const [duplicate, setDuplicate] = useState<GithubRepo | null>(null);
   const [scanRequest, setScanRequest] = useState<{ repoUrl: string; force: boolean; nonce: number } | null>(null);
   const [deletingRepoId, setDeletingRepoId] = useState<string | null>(null);
+  const [repoPendingDelete, setRepoPendingDelete] = useState<GithubRepo | null>(null);
   const githubConnectUrl = '/api/auth/oauth/github?next=/github-repos';
 
   const refreshRepos = () => {
@@ -71,13 +72,12 @@ export default function GithubRepos() {
   };
 
   const removeRepo = async (repo: GithubRepo) => {
-    const confirmed = window.confirm(`Delete the saved scan for ${repo.repoName}? This removes its generated questions.`);
-    if (!confirmed) return;
     setDeletingRepoId(repo.id);
     setError(null);
     try {
       await deleteGithubRepo(repo.id);
       setRepos((current) => current.filter((item) => item.id !== repo.id));
+      setRepoPendingDelete(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to delete this repository scan.');
     } finally {
@@ -111,7 +111,7 @@ export default function GithubRepos() {
             </p>
           </div>
           {githubConnected ? (
-            <span className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-ui-label font-bold text-emerald-700">
+            <span className="inline-flex w-fit items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label font-bold text-primary dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-emerald-200">
               <CheckCircle2 size={15} /> GitHub connected
             </span>
           ) : (
@@ -127,12 +127,22 @@ export default function GithubRepos() {
               <article key={repo.id} className="surface-card-compact saved-highlight rounded-2xl">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-headline-sm text-primary">{repo.repoName}</p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-headline-sm text-primary">{repo.repoName}</p>
+                      {repo.versionNumber && (repo.scanCount ?? 1) > 1 ? (
+                        <span className="rounded-full border border-blueprint-line bg-blueprint-bg px-3 py-1 text-ui-label text-primary">
+                          Version {repo.versionNumber}
+                        </span>
+                      ) : null}
+                    </div>
                     <p className="mt-2 break-all text-sm text-blueprint-muted">{repo.repoUrl}</p>
                   </div>
-                  <span className="rounded-full border border-emerald-500/50 bg-emerald-600 px-3 py-1 text-ui-label text-white">Saved</span>
+                  <span className="rounded-full border border-blueprint-line bg-card px-3 py-1 text-ui-label text-primary dark:border-emerald-500/50 dark:bg-emerald-600 dark:text-white">{repo.isLatestVersion === false ? 'Saved' : 'Latest'}</span>
                 </div>
-                <p className="mt-4 text-body-md text-blueprint-muted">Scanned {new Date(repo.scannedAt).toLocaleDateString()}</p>
+                <p className="mt-4 text-body-md text-blueprint-muted">
+                  Scanned {new Date(repo.scannedAt).toLocaleDateString()}
+                  {(repo.scanCount ?? 1) > 1 ? ` • ${repo.scanCount} saved versions` : ''}
+                </p>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {repo.detectedStack.slice(0, 5).map((item) => (
                     <span key={item} className="language-tag rounded-full border px-3 py-1 text-ui-label">{item}</span>
@@ -145,7 +155,7 @@ export default function GithubRepos() {
                   <button type="button" onClick={() => rescanRepo(repo)} className="inline-flex items-center justify-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5">
                     <RefreshCw size={14} /> Re-scan
                   </button>
-                  <button type="button" disabled={deletingRepoId === repo.id} onClick={() => void removeRepo(repo)} className="inline-flex items-center justify-center gap-2 rounded-full border border-red-100 bg-red-50 px-4 py-2.5 text-ui-label text-red-700 transition-colors hover:bg-red-100 disabled:opacity-60">
+                  <button type="button" disabled={deletingRepoId === repo.id} onClick={() => setRepoPendingDelete(repo)} className="inline-flex items-center justify-center gap-2 rounded-full border border-red-100 bg-red-50 px-4 py-2.5 text-ui-label text-red-700 transition-colors hover:bg-red-100 disabled:opacity-60">
                     <Trash2 size={14} /> Delete
                   </button>
                 </div>
@@ -200,6 +210,34 @@ export default function GithubRepos() {
           onError={setError}
           onComplete={refreshRepos}
         />
+      ) : null}
+
+      {repoPendingDelete ? (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-[28px] border border-blueprint-line bg-card p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-ui-label text-blueprint-muted">Delete saved scan</p>
+                <h2 className="mt-2 text-headline-md text-primary not-italic">{repoPendingDelete.repoName}</h2>
+                <p className="mt-3 text-body-md text-blueprint-muted">
+                  This removes the selected repository scan and its generated questions.
+                  {repoPendingDelete.versionNumber && (repoPendingDelete.scanCount ?? 1) > 1 ? ` Version ${repoPendingDelete.versionNumber} will be deleted and the other saved versions will stay available.` : ''}
+                </p>
+              </div>
+              <button type="button" onClick={() => setRepoPendingDelete(null)} aria-label="Close" className="rounded-full border border-blueprint-line p-2 text-blueprint-muted transition-colors hover:border-primary hover:text-primary">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button type="button" onClick={() => setRepoPendingDelete(null)} className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5">
+                Cancel
+              </button>
+              <button type="button" disabled={deletingRepoId === repoPendingDelete.id} onClick={() => void removeRepo(repoPendingDelete)} className="inline-flex items-center gap-2 rounded-full bg-red-700 px-5 py-2.5 text-ui-label text-white transition-colors hover:bg-red-800 disabled:opacity-60">
+                <Trash2 size={14} /> Delete scan
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );
