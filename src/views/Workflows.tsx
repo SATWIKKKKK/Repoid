@@ -14,8 +14,6 @@ import { updateUserPreferences } from '../lib/userPreferences';
 const PENDING_PRACTICE_KEY = 'repoid-pending-practice-generation';
 const PRACTICE_CACHE_PREFIX = 'repoid-practice-cache:';
 const PRACTICE_CACHE_TTL_MS = 3 * 60 * 60 * 1000;
-const PRACTICE_GENERATION_ESTIMATED_TOTAL_SECONDS = 30;
-const PRACTICE_GENERATION_PHASE_ONE_SECONDS = 10;
 
 function formatSessionDate(value: string | null) {
   if (!value) return 'Not saved';
@@ -42,10 +40,6 @@ export default function Workflows() {
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [error, setError] = useState<{ message: string; suggestedDomain?: string; retryTopic?: string } | null>(null);
   const [pendingRetry, setPendingRetry] = useState<{ domain: string; topic: string; level: string } | null>(null);
-  const generationStartedAt = useRef<number | null>(null);
-  const generationPhaseRef = useRef<HTMLParagraphElement | null>(null);
-  const elapsedRef = useRef<HTMLSpanElement | null>(null);
-  const remainingRef = useRef<HTMLSpanElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const lastLaunchRef = useRef(0);
 
@@ -91,27 +85,6 @@ export default function Workflows() {
   useEffect(() => {
     setActiveSuggestionIndex(0);
   }, [topic]);
-
-  useEffect(() => {
-    if (!submittingTopic) return undefined;
-    generationStartedAt.current = Date.now();
-    const writeCountdown = () => {
-      const elapsed = Math.max(0, Math.floor((Date.now() - (generationStartedAt.current ?? Date.now())) / 1000));
-      if (generationPhaseRef.current) {
-        generationPhaseRef.current.textContent = elapsed < PRACTICE_GENERATION_PHASE_ONE_SECONDS
-          ? 'Generating comprehension questions...'
-          : 'Generating code-reading questions...';
-      }
-      if (elapsedRef.current) elapsedRef.current.textContent = `${elapsed}s`;
-      if (remainingRef.current) remainingRef.current.textContent = `${Math.max(0, PRACTICE_GENERATION_ESTIMATED_TOTAL_SECONDS - elapsed)}s`;
-    };
-    writeCountdown();
-    const timer = window.setInterval(writeCountdown, 1000);
-    return () => {
-      window.clearInterval(timer);
-      generationStartedAt.current = null;
-    };
-  }, [submittingTopic]);
 
   useEffect(() => {
     if (!domain) {
@@ -161,7 +134,6 @@ export default function Workflows() {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
-    generationStartedAt.current = Date.now();
     setSubmittingTopic(nextTopic);
     setError(null);
     setPendingRetry(null);
@@ -218,13 +190,12 @@ export default function Workflows() {
     <div className="min-h-full bg-background px-4 py-8 sm:px-6 lg:px-10 xl:px-14">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
       {submittingTopic ? (
-        <div className="fixed inset-0 z-120 flex items-center justify-center bg-background text-primary">
-          <div className="rounded-2xl border border-blueprint-line bg-card px-6 py-5 text-center shadow-2xl">
-            <LoaderCircle size={24} className="mx-auto animate-spin text-primary" />
-            <p ref={generationPhaseRef} className="mt-4 text-body-lg text-primary">Generating comprehension questions...</p>
-            <p className="mt-2 text-body-md text-blueprint-muted">Elapsed: <span ref={elapsedRef}>0s</span></p>
-            <p className="mt-1 text-body-md text-blueprint-muted">Estimated total: ~{PRACTICE_GENERATION_ESTIMATED_TOTAL_SECONDS}s</p>
-            <p className="mt-1 text-body-md text-blueprint-muted">Estimated time remaining: <span ref={remainingRef}>{PRACTICE_GENERATION_ESTIMATED_TOTAL_SECONDS}s</span></p>
+        <div className="fixed inset-0 z-120 flex items-center justify-center bg-background/95 px-4 text-primary backdrop-blur-sm">
+          <div className="rounded-2xl border border-blueprint-line bg-card px-8 py-7 text-center shadow-2xl">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-blueprint-line bg-card">
+              <LoaderCircle size={22} className="animate-spin text-primary" />
+            </div>
+            <p className="mt-4 text-body-lg font-semibold text-primary">framing qs for you...</p>
           </div>
         </div>
       ) : null}

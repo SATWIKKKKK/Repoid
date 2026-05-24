@@ -4,6 +4,7 @@ import { abandonRound, logFocusEvent } from '../lib/roundRuntime';
 
 const MAX_VISIBILITY_LEAVES = 5;
 const MAX_TOTAL_ABSENCE_MS = 10 * 60 * 1000;
+const BACK_GUARD_FEATURES = new Set(['coding-round', 'scenario-round', 'mock-interview', 'practice-session']);
 
 function formatTime(seconds: number) {
   const minutes = Math.floor(seconds / 60);
@@ -73,6 +74,7 @@ export default function RoundShell({
   const hiddenStartedAtRef = useRef<number | null>(null);
   const totalAbsenceMsRef = useRef(0);
   const kickOutHandledRef = useRef(false);
+  const browserBackAllowedRef = useRef(false);
   const pausedMsRef = useRef(pausedMs);
   const [visibilityWarning, setVisibilityWarning] = useState(false);
   const [visibilityLeaveCount, setVisibilityLeaveCount] = useState(0);
@@ -82,10 +84,12 @@ export default function RoundShell({
   const [offline, setOffline] = useState(() => typeof navigator !== 'undefined' ? !navigator.onLine : false);
   const [endConfirm, setEndConfirm] = useState(false);
   const [endConfirmStep, setEndConfirmStep] = useState(0);
+  const [browserBackConfirm, setBrowserBackConfirm] = useState(false);
   const isMobile = useMemo(() => typeof navigator !== 'undefined' && /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent), []);
   const startedAtMs = useMemo(() => startedAt ? new Date(startedAt).getTime() : Date.now(), [startedAt]);
   const leaveCountKey = attemptId ? `repoid-round-leaves:${feature}:${attemptId}` : '';
   const visibilityEnforced = Boolean(attemptId && onMaxVisibilityLeaves);
+  const browserBackGuardEnabled = Boolean(attemptId && BACK_GUARD_FEATURES.has(feature));
 
   useEffect(() => {
     if (!attemptId) return undefined;
@@ -96,6 +100,40 @@ export default function RoundShell({
     }
     return undefined;
   }, [attemptId, feature]);
+
+  useEffect(() => {
+    browserBackAllowedRef.current = false;
+    setBrowserBackConfirm(false);
+  }, [attemptId, feature]);
+
+  useEffect(() => {
+    if (!attemptId || !browserBackGuardEnabled) return undefined;
+    const guardId = `${feature}:${attemptId}`;
+    const currentState = typeof window.history.state === 'object' && window.history.state !== null
+      ? window.history.state
+      : {};
+    const guardState = { ...currentState, repoidRoundGuard: guardId };
+
+    try {
+      window.history.replaceState(guardState, '', window.location.href);
+      window.history.pushState({ ...guardState, repoidRoundGuardBuffer: true }, '', window.location.href);
+    } catch {
+      return undefined;
+    }
+
+    const handlePopState = () => {
+      if (browserBackAllowedRef.current) return;
+      setBrowserBackConfirm(true);
+      try {
+        window.history.pushState({ ...guardState, repoidRoundGuardBuffer: true }, '', window.location.href);
+      } catch {
+        // If history state is unavailable, the modal still keeps the user on screen.
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [attemptId, browserBackGuardEnabled, feature]);
 
   useEffect(() => {
     kickOutHandledRef.current = false;
@@ -240,6 +278,19 @@ export default function RoundShell({
     await document.documentElement.requestFullscreen?.().catch(() => undefined);
   };
 
+  const confirmBrowserBackLeave = () => {
+    browserBackAllowedRef.current = true;
+    setBrowserBackConfirm(false);
+    try {
+      window.localStorage.removeItem('repoid-active-round');
+      if (feature === 'practice-session') window.localStorage.removeItem('repoid-active-practice-session');
+    } catch {
+      // Ignore local cleanup failures.
+    }
+    if (attemptId) void abandonRound(attemptId, feature, 'browser-back-confirmed');
+    navigate('/dashboard', { replace: true });
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <div className="sticky top-0 z-50 border-b border-blueprint-line bg-card/95 px-4 py-3 backdrop-blur">
@@ -280,6 +331,31 @@ export default function RoundShell({
         </div>
       ) : null}
       {fullscreenWarning ? <div className="fixed inset-0 z-95 flex items-center justify-center bg-black/40 px-4"><div className="max-w-md rounded-2xl bg-card p-6 text-center"><h2 className="text-headline-md text-primary not-italic">Return to fullscreen.</h2><p className="mt-2 text-body-md text-blueprint-muted">The round is paused while this overlay is active.</p><button type="button" onClick={() => { void resumeFullscreen(); }} className="mt-5 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">Re-enter Fullscreen</button></div></div> : null}
+      {browserBackConfirm ? (
+        <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/45 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-blueprint-line bg-card p-6 text-center shadow-2xl">
+            <p className="text-ui-label text-blueprint-muted">Active Round</p>
+            <h2 className="mt-2 text-headline-md text-primary not-italic">Are you sure you want to leave this round?</h2>
+            <p className="mt-2 text-body-md text-blueprint-muted">This will hamper your results.</p>
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center">
+              <button
+                type="button"
+                onClick={() => setBrowserBackConfirm(false)}
+                className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white"
+              >
+                Go Back To The Round
+              </button>
+              <button
+                type="button"
+                onClick={confirmBrowserBackLeave}
+                className="rounded-full border border-blueprint-line bg-card px-5 py-2.5 text-ui-label text-primary"
+              >
+                Yes
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {endConfirm ? (
         <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/45 px-4">
           <div className="max-w-md rounded-2xl bg-card p-6">

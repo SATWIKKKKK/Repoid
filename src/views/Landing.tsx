@@ -77,7 +77,7 @@ const LANDING_FAQS = [
   },
   {
     question: 'Do I need to pay to start?',
-    answer: 'No. The Free tier lets you get started immediately with 20 question-bank questions per day, unlimited practice sessions, and 3 GitHub repo scans.',
+    answer: 'No. The Free tier includes all domains, the full question bank, unlimited practice sessions, 3 coding rounds, 3 scenario rounds, 3 mock interviews, and 3 GitHub repo scans.',
   },
   {
     question: 'Which domains are covered?',
@@ -290,36 +290,30 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
               {
                 title: 'Question card UI',
                 body: 'Topic tags, round labels, and answer review that stays compact when you need to move fast.',
+                points: ['Filter by the active domain and round type.', 'Open answers inline without losing your place.', 'Export the current set when you need offline revision.'],
               },
               {
                 title: 'Repo scanner',
                 body: 'Saved scan versions for each project so you can revisit older prep passes instead of overwriting them.',
+                points: ['Keep scans tied to the signed-in user.', 'Generate project-specific prompts from real architecture.', 'Resume older scan versions when revising the same repo.'],
               },
               {
                 title: 'Round selector',
                 body: 'Switch cleanly between question bank, coding, mock interviews, and scenario rounds as interviews get closer.',
+                points: ['Practice timed coding and scenario rounds.', 'Run mock interviews with structured reports.', 'Track completed attempts and weak areas.'],
               },
             ].map((item) => (
               <article key={item.title} className="surface-card">
-                <div className="rounded-2xl border border-blueprint-line bg-card px-4 py-4">
-                  <div className="flex items-center gap-2">
-                    <span className="h-2.5 w-2.5 rounded-full bg-rose-400" />
-                    <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
-                    <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
-                  </div>
-                  <div className="mt-5 grid gap-2">
-                    <div className="h-3 w-28 rounded-full bg-secondary" />
-                    <div className="h-3 w-full rounded-full bg-muted" />
-                    <div className="h-3 w-5/6 rounded-full bg-muted" />
-                    <div className="mt-4 grid grid-cols-3 gap-2">
-                      <div className="h-16 rounded-2xl bg-secondary" />
-                      <div className="h-16 rounded-2xl bg-muted" />
-                      <div className="h-16 rounded-2xl bg-secondary" />
-                    </div>
-                  </div>
-                </div>
-                <h3 className="mt-5 text-headline-sm text-primary">{item.title}</h3>
+                <h3 className="text-headline-sm text-primary">{item.title}</h3>
                 <p className="mt-3 text-body-md text-blueprint-muted">{item.body}</p>
+                <ul className="mt-5 grid gap-3">
+                  {item.points.map((point) => (
+                    <li key={point} className="flex gap-3 text-body-md text-primary">
+                      <Check size={16} className="mt-1 shrink-0 text-emerald-600 dark:text-emerald-300" />
+                      <span>{point}</span>
+                    </li>
+                  ))}
+                </ul>
               </article>
             ))}
           </div>

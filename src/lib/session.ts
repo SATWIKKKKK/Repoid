@@ -10,8 +10,37 @@ export interface SessionUser {
 
 const SESSION_COOKIE_NAME = 'promptly_session';
 const USER_STORAGE_KEY = 'promptly_user';
+const USER_SCOPED_STORAGE_KEYS = [
+  'promptly_prep_workspace',
+  'promptly_onboarding_complete',
+  'promptly_round_results',
+  'repoid-active-round',
+  'repoid-active-practice-session',
+  'repoid-pending-practice-generation',
+  'repoid-pending-scenario-generation',
+];
+const USER_SCOPED_STORAGE_PREFIXES = [
+  'repoid-practice-cache:',
+  'repoid-round-draft:',
+  'repoid-round-leaves:',
+  'repoid-practice-timer-started:',
+];
 
 type AuthResult = { ok: true; user: SessionUser } | { ok: false; error: string };
+
+function sessionIdentity(user: SessionUser | null | undefined) {
+  return String(user?.id || user?.email || '').trim().toLowerCase();
+}
+
+function clearUserScopedLocalState() {
+  USER_SCOPED_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+    const key = localStorage.key(index);
+    if (key && USER_SCOPED_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      localStorage.removeItem(key);
+    }
+  }
+}
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
   try {
@@ -86,6 +115,11 @@ export function clearSessionCookie() {
 }
 
 export function persistSessionUser(user: SessionUser) {
+  const previousIdentity = sessionIdentity(getStoredUser());
+  const nextIdentity = sessionIdentity(user);
+  if (nextIdentity && previousIdentity !== nextIdentity) {
+    clearUserScopedLocalState();
+  }
   localStorage.setItem(USER_STORAGE_KEY, JSON.stringify({ ...user, loggedIn: true }));
 }
 
@@ -100,5 +134,6 @@ export async function clearSessionState() {
   }
 
   localStorage.removeItem(USER_STORAGE_KEY);
+  clearUserScopedLocalState();
   clearSessionCookie();
 }

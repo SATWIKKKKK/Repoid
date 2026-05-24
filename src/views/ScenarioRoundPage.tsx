@@ -605,15 +605,15 @@ export default function ScenarioRoundPage() {
               </div>
             </div>
           ) : null}
-          <main className="relative z-10 mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-0">
+          <main className="relative z-10 mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 py-5 sm:px-0">
             {loadingAttempt ? <p className="text-body-md text-blueprint-muted">Loading scenario attempt...</p> : null}
             {error ? <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-body-md text-red-700">{error.message}</p> : null}
             {!loadingAttempt && attempt ? (
               <>
-                <section className="surface-card">
+                <section className="rounded-2xl border border-blueprint-line bg-card p-4 shadow-[0_16px_34px_rgba(0,0,0,0.06)] sm:p-5">
                   <p className="text-ui-label text-blueprint-muted">Scenario Context</p>
-                  <p className="mt-4 text-body-lg text-primary">{attempt.scenario.context}</p>
-                  <div className="mt-5 flex flex-wrap gap-2">
+                  <p className="mt-3 max-h-32 overflow-y-auto pr-2 text-body-md leading-7 text-primary [scrollbar-gutter:stable]">{attempt.scenario.context}</p>
+                  <div className="mt-4 flex flex-wrap gap-2">
                     <span className="rounded-full bg-blueprint-bg px-3 py-1 text-ui-label text-blueprint-muted">{attempt.scenario.topic}</span>
                     <span className="rounded-full bg-blueprint-bg px-3 py-1 text-ui-label text-blueprint-muted">{attempt.scenario.role}</span>
                     <span className="rounded-full bg-blueprint-bg px-3 py-1 text-ui-label text-blueprint-muted">{formatScenarioTypeLabel(attempt.scenario.type)}</span>
@@ -622,7 +622,7 @@ export default function ScenarioRoundPage() {
 
                 <section className="surface-card">
                   <p className="text-ui-label text-blueprint-muted">Single prompt</p>
-                  <h1 className="mt-4 font-serif text-[clamp(2rem,4vw,3rem)] leading-tight text-primary">{attempt.scenario.question}</h1>
+                  <h1 className="mt-4 font-serif text-[clamp(1.5rem,2.8vw,2.25rem)] leading-tight text-primary">{attempt.scenario.question}</h1>
 
                   <div className="mt-6 overflow-hidden rounded-2xl border border-blueprint-line bg-blueprint-bg">
                     <button
@@ -646,7 +646,7 @@ export default function ScenarioRoundPage() {
                       value={draftAnswer}
                       onChange={(event) => setDraftAnswer(event.target.value)}
                       disabled={submittingRound || expiring}
-                      className={`min-h-80 w-full resize-none rounded-2xl border border-blueprint-line bg-blueprint-bg p-5 text-body-md text-primary outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-70 ${interimTranscript ? 'italic opacity-80' : ''}`}
+                      className={`min-h-[16rem] w-full resize-none rounded-2xl border border-blueprint-line bg-blueprint-bg p-5 text-body-md text-primary outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-70 sm:min-h-[18rem] ${interimTranscript ? 'italic opacity-80' : ''}`}
                       placeholder="Answer as if you are explaining your diagnosis, decision, tradeoff, and validation plan to a senior interviewer."
                     />
 
@@ -735,13 +735,13 @@ export default function ScenarioRoundPage() {
                 <span className="rounded-full bg-blueprint-bg px-3 py-1">{formatScenarioTypeLabel(scenario.type)}</span>
                 <span className="rounded-full bg-blueprint-bg px-3 py-1">30 minutes</span>
               </div>
-              <div className="mt-6 rounded-2xl border border-blueprint-line bg-blueprint-bg p-5">
+              <div className="mt-6 rounded-2xl border border-blueprint-line bg-blueprint-bg p-4 sm:p-5">
                 <p className="text-ui-label text-blueprint-muted">Context</p>
-                <p className="mt-3 text-body-lg text-primary">{scenario.context}</p>
+                <p className="mt-3 max-h-36 overflow-y-auto pr-2 text-body-md leading-7 text-primary [scrollbar-gutter:stable]">{scenario.context}</p>
               </div>
               <div className="mt-6 rounded-2xl border border-blueprint-line bg-card p-5">
                 <p className="text-ui-label text-blueprint-muted">Question</p>
-                <h2 className="mt-3 font-serif text-[clamp(1.8rem,3.4vw,2.6rem)] leading-tight text-primary">{scenario.question}</h2>
+                <h2 className="mt-3 font-serif text-[clamp(1.45rem,2.8vw,2.15rem)] leading-tight text-primary">{scenario.question}</h2>
                 <p className="mt-4 text-body-md text-blueprint-muted">Hint: {scenario.hint}</p>
               </div>
               <div className="mt-8 flex flex-wrap gap-3">

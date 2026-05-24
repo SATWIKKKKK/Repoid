@@ -183,12 +183,6 @@ const TOPIC_GROUPS = [
   { domain: 'data-analytics', label: 'Data Analyst', topics: DATA_ANALYTICS_TOPICS },
   { domain: 'cybersecurity', label: 'Cybersecurity', topics: CYBER_TOPICS },
 ];
-const ALL_CURATED_TOPIC_OPTIONS = TOPIC_GROUPS.flatMap((group) => group.topics.map((topic) => ({
-  value: `${group.domain}::${topic}`,
-  topic,
-  domain: group.domain,
-  label: `${group.label} - ${topic}`,
-})));
 const QUESTION_TYPE_LABELS = Object.fromEntries(QUESTION_TYPES.map((item) => [item.id, item.label])) as Record<QuestionType, string>;
 
 function normalizePoint(text: string): string {
@@ -312,6 +306,14 @@ export default function QuestionBank() {
         : domain === 'data-analytics'
           ? 'data analytics'
           : 'backend';
+  const curatedTopicOptions = useMemo(() => {
+    const group = TOPIC_GROUPS.find((item) => item.domain === domain);
+    return (group?.topics ?? curatedTopics).map((topic) => ({
+      value: `${domain}::${topic}`,
+      topic,
+      domain,
+    }));
+  }, [curatedTopics, domain]);
   const allBackendTopicsSelected = selectedBackendTopics.length === 0;
   const allBackendRoundsSelected = selectedBackendRounds.length === 0;
   const selectedTypesKey = useMemo(() => selectedTypes.join('|'), [selectedTypes]);
@@ -336,6 +338,8 @@ export default function QuestionBank() {
   useEffect(() => {
     setSelectedBackendTopics([]);
     setSelectedBackendRounds([]);
+    setTopicDropdownValue('');
+    setRoundDropdownValue('');
     setFaangOnly(false);
   }, [domain]);
 
@@ -400,9 +404,8 @@ export default function QuestionBank() {
   };
 
   const handleCuratedSearch = () => {
-    const option = ALL_CURATED_TOPIC_OPTIONS.find((item) => item.value === topicDropdownValue);
+    const option = curatedTopicOptions.find((item) => item.value === topicDropdownValue);
     if (!option || !roundDropdownValue) return;
-    setDomain(option.domain);
     setSelectedBackendTopics([option.topic]);
     setSelectedBackendRounds([roundDropdownValue]);
     setSearch('');
@@ -606,13 +609,9 @@ export default function QuestionBank() {
                   <label className="min-w-0">
                     <span className="text-ui-label text-primary">Topic</span>
                     <select value={topicDropdownValue} onChange={(event) => setTopicDropdownValue(event.target.value)} className="mt-2 w-full rounded-xl border border-blueprint-line bg-card px-4 py-3 text-body-md text-primary outline-none focus:border-primary">
-                      <option value="">Select topic</option>
-                      {TOPIC_GROUPS.map((group) => (
-                        <optgroup key={group.domain} label={group.label}>
-                          {group.topics.map((topic) => (
-                            <option key={`${group.domain}-${topic}`} value={`${group.domain}::${topic}`}>{topic}</option>
-                          ))}
-                        </optgroup>
+                      <option value="">Select {curatedDomainLabel} topic</option>
+                      {curatedTopicOptions.map((item) => (
+                        <option key={`${item.domain}-${item.topic}`} value={item.value}>{item.topic}</option>
                       ))}
                     </select>
                   </label>

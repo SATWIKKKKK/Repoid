@@ -425,18 +425,18 @@ const PLAN_LIMITS: Record<BillingPlan, {
   practiceSessions: number | 'unlimited';
   mockInterviewsPerMonth: number | 'unlimited';
   codingRoundsPerMonth: number | 'unlimited';
-  scenarioRounds: boolean | 'unlimited';
+  scenarioRounds: number | boolean | 'unlimited';
   githubRepos: number | 'unlimited';
   pdfExport: boolean;
   teamFeatures: boolean;
 }> = {
   free: {
-    activeDomains: 1,
-    questionsPerDay: 20,
+    activeDomains: 'all',
+    questionsPerDay: 'unlimited',
     practiceSessions: 'unlimited',
-    mockInterviewsPerMonth: 0,
-    codingRoundsPerMonth: 0,
-    scenarioRounds: false,
+    mockInterviewsPerMonth: 3,
+    codingRoundsPerMonth: 3,
+    scenarioRounds: 3,
     githubRepos: 3,
     pdfExport: false,
     teamFeatures: false,
@@ -4263,7 +4263,7 @@ async function generatePracticeSessionQuestions(params: {
               timeoutMs,
               model: DEEPSEEK_CHAT_MODEL,
               temperature: 0.7,
-              stream: true,
+              stream: false,
               abortSignal: params.abortSignal,
             },
           ));
@@ -6409,17 +6409,21 @@ async function getEntitlement(userId: string, feature: string) {
 
   if (feature === 'mock-interview') {
     usage.mockInterviewsThisMonth = await getMonthlyRoundUsage(userId, 'mock-interview');
-    hasAccess = plan !== 'free';
-    reason = hasAccess ? null : 'This round type requires a Monthly or Yearly plan. Upgrade to unlock.';
+    const limit = limits.mockInterviewsPerMonth;
+    hasAccess = limit === 'unlimited' || usage.mockInterviewsThisMonth < limit;
+    reason = hasAccess ? null : 'Free Tier includes 3 mock interviews per month. Upgrade for unlimited mock interviews.';
     suggestedPlan = 'pro';
   } else if (feature === 'coding-round') {
     usage.codingRoundsThisMonth = await getMonthlyRoundUsage(userId, 'coding-round');
-    hasAccess = plan !== 'free';
-    reason = hasAccess ? null : 'This round type requires a Monthly or Yearly plan. Upgrade to unlock.';
+    const limit = limits.codingRoundsPerMonth;
+    hasAccess = limit === 'unlimited' || usage.codingRoundsThisMonth < limit;
+    reason = hasAccess ? null : 'Free Tier includes 3 coding rounds per month. Upgrade for unlimited coding rounds.';
     suggestedPlan = 'pro';
   } else if (feature === 'scenario-round') {
-    hasAccess = plan !== 'free';
-    reason = hasAccess ? null : 'This round type requires a Monthly or Yearly plan. Upgrade to unlock.';
+    usage.scenarioRoundsThisMonth = await getMonthlyRoundUsage(userId, 'scenario-round');
+    const limit = limits.scenarioRounds;
+    hasAccess = limit === 'unlimited' || limit === true || (typeof limit === 'number' && usage.scenarioRoundsThisMonth < limit);
+    reason = hasAccess ? null : 'Free Tier includes 3 scenario rounds per month. Upgrade for unlimited scenario rounds.';
     suggestedPlan = 'pro';
   } else if (feature === 'github-scan') {
     const limit = limits.githubRepos;
@@ -7540,17 +7544,18 @@ export async function createApp(options: { listen?: boolean } = {}) {
       const page = Math.max(1, Number(request.query.page ?? 1));
       const faangOnly = String(request.query.faangOnly ?? 'false') === 'true';
       const plan = await getEffectivePlan(user.id);
+      const questionLimit = PLAN_LIMITS[plan].questionsPerDay;
       let pageSize = requestedPageSize;
-      if (plan === 'free') {
+      if (questionLimit !== 'unlimited') {
         const usage = await db.prepare(`
           SELECT COUNT(*)::int AS total
             FROM question_bank_usage_events
            WHERE user_id = ? AND used_on = (NOW() AT TIME ZONE 'UTC')::date
         `).get<{ total: number }>(user.id);
-        const remaining = Math.max(0, 20 - Number(usage?.total ?? 0));
+        const remaining = Math.max(0, questionLimit - Number(usage?.total ?? 0));
         if (remaining <= 0) {
           response.status(403).json({
-            error: "You've reached your daily limit of 20 questions. Upgrade to unlock unlimited access.",
+            error: "You've reached your daily question-bank limit. Upgrade to unlock unlimited access.",
             upgradeRequired: true,
           });
           return;
@@ -7568,7 +7573,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
         limit: pageSize,
         offset: (page - 1) * pageSize,
       });
-      if (plan === 'free' && result.questions.length) {
+      if (questionLimit !== 'unlimited' && result.questions.length) {
         for (const question of result.questions) {
           await db.prepare(`
             INSERT INTO question_bank_usage_events (id, user_id, domain, question_id, used_on, created_at)
@@ -9166,10 +9171,6 @@ export async function createApp(options: { listen?: boolean } = {}) {
     const theme = themeValue && ['light', 'dark', 'system'].includes(themeValue) ? themeValue : null;
     const domain = request.body?.domain === undefined ? null : normalizeOptionalDomain(request.body.domain);
     const existing = await db.prepare('SELECT user_id, domain FROM user_preferences WHERE user_id = ?').get<{ user_id: string; domain: string | null }>(user.id);
-    if (domain && existing?.domain && normalizeOptionalDomain(existing.domain) !== domain && await getEffectivePlan(user.id) === 'free') {
-      response.status(403).json({ error: 'Upgrade to access multiple domains.', upgradeRequired: true });
-      return;
-    }
 
     if (existing) {
       await db.prepare('UPDATE user_preferences SET sidebar_open = COALESCE(?, sidebar_open), theme = COALESCE(?, theme), domain = COALESCE(?, domain), updated_at = NOW() WHERE user_id = ?')
@@ -9184,6 +9185,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
   app.get('/api/github-repos', requireUser, async (request, response) => {
     const user = (request as AuthedRequest).user!;
+    response.setHeader('Cache-Control', 'no-store');
     await expireStaleGithubScanJobs(user.id);
     const githubConnected = Boolean(await getGithubAccessToken(user.id));
     const repoRows = await db.prepare(`
@@ -9223,6 +9225,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
   app.get('/api/github-repos/:repoId/questions', requireUser, async (request, response) => {
     const user = (request as AuthedRequest).user!;
+    response.setHeader('Cache-Control', 'no-store');
     const repoId = String(request.params.repoId ?? '');
     const row = await db.prepare(`
       SELECT gr.id, gr.repo_url, gr.repo_name, gr.detected_stack, gr.scanned_at, gr.status, gr.raw_analysis_json,
@@ -9293,6 +9296,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
 
   app.get('/api/github-repos/jobs/:jobId', requireUser, async (request, response) => {
     const user = (request as AuthedRequest).user!;
+    response.setHeader('Cache-Control', 'no-store');
     const jobId = String(request.params.jobId ?? '');
     await expireStaleGithubScanJobs(user.id);
     const job = await db.prepare(`

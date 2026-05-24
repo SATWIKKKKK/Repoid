@@ -17,18 +17,18 @@ export const PRICING_PLANS: PricingPlanContent[] = [
     name: 'Free tier',
     price: '₹0',
     cadence: 'forever',
-    description: 'Start free, explore the platform, and build prep momentum before you pay.',
+    description: 'Start free with real question-bank access and enough rounds to build momentum.',
     billingInterval: 'monthly',
-    features: ['1 active domain', '20 question-bank questions/day', 'Unlimited practice sessions', '3 GitHub repo scans'],
+    features: ['All domains unlocked', 'All question banks and questions', 'Unlimited practice sessions', '3 coding rounds per month', '3 scenario rounds per month', '3 mock interviews per month', '3 GitHub repo scans'],
   },
   {
     id: 'pro',
     name: 'Monthly',
     price: '₹99',
     cadence: 'per 3 months',
-    description: 'Quarterly sprint access for serious prep with every round unlocked.',
+    description: 'Quarterly sprint access for serious prep with higher limits and every round unlocked.',
     billingInterval: 'monthly',
-    features: ['All domains unlocked', 'Unlimited question bank', 'Access to all rounds — 15 questions each', 'Mock interviews', '7 GitHub repo scans per month'],
+    features: ['Everything in Free', 'Unlimited coding rounds', 'Unlimited scenario rounds', 'Unlimited mock interviews', '7 GitHub repo scans per month'],
     featured: true,
   },
   {
@@ -38,14 +38,14 @@ export const PRICING_PLANS: PricingPlanContent[] = [
     cadence: 'for 1 year',
     description: 'Placement-season access with unlimited repo scanning and exports.',
     billingInterval: 'annual',
-    features: ['Everything in Monthly', 'Access to all rounds', 'Unlimited GitHub repo scans', 'PDF exports', 'Priority support'],
+    features: ['Everything in Monthly', 'Unlimited GitHub repo scans', 'PDF exports', 'Priority support', 'Placement-season access'],
   },
 ];
 
 export const PRICING_FAQS = [
   {
-    question: 'What happens when I use all 20 free daily questions?',
-    answer: 'Your Free tier stays active forever, but the question bank pauses for the rest of that day after 20 questions. You can come back the next day when your daily limit refreshes, or upgrade if you want unlimited question-bank practice without waiting.',
+    question: 'What is included in the Free tier?',
+    answer: 'Free includes all domains, the full question bank, unlimited practice sessions, 3 coding rounds, 3 scenario rounds, 3 mock interviews, and 3 GitHub repo scans so you can test the complete prep loop before upgrading.',
   },
   {
     question: 'Can I upgrade or downgrade whenever I want?',

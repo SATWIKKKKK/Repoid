@@ -76,21 +76,21 @@ async function readJson<T>(response: Response): Promise<T & { error?: string }> 
 }
 
 export async function listGithubRepos(): Promise<{ repos: GithubRepo[]; pendingJobs: Array<{ id: string; repoUrl: string; repoName: string }>; githubConnected: boolean }> {
-  const response = await fetch('/api/github-repos', { credentials: 'include' });
+  const response = await fetch('/api/github-repos', { credentials: 'include', cache: 'no-store' });
   const data = await readJson<{ repos: GithubRepo[]; pendingJobs: Array<{ id: string; repoUrl: string; repoName: string }>; githubConnected?: boolean }>(response);
   if (!response.ok) throw new Error(data.error ?? 'Unable to load GitHub repos.');
   return { ...data, githubConnected: Boolean(data.githubConnected) };
 }
 
 export async function getGithubQuestionSet(repoId: string): Promise<RepoQuestionSet> {
-  const response = await fetch(`/api/github-repos/${encodeURIComponent(repoId)}/questions`, { credentials: 'include' });
+  const response = await fetch(`/api/github-repos/${encodeURIComponent(repoId)}/questions`, { credentials: 'include', cache: 'no-store' });
   const data = await readJson<RepoQuestionSet>(response);
   if (!response.ok) throw new Error(data.error ?? 'Unable to load repo questions.');
   return data;
 }
 
 export async function getGithubScanJob(jobId: string): Promise<GithubScanJob> {
-  const response = await fetch(`/api/github-repos/jobs/${encodeURIComponent(jobId)}`, { credentials: 'include' });
+  const response = await fetch(`/api/github-repos/jobs/${encodeURIComponent(jobId)}`, { credentials: 'include', cache: 'no-store' });
   const data = await readJson<GithubScanJob>(response);
   if (!response.ok) throw new Error(data.error ?? 'Unable to load scan job.');
   return data;
