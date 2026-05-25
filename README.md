@@ -120,8 +120,14 @@ Payments are processed via Razorpay. Upgrades and downgrades take effect immedia
 ---
 
 <img width="1519" height="839" alt="image" src="https://github.com/user-attachments/assets/983204ef-1e68-4fcc-a61a-25040fa9777f" />
+
+---
 <img width="1803" height="640" alt="image" src="https://github.com/user-attachments/assets/cee5f8b3-56ab-478c-9cad-b5b0d6579bc6" />
+
+---
 <img width="1417" height="576" alt="image" src="https://github.com/user-attachments/assets/5a657591-3efa-41af-8de8-f1cf2293ad26" />
+
+---
 
 
 
