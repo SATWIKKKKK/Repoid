@@ -14,9 +14,8 @@ The product is designed for software engineers, data practitioners, and security
 
 ---
 
-## Screenshot
+<img width="1917" height="885" alt="image" src="https://github.com/user-attachments/assets/b92ec5c0-fbfd-49d2-96d6-a7050fc40f75" />
 
-<!-- Attach a screenshot of the dashboard or the question bank view here -->
 
 ---
 
