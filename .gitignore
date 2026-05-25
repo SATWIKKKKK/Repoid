@@ -5,5 +5,24 @@ coverage/
 .DS_Store
 *.log
 .env*
-!.env.example
 .vercel
+
+# Local cookie/session files
+%cookieJar%
+*cookies*.txt
+*cookie*.txt
+.copilot-practice-cookies*.txt
+prep-cookies*.txt
+scenario-cookies.txt
+
+# Local SQLite databases
+*.db
+
+# Python (legacy, not used in production)
+requirements.txt
+__pycache__/
+*.pyc
+
+# Dev/internal documentation not intended for public repo
+ADMIN_DEPLOYMENT_NOTES.md
+ARCHITECTURE.md
