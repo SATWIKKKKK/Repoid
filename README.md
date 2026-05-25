@@ -119,9 +119,8 @@ Payments are processed via Razorpay. Upgrades and downgrades take effect immedia
 
 ---
 
-## Screenshot
+<img width="651" height="693" alt="image" src="https://github.com/user-attachments/assets/4b07651c-67e1-40be-b6eb-3762a1d5b312" />
 
-<!-- Attach a screenshot of a coding round or scenario round in progress here -->
 
 ---
 
