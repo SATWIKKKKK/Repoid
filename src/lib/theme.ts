@@ -7,11 +7,11 @@ function prefersDarkMode() {
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
 }
 
-export function normalizeThemePreference(value: unknown, fallback: ThemePreference = 'light'): ThemePreference {
+export function normalizeThemePreference(value: unknown, fallback: ThemePreference = 'dark'): ThemePreference {
   return value === 'dark' || value === 'light' || value === 'system' ? value : fallback;
 }
 
-export function getStoredThemePreference(fallback: ThemePreference = 'light') {
+export function getStoredThemePreference(fallback: ThemePreference = 'dark') {
   try {
     return normalizeThemePreference(localStorage.getItem(THEME_STORAGE_KEY), fallback);
   } catch {

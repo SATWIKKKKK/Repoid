@@ -610,8 +610,62 @@ nav {
 }
 
 .dark .saved-highlight {
-  border-color: rgba(52, 211, 153, 0.45);
-  background: rgba(16, 185, 129, 0.12);
+  border-color: var(--color-blueprint-line);
+  background: var(--card);
+}
+
+/* Neutralize emerald utility usage in dark mode — keep green only where explicitly allowed */
+.dark .bg-emerald-50,
+.dark .bg-emerald-50\/70,
+.dark .bg-emerald-500\/10,
+.dark .bg-emerald-600,
+.dark .bg-emerald-950\/40,
+.dark .bg-emerald-400\/15,
+.dark .bg-emerald-500\/15 {
+  background-color: var(--card) !important;
+}
+
+.dark .border-emerald-100,
+.dark .border-emerald-200,
+.dark .border-emerald-300,
+.dark .border-emerald-400,
+.dark .border-emerald-500,
+.dark .border-emerald-500\/50,
+.dark .border-emerald-500\/40,
+.dark .border-emerald-500\/30,
+.dark .border-emerald-500\/70 {
+  border-color: var(--color-blueprint-line) !important;
+}
+
+.dark .text-emerald-900,
+.dark .text-emerald-800,
+.dark .text-emerald-700,
+.dark .text-emerald-600,
+.dark .text-emerald-300,
+.dark .text-emerald-200 {
+  color: var(--color-blueprint-muted) !important;
+}
+
+/* Broad neutralization for any emerald utility classes (covers opacity variants) */
+.dark [class*="bg-emerald"] {
+  background-color: var(--card) !important;
+}
+.dark [class*="border-emerald"] {
+  border-color: var(--color-blueprint-line) !important;
+}
+.dark [class*="text-emerald"] {
+  color: var(--color-blueprint-muted) !important;
+}
+
+/* Explicitly allow green for the repo scanner title and the "Latest" badge */
+.dark .repo-scanner-title {
+  color: #d8ffe9 !important;
+}
+
+.dark .repo-latest-badge {
+  border-color: rgba(52, 211, 153, 0.45) !important;
+  background-color: rgba(16, 185, 129, 0.12) !important;
+  color: #ffffff !important;
 }
 
 .dark .surface-inset {
@@ -636,4 +690,32 @@ nav {
 
 .dark button:not(:disabled):hover {
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* Pricing page – keep "Current" badge and active-until text green in dark mode */
+.dark .pricing-current-badge {
+  border-color: rgba(52, 211, 153, 0.45) !important;
+  background-color: rgba(16, 185, 129, 0.12) !important;
+  color: #6ee7b7 !important;
+}
+
+.dark .pricing-active-until {
+  border-color: rgba(52, 211, 153, 0.35) !important;
+  background-color: rgba(16, 185, 129, 0.10) !important;
+  color: #6ee7b7 !important;
+}
+
+/* Keep dashboard surface cards dark on hover (prevent hover:bg-white/85 from turning them white) */
+.dark .hover\:bg-white\/85:hover {
+  background-color: rgba(255, 255, 255, 0.04) !important;
+}
+
+/* Open Scanner pill – explicit dark mode colours */
+.dark .search-arrow-hover {
+  background-color: #e8e4e4 !important;
+  color: #111111 !important;
+}
+
+.dark .search-arrow-hover svg {
+  color: #111111 !important;
 }

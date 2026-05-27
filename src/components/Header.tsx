@@ -58,11 +58,14 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
   useEffect(() => {
     if (!user?.loggedIn) return;
     let ignore = false;
-    void fetchSubscription().then((result) => {
+    const refreshSubscription = () => void fetchSubscription().then((result) => {
       if (!ignore && result.ok) setCurrentPlan(result.data.plan);
     }).catch(() => undefined);
+    refreshSubscription();
+    window.addEventListener('repoid-subscription-plan-updated', refreshSubscription);
     return () => {
       ignore = true;
+      window.removeEventListener('repoid-subscription-plan-updated', refreshSubscription);
     };
   }, [user?.loggedIn]);
 

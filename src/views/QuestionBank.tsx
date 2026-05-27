@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Download, LoaderCircle, Search } from 'lucide-react';
 import { fetchQuestions, fetchQuestionStats } from '../lib/questionBankApi';
 import DomainPickerDialog from '../components/DomainPickerDialog';
@@ -259,6 +259,7 @@ function useInitialSearch() {
 
 export default function QuestionBank() {
   const initialSearch = useInitialSearch();
+  const navigate = useNavigate();
   const workspace = usePrepWorkspace();
   const [domain, setDomain] = useState(workspace.selections.domain);
   const [selectedTypes, setSelectedTypes] = useState<QuestionType[]>(() => ALL_QUESTION_TYPES);
@@ -601,7 +602,7 @@ export default function QuestionBank() {
                 ) : null}
               </div>
             )}
-            {exportError ? <div className="rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-body-md text-red-700 dark:text-red-200">{exportError}</div> : null}
+            {exportError ? <div className="rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-body-md text-red-700 dark:text-red-200">{exportError.split(/\b(Upgrade)\b/i).map((part, i) => /^upgrade$/i.test(part) ? <button key={i} type="button" onClick={() => navigate('/pricing')} className="font-bold underline hover:opacity-80">{part}</button> : part)}</div> : null}
 
             {hasCuratedFilters ? (
               <div className="surface-card-compact space-y-5">

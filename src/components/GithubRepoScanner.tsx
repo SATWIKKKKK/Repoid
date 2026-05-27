@@ -194,7 +194,7 @@ export function GithubScanOverlay({ repoUrl, force = false, onClose, onError, on
           </div>
         </div>
 
-        <div className="mt-6 rounded-2xl border border-blueprint-line bg-blueprint-bg p-4">
+        <div className="mt-6 rounded-2xl border border-blueprint-line bg-blueprint-bg dark:bg-[#242424] p-4">
           <div className="flex items-start gap-3">
             {errorMessage ? <AlertCircle size={18} className="mt-1 shrink-0 text-red-600 dark:text-red-300" /> : result?.status === 'complete' ? <CheckCircle2 size={18} className="mt-1 shrink-0 text-emerald-600 dark:text-emerald-300" /> : <Clock3 size={18} className="mt-1 shrink-0 text-primary" />}
             <div>

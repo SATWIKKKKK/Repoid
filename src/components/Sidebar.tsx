@@ -15,6 +15,7 @@ import {
 import { motion } from 'framer-motion';
 import { cn } from '../lib/utils';
 import { View } from '../App';
+import Logo from './Logo';
 
 interface SidebarProps {
   currentView: View;
@@ -74,8 +75,8 @@ export default function Sidebar({ currentView, onViewChange, isCollapsed, onTogg
     >
       <div className={cn('mb-8 flex items-center', isCollapsed ? 'justify-center' : 'justify-between')}>
         {!isCollapsed ? (
-          <button type="button" onClick={() => onViewChange('dashboard')} className="text-left">
-            <div className="font-serif text-3xl leading-none text-primary">Repoid</div>
+          <button type="button" onClick={() => onViewChange('landing')} className="text-left">
+            <Logo className="h-10 w-auto sm:h-12" alt="Repoid logo" />
           </button>
         ) : null}
 

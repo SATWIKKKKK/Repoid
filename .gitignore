@@ -6,6 +6,8 @@ coverage/
 *.log
 .env*
 .vercel
+.chrome*/
+artifacts/
 
 # Local cookie/session files
 %cookieJar%

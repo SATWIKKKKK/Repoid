@@ -11,15 +11,10 @@ function LegalShell({ title, lastUpdated, children, onViewChange }: { title: str
   return (
     <div className="min-h-screen bg-background relative overflow-x-hidden">
       <div className="fixed inset-0 blueprint-grid opacity-20 pointer-events-none" />
-      <nav className="sticky top-0 z-50 border-b border-blueprint-line bg-white/80 backdrop-blur-md">
-        <div className="max-w-[1440px] mx-auto flex items-center justify-between px-4 md:px-8 h-16">
-          <button onClick={() => onViewChange('dashboard')} className="font-serif text-2xl text-primary">Repoid</button>
-          <button onClick={() => onViewChange('dashboard')} className="flex items-center gap-2 text-sm text-blueprint-muted hover:text-primary transition-colors">
-            <ArrowLeft size={16} /> Back
-          </button>
-        </div>
-      </nav>
-      <main className="max-w-3xl mx-auto px-4 sm:px-8 py-16 relative z-10">
+      <main className="max-w-3xl mx-auto px-4 sm:px-8 py-10 relative z-10">
+        <button onClick={() => onViewChange('dashboard')} className="mb-8 flex items-center gap-2 text-sm text-blueprint-muted hover:text-primary transition-colors">
+          <ArrowLeft size={16} /> Back
+        </button>
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
           <div className="space-y-2">
             <h1 className="text-4xl font-serif italic text-primary">{title}</h1>

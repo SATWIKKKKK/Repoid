@@ -78,7 +78,7 @@ export default function Builder(_props: BuilderProps) {
       <main className="relative z-10 mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-[920px] flex-col justify-center">
         <div className="rounded-2xl border border-blueprint-line bg-card p-5 shadow-[0_20px_48px_rgba(0,0,0,0.05)] dark:shadow-[0_20px_48px_rgba(0,0,0,0.24)] sm:p-8">
           <div className="mb-8 flex items-center justify-between gap-4">
-            <button type="button" onClick={() => navigate('/dashboard')} className="font-serif text-3xl leading-none text-primary">
+            <button type="button" onClick={() => navigate('/')} className="font-serif text-3xl leading-none text-primary">
               Repoid
             </button>
             <div className="flex gap-2">

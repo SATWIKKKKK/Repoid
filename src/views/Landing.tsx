@@ -17,11 +17,12 @@ import {
 } from 'lucide-react';
 import { useThemePreference } from '../hooks/useThemePreference';
 import { PRICING_PLANS } from '../lib/pricingContent';
-import { getStoredUser } from '../lib/session';
 import { applyThemePreference, shouldUseDarkTheme } from '../lib/theme';
 import { updateUserPreferences } from '../lib/userPreferences';
 import { View } from '../App';
 import { BackgroundRippleEffect } from '../components/ui/background-ripple-effect';
+import Logo from '../components/Logo';
+import { FOOTER_LINK_GROUPS } from '../lib/footerLinks';
 
 const TRUST_METRICS = [
   { value: '640+', label: 'interview questions', note: 'spread across role-specific banks and round formats' },
@@ -93,58 +94,17 @@ const LANDING_FAQS = [
   },
 ];
 
-const FOOTER_LINK_GROUPS = [
-  {
-    title: 'Product',
-    links: [
-      { label: 'Home', href: '/' },
-      { label: 'Dashboard', href: '/dashboard' },
-      { label: 'Onboarding', href: '/onboarding' },
-      { label: 'Practice Tracks', href: '/practice-tracks' },
-      { label: 'Question Bank', href: '/question-bank' },
-      { label: 'GitHub Repos', href: '/github-repos' },
-    ],
-  },
-  {
-    title: 'Rounds',
-    links: [
-      { label: 'Scenario Round', href: '/scenario-round' },
-      { label: 'Coding Round', href: '/coding-round' },
-      { label: 'Mock Interview', href: '/mock-interview' },
-      { label: 'Saved Sessions', href: '/saved' },
-      { label: 'Results', href: '/results/practice-tracks' },
-      { label: 'Settings', href: '/settings/profile' },
-    ],
-  },
-  {
-    title: 'Account',
-    links: [
-      { label: 'Sign In', href: '/signin' },
-      { label: 'Sign Up', href: '/signup' },
-      { label: 'Pricing', href: '/pricing' },
-      { label: 'Admin', href: '/admin' },
-    ],
-  },
-  {
-    title: 'Company',
-    links: [
-      { label: 'Privacy', href: '/privacy' },
-      { label: 'Terms', href: '/terms' },
-      { label: 'Security', href: '/security' },
-      { label: 'Contact', href: '/contact' },
-    ],
-  },
-];
+
 
 interface LandingProps {
+  isAuthenticated: boolean;
   onStart: () => void;
   onViewDocs: () => void;
   onViewChange: (view: View) => void;
 }
 
-export default function Landing({ onStart, onViewDocs, onViewChange }: LandingProps) {
-  const user = getStoredUser();
-  const isAuthed = Boolean(user?.loggedIn);
+export default function Landing({ isAuthenticated, onStart, onViewDocs, onViewChange }: LandingProps) {
+  const isAuthed = isAuthenticated;
   const storedThemePreference = useThemePreference();
   const [themePreference, setThemePreference] = useState(storedThemePreference);
   const isDarkMode = shouldUseDarkTheme(themePreference);
@@ -196,8 +156,13 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
       <nav className="landing-navbar sticky top-3 z-40 mx-3 rounded-2xl border border-blueprint-line sm:top-4 sm:mx-4">
         <div className="mx-auto flex min-h-14 w-full max-w-360 items-center justify-between gap-3 px-4 py-2 sm:px-8 lg:px-12">
           <div className="flex items-center gap-3 lg:gap-8">
-            <button type="button" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })} className="font-serif text-[clamp(1.75rem,3vw,34px)] leading-none text-primary">
-              Repoid
+            <button type="button" onClick={() => onViewChange('landing')} className="flex items-center">
+              <Logo
+                className="h-8 w-auto sm:h-10 md:h-12 lg:h-14"
+                alt="Repoid navbar logo"
+                lightSrc="/assets/landing-navbar-light.png"
+                darkSrc="/assets/landing-navbar-dark.png"
+              />
             </button>
             <div className="hidden items-center gap-1 lg:flex">
               <button type="button" onClick={() => scrollToSection('preview')} className="rounded-full px-3 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5">
@@ -225,12 +190,16 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
               {isDarkMode ? <SunMedium size={16} /> : <MoonStar size={16} />}
             </button>
 
-            <button type="button" onClick={() => onViewChange('auth')} className="hidden text-ui-label text-primary transition-colors hover:text-blueprint-muted sm:inline-flex">
+            <button
+              type="button"
+              onClick={() => onViewChange('auth')}
+              className="hidden text-ui-label text-primary transition-colors hover:text-blueprint-muted sm:inline-flex"
+            >
               Sign In
             </button>
             <button
               type="button"
-              onClick={onStart}
+              onClick={() => onViewChange('signup')}
               className="landing-primary-action rounded-full px-5 py-2 text-ui-label shadow-[0_8px_24px_rgba(26,26,26,0.16)] transition-colors"
             >
               Sign Up
@@ -253,14 +222,7 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
               onClick={primaryCta}
               className="landing-primary-action inline-flex items-center gap-2 rounded-full px-8 py-3.5 text-ui-label shadow-[0_14px_34px_rgba(17,17,17,0.22)] transition-colors"
             >
-              {isAuthed ? 'Open Dashboard' : 'Start Free'} <ArrowRight size={14} />
-            </button>
-            <button
-              type="button"
-              onClick={openDashboard}
-              className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-8 py-3.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5"
-            >
-              Dashboard <ArrowRight size={14} />
+              {isAuthed ? 'Go to Dashboard' : 'Start Free'} <ArrowRight size={14} />
             </button>
           </div>
         </section>
@@ -483,7 +445,7 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
                   onClick={primaryCta}
                   className="landing-cta-button inline-flex items-center gap-2 rounded-full px-7 py-3 text-ui-label transition-colors"
                 >
-                  {isAuthed ? 'Open Dashboard' : 'Create your account'} <ArrowRight size={14} />
+                  {isAuthed ? 'Dashboard' : 'Start Free'} <ArrowRight size={14} />
                 </button>
                 <button
                   type="button"
@@ -500,7 +462,9 @@ export default function Landing({ onStart, onViewDocs, onViewChange }: LandingPr
         <footer className="border-t border-blueprint-line py-10">
           <div className="grid gap-8 lg:grid-cols-[1.1fr_2fr]">
             <div>
-              <p className="font-serif text-2xl text-primary">Repoid</p>
+              <a href="/" className="inline-block">
+                <Logo className="h-8 w-auto" alt="Repoid logo" />
+              </a>
               <p className="mt-3 max-w-sm text-body-md text-blueprint-muted">Interview prep for domain tracks, GitHub scans, and serious round-by-round practice.</p>
             </div>
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">

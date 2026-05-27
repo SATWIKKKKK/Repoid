@@ -226,7 +226,7 @@ export default function GithubProjectQuestions() {
                 </button>
               </div>
             </div>
-            {exportError ? <div className="mt-4 rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-body-md text-red-700 dark:text-red-200">{exportError}</div> : null}
+            {exportError ? <div className="mt-4 rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-body-md text-red-700 dark:text-red-200">{exportError.split(/\b(Upgrade)\b/i).map((part, i) => /^upgrade$/i.test(part) ? <button key={i} type="button" onClick={() => navigate('/pricing')} className="font-bold underline hover:opacity-80">{part}</button> : part)}</div> : null}
           </div>
 
           {data.sections.some((section) => section.questions.some((question) => !question.correctAnswer)) ? (
@@ -240,7 +240,7 @@ export default function GithubProjectQuestions() {
 
           <nav className="scrollbar-hidden sticky top-16 z-30 mt-6 flex gap-2 overflow-x-auto border-b border-blueprint-line bg-background/95 py-3 backdrop-blur">
             {data.sections.map((section) => (
-              <a key={section.sectionId} href={`#${section.sectionId}`} className="inline-flex shrink-0 items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-primary hover:text-white">
+              <a key={section.sectionId} href={`#${section.sectionId}`} className="inline-flex shrink-0 items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-primary hover:text-white dark:hover:bg-[#e8e4e4] dark:hover:text-[#111111]">
                 <span>{section.sectionTitle}</span>
                 <span className="rounded-full border border-current px-2 py-0.5">{section.questions.length}</span>
               </a>

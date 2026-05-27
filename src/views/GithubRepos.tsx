@@ -111,7 +111,7 @@ export default function GithubRepos() {
             </p>
           </div>
           {githubConnected ? (
-            <span className="inline-flex w-fit items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label font-bold text-primary dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-emerald-200">
+            <span className="inline-flex w-fit items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label font-bold text-primary">
               <CheckCircle2 size={15} /> GitHub connected
             </span>
           ) : (
@@ -137,7 +137,7 @@ export default function GithubRepos() {
                     </div>
                     <p className="mt-2 break-all text-sm text-blueprint-muted">{repo.repoUrl}</p>
                   </div>
-                  <span className="rounded-full border border-blueprint-line bg-card px-3 py-1 text-ui-label text-primary dark:border-emerald-500/50 dark:bg-emerald-600 dark:text-white">{repo.isLatestVersion === false ? 'Saved' : 'Latest'}</span>
+                  <span className="rounded-full border border-blueprint-line bg-card px-3 py-1 text-ui-label text-primary repo-latest-badge">{repo.isLatestVersion === false ? 'Saved' : 'Latest'}</span>
                 </div>
                 <p className="mt-4 text-body-md text-blueprint-muted">
                   Scanned {new Date(repo.scannedAt).toLocaleDateString()}

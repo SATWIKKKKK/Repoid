@@ -31,7 +31,7 @@ export const DATABASE_SCHEMA_SQL = `
     id TEXT PRIMARY KEY,
     user_id TEXT UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     sidebar_open BOOLEAN DEFAULT FALSE,
-    theme TEXT DEFAULT 'light',
+    theme TEXT DEFAULT 'dark',
     domain TEXT DEFAULT '',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -39,6 +39,7 @@ export const DATABASE_SCHEMA_SQL = `
 
   ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS domain TEXT DEFAULT '';
   ALTER TABLE user_preferences ALTER COLUMN domain SET DEFAULT '';
+  ALTER TABLE user_preferences ALTER COLUMN theme SET DEFAULT 'dark';
 
   CREATE TABLE IF NOT EXISTS questions (
     id TEXT PRIMARY KEY,
@@ -434,6 +435,11 @@ export const DATABASE_SCHEMA_SQL = `
     current_period_end TIMESTAMPTZ,
     billing_interval TEXT DEFAULT 'monthly',
     seats INTEGER NOT NULL DEFAULT 1,
+    expired_plan TEXT,
+    expired_billing_interval TEXT,
+    expired_at TIMESTAMPTZ,
+    expiry_notice_seen_at TIMESTAMPTZ,
+    renewal_notice_seen_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   );
@@ -444,6 +450,11 @@ export const DATABASE_SCHEMA_SQL = `
   ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS razorpay_payment_id TEXT;
   ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS billing_interval TEXT DEFAULT 'monthly';
   ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS seats INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS expired_plan TEXT;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS expired_billing_interval TEXT;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS expiry_notice_seen_at TIMESTAMPTZ;
+  ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS renewal_notice_seen_at TIMESTAMPTZ;
   CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status ON subscriptions(user_id, status);
 
   CREATE TABLE IF NOT EXISTS billing_orders (

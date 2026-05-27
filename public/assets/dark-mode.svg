@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <style>
+    .dark-bg { fill: #050505; } /* DEEP DARK BACKGROUND */
+    .logo-dark { fill: none; stroke: #f4f4f4; stroke-width: 16; stroke-linecap: round; stroke-linejoin: round; } /* LOGO/TEXT COLOR */
+    .node-dark { fill: #050505; stroke: #f4f4f4; stroke-width: 16; } /* Fills with background color to remain "hollow" */
+  </style>
+
+  <rect class="dark-bg" width="400" height="400"/>
+
+  <path class="logo-dark" d="M140,80v240" /> <path class="logo-dark" d="M140,80c130,0 130,140 0,140" /> <path class="logo-dark" d="M140,220c60,0 60,100 120,100" /> <circle class="node-dark" cx="140" cy="80" r="22" /> <circle class="node-dark" cx="140" cy="320" r="22" /> <circle class="node-dark" cx="260" cy="320" r="22" /> </svg>

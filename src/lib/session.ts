@@ -114,6 +114,11 @@ export function clearSessionCookie() {
   document.cookie = `${SESSION_COOKIE_NAME}=; path=/; max-age=0; samesite=lax`;
 }
 
+export function clearStoredUserCache() {
+  localStorage.removeItem(USER_STORAGE_KEY);
+  clearSessionCookie();
+}
+
 export function persistSessionUser(user: SessionUser) {
   const previousIdentity = sessionIdentity(getStoredUser());
   const nextIdentity = sessionIdentity(user);
@@ -133,7 +138,6 @@ export async function clearSessionState() {
     // Ignore signout network issues for local cache clears.
   }
 
-  localStorage.removeItem(USER_STORAGE_KEY);
+  clearStoredUserCache();
   clearUserScopedLocalState();
-  clearSessionCookie();
 }

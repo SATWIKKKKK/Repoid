@@ -195,7 +195,7 @@ export default function Workflows() {
             <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-blueprint-line bg-card">
               <LoaderCircle size={22} className="animate-spin text-primary" />
             </div>
-            <p className="mt-4 text-body-lg font-semibold text-primary">framing qs for you...</p>
+            <p className="mt-4 text-body-lg font-semibold text-primary">Loading...</p>
           </div>
         </div>
       ) : null}
@@ -247,7 +247,7 @@ export default function Workflows() {
                     aria-controls="practice-topic-suggestions"
                   />
                 </div>
-                {filteredSuggestions.length ? (
+                {!error && filteredSuggestions.length ? (
                   <div id="practice-topic-suggestions" className="absolute left-0 right-0 top-[calc(100%+8px)] z-20 overflow-hidden rounded-2xl border border-blueprint-line bg-white shadow-xl">
                     {filteredSuggestions.map((suggestion, index) => (
                       <button
@@ -309,7 +309,7 @@ export default function Workflows() {
                       }}
                       className="rounded-full bg-red-700 px-4 py-2 text-ui-label text-white"
                     >
-                      Retry generation
+                      Retry Again
                     </button>
                   ) : null}
                 </div>
@@ -338,7 +338,7 @@ export default function Workflows() {
             <div className="flex items-center gap-2 text-ui-label text-blueprint-muted">
               Featured topics for {domainLabel}
             </div>
-            <div className="mt-3 flex gap-2 overflow-x-auto pb-2 lg:grid lg:grid-cols-6 lg:overflow-visible lg:pb-0">
+            <div className="mt-3 flex flex-wrap gap-2 pb-2">
               {displayedSuggestions.map((suggestion) => (
                 <button
                   key={suggestion}
@@ -347,7 +347,7 @@ export default function Workflows() {
                     setTopic(suggestion);
                     void launchTopic(suggestion);
                   }}
-                  className="shrink-0 rounded-full border border-blueprint-line bg-white px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]"
+                  className="rounded-full border border-blueprint-line bg-white px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]"
                 >
                   {suggestion}
                 </button>

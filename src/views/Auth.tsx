@@ -92,7 +92,7 @@ export default function Auth({ onAuthSuccess, onBackToLanding, initialMode = 'lo
       <main className="relative z-10 flex min-h-screen items-center justify-center px-4 py-6">
         <div className="w-full max-w-[480px] rounded-3xl border border-blueprint-line bg-white/90 p-6 shadow-[0_20px_40px_-15px_rgba(0,0,0,0.04)] sm:p-8">
           <div className="mb-5">
-            <button type="button" onClick={() => navigate('/dashboard')} className="text-ui-label text-blueprint-muted transition-colors hover:text-primary">
+            <button type="button" onClick={() => navigate('/')} className="text-ui-label text-blueprint-muted transition-colors hover:text-primary">
               Repoid
             </button>
             <h1 className="mt-4 text-headline-lg text-primary">

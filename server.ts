@@ -55,9 +55,9 @@ const AUTH_MAX_REQUESTS = 20;
 const ADMIN_SESSION_MAX_AGE_SECONDS = 60 * 60 * 8;
 const DEEPSEEK_CHAT_MODEL = 'deepseek-chat';
 const DEEPSEEK_BASE_URL = (process.env.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com').replace(/\/$/, '');
-const GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS = Number(process.env.GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS ?? 8000);
-const GITHUB_SCAN_INPUT_CHAR_BUDGET = Number(process.env.GITHUB_SCAN_INPUT_CHAR_BUDGET ?? 60000);
-const GITHUB_SCAN_MAX_TOKENS = Number(process.env.GITHUB_SCAN_MAX_TOKENS ?? 18000);
+const GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS = Math.min(25_000, Math.max(5_000, Number(process.env.GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS ?? 20_000)));
+const GITHUB_SCAN_INPUT_CHAR_BUDGET = 12_000;
+const GITHUB_SCAN_MAX_TOKENS = Math.min(8_000, Math.max(2_000, Number(process.env.GITHUB_SCAN_MAX_TOKENS ?? 7_000)));
 const GITHUB_SCAN_MODEL = normalizeDeepSeekModel(process.env.GITHUB_SCAN_MODEL?.trim() || DEEPSEEK_CHAT_MODEL);
 const GITHUB_SCAN_FALLBACK_MODELS = String(process.env.GITHUB_SCAN_FALLBACK_MODELS ?? '')
   .split(',')
@@ -65,10 +65,13 @@ const GITHUB_SCAN_FALLBACK_MODELS = String(process.env.GITHUB_SCAN_FALLBACK_MODE
   .filter(Boolean)
   .map((model) => normalizeDeepSeekModel(model))
   .filter(Boolean);
-const GITHUB_SCAN_TIMEOUT_MS = Number(process.env.GITHUB_SCAN_TIMEOUT_MS ?? 25000);
+const GITHUB_SCAN_TIMEOUT_MS = Math.min(20_000, Math.max(5_000, Number(process.env.GITHUB_SCAN_TIMEOUT_MS ?? 20_000)));
 const GITHUB_SCAN_TEMPERATURE = Number(process.env.GITHUB_SCAN_TEMPERATURE ?? 0.1);
 const GITHUB_SCAN_TOP_P = Number(process.env.GITHUB_SCAN_TOP_P ?? 0.95);
-const GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET = Number(process.env.GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET ?? 60000);
+const GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET = Math.min(35_000, Math.max(12_000, Number(process.env.GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET ?? 35_000)));
+const GITHUB_SCAN_STAGED_COMPACT_CONTEXT_CHAR_BUDGET = Math.max(8_000, Math.min(GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET, Number(process.env.GITHUB_SCAN_STAGED_COMPACT_CONTEXT_CHAR_BUDGET ?? 18_000)));
+const GITHUB_SCAN_STAGED_COMPACT_README_CHAR_BUDGET = Math.max(2_000, Number(process.env.GITHUB_SCAN_STAGED_COMPACT_README_CHAR_BUDGET ?? 4_000));
+const GITHUB_SCAN_FAST_MODE = String(process.env.GITHUB_SCAN_FAST_MODE ?? 'true').trim().toLowerCase() !== 'false';
 const GITHUB_SCAN_ENGINE_VERSION = 'direct-deepseek-chat-2026-05-24';
 const EMBED_VITE_DEV_SERVER = String(process.env.EMBED_VITE_DEV_SERVER ?? 'true').trim().toLowerCase() !== 'false';
 const SCENARIO_GENERATION_MODEL = normalizeDeepSeekModel(process.env.SCENARIO_GENERATION_MODEL?.trim() || DEEPSEEK_CHAT_MODEL);
@@ -148,6 +151,19 @@ type SubscriptionRow = {
   current_period_end: string | null;
   billing_interval: BillingInterval | null;
   seats: number | null;
+  expired_plan: BillingPlan | null;
+  expired_billing_interval: BillingInterval | null;
+  expired_at: string | null;
+  expiry_notice_seen_at: string | null;
+  renewal_notice_seen_at: string | null;
+};
+
+type SubscriptionNotice = {
+  type: 'expired' | 'expiring';
+  plan: BillingPlan;
+  billingInterval: BillingInterval;
+  currentPeriodEnd: string | null;
+  expiredAt?: string | null;
 };
 
 type EmailOtpPurpose = 'email_change';
@@ -571,6 +587,19 @@ function parseStructuredPayload(rawText: string) {
   }
 }
 
+function trimRawJsonArrayPayload(rawText: string) {
+  const start = rawText.indexOf('[');
+  const end = rawText.lastIndexOf(']');
+  if (start === -1 || end === -1 || end < start) return null;
+  return rawText.slice(start, end + 1).trim();
+}
+
+function toRawJsonArrayParseError(rawText: string) {
+  const error = new Error('model_json_parse_failed') as Error & { rawResponse?: string };
+  error.rawResponse = rawText;
+  return error;
+}
+
 function githubScanModelCandidates() {
   return Array.from(new Set([GITHUB_SCAN_MODEL, ...GITHUB_SCAN_FALLBACK_MODELS].filter(Boolean)));
 }
@@ -777,6 +806,93 @@ function deriveGithubConceptTag(value: unknown, fileReference: string, sectionTi
   return fileStem || sectionTitle || 'repo question';
 }
 
+function normalizeGithubQuestionPayload(question: unknown, sectionTitle: string, fallbackId: string): GithubQuestion | null {
+  const questionSource = question && typeof question === 'object' ? question as Record<string, unknown> : {};
+  const type = normalizeGithubQuestionType(questionSource.type);
+  const fileReference = String(
+    questionSource.fileReference
+      ?? questionSource.file
+      ?? questionSource.filePath
+      ?? questionSource.path
+      ?? questionSource.sourceFile
+      ?? '',
+  ).trim();
+  const questionText = String(questionSource.questionText ?? questionSource.question ?? '').trim();
+  const correctAnswer = String(questionSource.correctAnswer ?? questionSource.answer ?? questionSource.expectedAnswer ?? '').trim();
+  if (!questionText || !fileReference || !correctAnswer) return null;
+
+  return {
+    id: String(questionSource.id ?? fallbackId).trim() || fallbackId,
+    questionText,
+    type,
+    difficulty: normalizeGithubQuestionDifficulty(questionSource.difficulty),
+    fileReference,
+    conceptTag: deriveGithubConceptTag(
+      questionSource.conceptTag ?? questionSource.concept ?? questionSource.tag ?? questionSource.topic,
+      fileReference,
+      sectionTitle,
+    ),
+    options: type === 'mcq' ? toStringArray(questionSource.options).slice(0, 4) : undefined,
+    correctAnswer,
+  };
+}
+
+function normalizeGithubQuestionArray(payload: unknown, sectionTitle: string) {
+  const questions = Array.isArray(payload)
+    ? payload
+    : payload && typeof payload === 'object' && Array.isArray((payload as { questions?: unknown }).questions)
+      ? (payload as { questions: unknown[] }).questions
+      : [];
+
+  return questions
+    .map((question, index) => normalizeGithubQuestionPayload(question, sectionTitle, `q${index + 1}`))
+    .filter((question): question is GithubQuestion => Boolean(question));
+}
+
+function normalizeGithubArchitectureQuestionArray(payload: unknown, context: GithubRepoContext) {
+  const sourceQuestions = Array.isArray(payload)
+    ? payload
+    : payload && typeof payload === 'object' && Array.isArray((payload as { questions?: unknown }).questions)
+      ? (payload as { questions: unknown[] }).questions
+      : [];
+  const repoFiles = extractRepoFilesFromContext(context);
+  const findReferencedFile = (text: string) => repoFiles.find((file) => text.includes(file));
+
+  return sourceQuestions
+    .map((question, index): GithubQuestion | null => {
+      const questionSource = question && typeof question === 'object' ? question as Record<string, unknown> : {};
+      const rawQuestionText = typeof question === 'string'
+        ? question
+        : String(questionSource.questionText ?? questionSource.question ?? questionSource.prompt ?? '').trim();
+      const questionText = rawQuestionText.trim();
+      const fileReference = String(
+        questionSource.fileReference
+          ?? questionSource.file
+          ?? questionSource.filePath
+          ?? questionSource.path
+          ?? findReferencedFile(questionText)
+          ?? repoFiles[index % Math.max(1, repoFiles.length)]
+          ?? context.repoName,
+      ).trim();
+      if (!questionText || !fileReference) return null;
+
+      return {
+        id: String(questionSource.id ?? `q${index + 1}`).trim() || `q${index + 1}`,
+        questionText,
+        type: normalizeGithubQuestionType(questionSource.type ?? 'open'),
+        difficulty: normalizeGithubQuestionDifficulty(questionSource.difficulty ?? 'medium'),
+        fileReference,
+        conceptTag: deriveGithubConceptTag(questionSource.conceptTag ?? questionSource.concept ?? 'Architecture design', fileReference, 'Project Overview'),
+        correctAnswer: String(
+          questionSource.correctAnswer
+            ?? questionSource.answer
+            ?? `A strong answer should explain the architecture or system design tradeoff visible in ${fileReference} and connect it to the codebase boundaries, data flow, and operational constraints.`,
+        ).trim(),
+      };
+    })
+    .filter((question): question is GithubQuestion => Boolean(question));
+}
+
 function normalizeGithubQuestionSet(payload: unknown): GithubQuestionSet {
   const source = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
   const sections = Array.isArray(source.sections) ? source.sections : [];
@@ -791,33 +907,9 @@ function normalizeGithubQuestionSet(payload: unknown): GithubQuestionSet {
       sectionId,
       sectionTitle,
       sectionDescription,
-      questions: questions.map((question) => {
-        const questionSource = question && typeof question === 'object' ? question as Record<string, unknown> : {};
-        const type = normalizeGithubQuestionType(questionSource.type);
-        const fileReference = String(
-          questionSource.fileReference
-            ?? questionSource.file
-            ?? questionSource.filePath
-            ?? questionSource.path
-            ?? questionSource.sourceFile
-            ?? '',
-        ).trim();
-
-        return {
-          id: String(questionSource.id ?? '').trim(),
-          questionText: String(questionSource.questionText ?? questionSource.question ?? '').trim(),
-          type,
-          difficulty: normalizeGithubQuestionDifficulty(questionSource.difficulty),
-          fileReference,
-          conceptTag: deriveGithubConceptTag(
-            questionSource.conceptTag ?? questionSource.concept ?? questionSource.tag ?? questionSource.topic,
-            fileReference,
-            sectionTitle,
-          ),
-          options: type === 'mcq' ? toStringArray(questionSource.options).slice(0, 4) : undefined,
-          correctAnswer: String(questionSource.correctAnswer ?? questionSource.answer ?? questionSource.expectedAnswer ?? '').trim(),
-        };
-      }).filter((question) => question.questionText && question.fileReference && question.correctAnswer),
+      questions: questions
+        .map((question, questionIndex) => normalizeGithubQuestionPayload(question, sectionTitle, `q${sectionIndex + 1}-${questionIndex + 1}`))
+        .filter((question): question is GithubQuestion => Boolean(question)),
     };
   }).filter((section) => section.sectionId && section.sectionTitle && section.questions.length);
 
@@ -4174,8 +4266,8 @@ async function generatePracticeSessionQuestions(params: {
   const repoContext = await getLatestRepoContext(params.userId);
 
   const maxAttempts = 2;
-  const comprehensionPhaseTimeoutMs = Math.max(8_000, Number(process.env.PRACTICE_COMPREHENSION_TIMEOUT_MS ?? 18_000));
-  const codeReadingSubphaseTimeoutMs = Math.max(8_000, Number(process.env.PRACTICE_CODE_READING_TIMEOUT_MS ?? 18_000));
+  const comprehensionPhaseTimeoutMs = Math.max(10_000, Number(process.env.PRACTICE_COMPREHENSION_TIMEOUT_MS ?? 30_000));
+  const codeReadingSubphaseTimeoutMs = Math.max(10_000, Number(process.env.PRACTICE_CODE_READING_TIMEOUT_MS ?? 30_000));
   let questions: PracticeSessionQuestion[] = [];
   let lastError: string | null = null;
 
@@ -4199,14 +4291,24 @@ async function generatePracticeSessionQuestions(params: {
     const start = Date.now();
     console.log('[practice-gen] start', { topic: params.topic, domain: params.domain, userId: params.userId });
     try {
-      const generatePhase = async (phase: 'phase1' | 'phase2a' | 'phase2b', extraSeenHashes: string[] = []) => {
-        const isComprehensionPhase = phase === 'phase1';
-        const phaseLabel = phase;
-        const expectedCount = isComprehensionPhase ? 20 : 10;
-        const timeoutMs = isComprehensionPhase ? comprehensionPhaseTimeoutMs : codeReadingSubphaseTimeoutMs;
-        const maxTokens = isComprehensionPhase ? 7000 : 3500;
-        const phaseSeed = phase === 'phase1' ? 'phase-1' : phase === 'phase2a' ? 'phase-2a' : 'phase-2b';
-        const codeReadingBatch = phase === 'phase2b' ? '2 of 2' : '1 of 2';
+      type PracticeGenerationBatch = {
+        phase: 'phase1a' | 'phase1b' | 'phase2a' | 'phase2b';
+        expectedType: PracticeSessionQuestion['type'];
+        timeoutMs: number;
+        maxTokens: number;
+        phaseSeed: string;
+        codeReadingBatch?: '1 of 2' | '2 of 2';
+        promptRules: string;
+      };
+
+      const generatePhase = async (batch: PracticeGenerationBatch, extraSeenHashes: string[] = []) => {
+        const isComprehensionPhase = batch.expectedType !== 'code-reading';
+        const phaseLabel = batch.phase;
+        const expectedCount = 10;
+        const timeoutMs = batch.timeoutMs;
+        const maxTokens = batch.maxTokens;
+        const phaseSeed = batch.phaseSeed;
+        const codeReadingBatch = batch.codeReadingBatch ?? '1 of 2';
         const promptSeenHashes = JSON.stringify([...seenHashes, ...extraSeenHashes]);
         const modelConfig = resolveModelConfig(DEEPSEEK_CHAT_MODEL);
         const endpoint = modelConfig.provider === 'openai-compat'
@@ -4221,52 +4323,113 @@ async function generatePracticeSessionQuestions(params: {
           timeoutMs,
           maxTokens,
         });
-        const systemPrompt = `You are a senior ${PRACTICE_DOMAIN_LABELS[params.domain]} engineer. Questions must test real engineering judgment. No trivia. No memorization-only questions. Return only valid JSON matching the schema. Your entire response must be a single JSON object. Start your response with { and end with }. Do not include any text before or after the JSON object. Do not use markdown code fences.`;
-        const userPrompt = isComprehensionPhase
-          ? `Domain: ${PRACTICE_DOMAIN_LABELS[params.domain]}. Topic: ${params.topic}. User level: ${params.level || 'intermediate'}. Repo context: ${repoContext || 'none'}. Session seed: ${sessionSeed}:${phaseSeed}. Previously seen question hashes: ${promptSeenHashes}. Generate exactly 20 questions: 10 MCQ and 10 fill-in-the-blank. Do not generate code-reading questions in this phase. Return JSON: { topic: string, domain: string, totalQuestions: 20, questions: [ { id: string, type: 'mcq' | 'fill-blank', question: string, codeBlock: null, blank: string | null, options: string[] | null, correctAnswer: string, explanation: string, difficulty: 'easy' | 'medium' | 'hard', tags: string[] } ] }. Rules: MCQ must have exactly 4 options. fill-blank must have a non-trivial blank - a technical term, pattern name, or decision, not a single letter. For MCQ and fill-blank questions, the question field must contain only plain prose. Never use markdown backtick fences inside the question string. If a question needs code to be shown, do not emit it in this phase; that question belongs in the code-reading phase where the code goes in codeBlock. Count the questions before returning. The questions array for this call must have length 20. Vary difficulty: roughly 30% easy, 50% medium, 20% hard.`
-          : `Domain: ${PRACTICE_DOMAIN_LABELS[params.domain]}. Topic: ${params.topic}. User level: ${params.level || 'intermediate'}. Repo context: ${repoContext || 'none'}. Session seed: ${sessionSeed}:${phaseSeed}. Previously seen question hashes: ${promptSeenHashes}. Code-reading batch: ${codeReadingBatch}. Generate exactly 10 code-reading questions. Each must include a realistic codeBlock of 10-25 lines. Your entire response is a single JSON object starting with { and ending with }. No markdown fences. No preamble. Return JSON: { topic: string, domain: string, totalQuestions: 10, questions: [ { id: string, type: 'code-reading', question: string, codeBlock: string, blank: string | null, options: string[] | null, correctAnswer: string, explanation: string, difficulty: 'easy' | 'medium' | 'hard', tags: string[] } ] }. Rules: The questions array for this call must have length 10. Each question must ask a specific judgment question about the code - what is wrong, what will happen, what should be changed, what pattern is this, or what is the output. The question field must contain only plain prose. Put code only in codeBlock. Never use markdown backtick fences inside the question string. If options are present, provide exactly 4 options; otherwise set options to null and use a short answer correctAnswer. Code snippets must be real-world patterns, not toy examples. Escape JSON strings correctly. Vary difficulty: roughly 30% easy, 50% medium, 20% hard.`;
+        const systemPrompt = `You are a senior ${PRACTICE_DOMAIN_LABELS[params.domain]} engineer. Questions must test real engineering judgment. No trivia. No memorization-only questions. Return only valid JSON. Your entire response must be a single JSON array. Start your response with [ and end with ]. Do not include any text before or after the JSON array. Do not use markdown code fences.`;
+        const userPrompt = `Generate exactly 10 interview questions for ${params.topic} at ${params.level || 'intermediate'}. Domain: ${PRACTICE_DOMAIN_LABELS[params.domain]}. Repo context: ${repoContext || 'none'}. Session seed: ${sessionSeed}:${phaseSeed}. Previously seen question hashes: ${promptSeenHashes}.${isComprehensionPhase ? '' : ` Code-reading batch: ${codeReadingBatch}.`} Return a JSON array with exactly 10 items using this shape: [{ id: string, type: 'mcq' | 'fill-blank' | 'code-reading', question: string, codeBlock: string | null, blank: string | null, options: string[] | null, correctAnswer: string, explanation: string, difficulty: 'easy' | 'medium' | 'hard', tags: string[] }]. ${batch.promptRules} Return ONLY a raw JSON array. No markdown, no code fences, no explanation before or after. Start your response with [ and end with ].`;
 
         const phaseStartedAt = Date.now();
         try {
-          const generated = await runPhaseWithTimeout(phaseLabel, timeoutMs, () => callStructuredModel(
-            systemPrompt,
-            userPrompt,
-            (payload) => {
-              const source = payload && typeof payload === 'object' ? payload as { questions?: unknown } : {};
-              const rawQuestions = Array.isArray(source.questions) ? source.questions : [];
-              console.log(`[practice-gen] ${phaseLabel} raw count:`, rawQuestions.length);
-              const validation = validatePracticeSession(payload, expectedCount);
-              console.log('[practice-gen] after-validation count:', validation.validQuestions.length, {
-                phase: phaseLabel,
-                invalidCount: validation.invalidCount,
-              });
-              if (!validation.valid) {
-                console.warn('[practice-gen] validation-failed', {
-                  domain: params.domain,
-                  topic: params.topic,
-                  attempt,
-                  phase,
-                  invalidCount: validation.invalidCount,
-                  invalidIndexes: validation.invalidIndexes.slice(0, 12),
-                  invalidDetails: validation.invalidDetails.slice(0, 12),
+          const generated = await runPhaseWithTimeout(phaseLabel, timeoutMs, async () => {
+            for (let batchAttempt = 1; batchAttempt <= 2; batchAttempt += 1) {
+              try {
+                const modelResult = await callTextModel(systemPrompt, userPrompt, {
+                  maxTokens,
+                  timeoutMs,
+                  model: DEEPSEEK_CHAT_MODEL,
+                  temperature: 0.7,
+                  abortSignal: params.abortSignal,
                 });
-                if (validation.invalidCount > 4) {
-                  throw new Error(`practice_validation_failed:${phase}:${validation.invalidCount}`);
+                const trimmedText = trimRawJsonArrayPayload(modelResult.text);
+                if (!trimmedText) {
+                  throw toRawJsonArrayParseError(modelResult.text);
                 }
+                let parsed: unknown;
+                try {
+                  parsed = parseStructuredPayload(trimmedText);
+                } catch {
+                  throw toRawJsonArrayParseError(modelResult.text);
+                }
+                const payload = Array.isArray(parsed) ? { questions: parsed } : parsed;
+                const source = payload && typeof payload === 'object' ? payload as { questions?: unknown } : {};
+                const rawQuestions = Array.isArray(source.questions) ? source.questions : [];
+                console.log(`[practice-gen] ${phaseLabel} raw count:`, rawQuestions.length, { batchAttempt });
+                const validation = validatePracticeSession(payload, expectedCount);
+                console.log('[practice-gen] after-validation count:', validation.validQuestions.length, {
+                  phase: phaseLabel,
+                  invalidCount: validation.invalidCount,
+                  batchAttempt,
+                });
+                if (!validation.valid) {
+                  console.warn('[practice-gen] validation-failed', {
+                    domain: params.domain,
+                    topic: params.topic,
+                    attempt,
+                    phase: phaseLabel,
+                    batchAttempt,
+                    invalidCount: validation.invalidCount,
+                    invalidIndexes: validation.invalidIndexes.slice(0, 12),
+                    invalidDetails: validation.invalidDetails.slice(0, 12),
+                  });
+                  if (validation.invalidCount > 4) {
+                    throw new Error(`practice_validation_failed:${phaseLabel}:${validation.invalidCount}`);
+                  }
+                }
+                const normalizedQuestions = validation.validQuestions
+                  .map((item, index) => normalizePracticeQuestionPayload(item, index, params.topic))
+                  .filter((item): item is PracticeSessionQuestion => Boolean(item));
+                if (batch.expectedType === 'code-reading') {
+                  const codeReadingQuestions = normalizedQuestions.filter((item) => item.type === 'code-reading');
+                  if (codeReadingQuestions.length < expectedCount) {
+                    console.warn('[practice-gen] phase-type-mismatch', {
+                      domain: params.domain,
+                      topic: params.topic,
+                      attempt,
+                      phase: phaseLabel,
+                      batchAttempt,
+                      codeReading: codeReadingQuestions.length,
+                      total: normalizedQuestions.length,
+                    });
+                    throw new Error(`practice_phase_type_mismatch:${phaseLabel}:code=${codeReadingQuestions.length}`);
+                  }
+                  return {
+                    result: codeReadingQuestions.slice(0, expectedCount),
+                    rawLength: modelResult.rawLength,
+                  };
+                }
+
+                const typedQuestions = normalizedQuestions.filter((item) => item.type === batch.expectedType);
+                if (typedQuestions.length < expectedCount) {
+                  console.warn('[practice-gen] phase-type-mismatch', {
+                    domain: params.domain,
+                    topic: params.topic,
+                    attempt,
+                    phase: phaseLabel,
+                    batchAttempt,
+                    expectedType: batch.expectedType,
+                    matched: typedQuestions.length,
+                    total: normalizedQuestions.length,
+                  });
+                  throw new Error(`practice_phase_type_mismatch:${phaseLabel}:${batch.expectedType}=${typedQuestions.length}`);
+                }
+                return {
+                  result: typedQuestions.slice(0, expectedCount),
+                  rawLength: modelResult.rawLength,
+                };
+              } catch (error) {
+                if (batchAttempt < 2 && error instanceof Error && error.message === 'model_json_parse_failed') {
+                  console.warn('[practice-gen] batch-retrying-after-parse-failure', {
+                    domain: params.domain,
+                    topic: params.topic,
+                    attempt,
+                    phase: phaseLabel,
+                    batchAttempt,
+                  });
+                  continue;
+                }
+                throw error;
               }
-              return validation.validQuestions
-                .map((item, index) => normalizePracticeQuestionPayload(item, index, params.topic))
-                .filter((item): item is PracticeSessionQuestion => Boolean(item));
-            },
-            {
-              maxTokens,
-              timeoutMs,
-              model: DEEPSEEK_CHAT_MODEL,
-              temperature: 0.7,
-              stream: false,
-              abortSignal: params.abortSignal,
-            },
-          ));
+            }
+            throw new Error(`practice_phase_failed:${phaseLabel}`);
+          });
           console.log(`[practice-gen] ${phaseLabel} count:`, generated.result.length);
           console.log(`[practice-gen] ${phaseLabel} rawLength:`, generated.rawLength);
           return generated.result;
@@ -4275,14 +4438,51 @@ async function generatePracticeSessionQuestions(params: {
         }
       };
 
-      const [comprehensionQuestions, [phase2aQuestions, phase2bQuestions]] = await Promise.all([
-        generatePhase('phase1'),
-        Promise.all([generatePhase('phase2a'), generatePhase('phase2b')]),
+      const phase1aPromise = generatePhase({
+          phase: 'phase1a',
+          expectedType: 'mcq',
+          timeoutMs: comprehensionPhaseTimeoutMs,
+          maxTokens: 3500,
+          phaseSeed: 'phase-1a',
+          promptRules: `Every question.type must be exactly 'mcq'. Never return 'fill-blank' or 'code-reading' in this batch. Each question must have exactly 4 options. Set codeBlock to null and blank to null for every question. The question field must contain only plain prose. Count the items before returning. Vary difficulty: roughly 30% easy, 50% medium, 20% hard.`,
+        });
+      const phase1bPromise = generatePhase({
+          phase: 'phase1b',
+          expectedType: 'fill-blank',
+          timeoutMs: comprehensionPhaseTimeoutMs,
+          maxTokens: 3500,
+          phaseSeed: 'phase-1b',
+          promptRules: `Every question.type must be exactly 'fill-blank'. Never return 'mcq' or 'code-reading' in this batch. Each question must set options to null and include a non-trivial blank: a technical term, pattern name, or decision, not a single letter. Set codeBlock to null for every question. The question field must contain only plain prose. Count the items before returning. Vary difficulty: roughly 30% easy, 50% medium, 20% hard.`,
+        });
+      const phase2aPromise = generatePhase({
+          phase: 'phase2a',
+          expectedType: 'code-reading',
+          timeoutMs: codeReadingSubphaseTimeoutMs,
+          maxTokens: 3500,
+          phaseSeed: 'phase-2a',
+          codeReadingBatch: '1 of 2',
+          promptRules: `Every question.type must be exactly 'code-reading'. Never return 'mcq' or 'fill-blank' in this batch. Each question must include a realistic codeBlock of 10-25 lines. The question field must contain only plain prose. Put code only in codeBlock. If options are present, provide exactly 4 options; otherwise set options to null and use a short answer correctAnswer. Code snippets must be real-world patterns, not toy examples. Count the items before returning. Vary difficulty: roughly 30% easy, 50% medium, 20% hard.`,
+        });
+      const phase2bPromise = generatePhase({
+          phase: 'phase2b',
+          expectedType: 'code-reading',
+          timeoutMs: codeReadingSubphaseTimeoutMs,
+          maxTokens: 3500,
+          phaseSeed: 'phase-2b',
+          codeReadingBatch: '2 of 2',
+          promptRules: `Every question.type must be exactly 'code-reading'. Never return 'mcq' or 'fill-blank' in this batch. Each question must include a realistic codeBlock of 10-25 lines. The question field must contain only plain prose. Put code only in codeBlock. If options are present, provide exactly 4 options; otherwise set options to null and use a short answer correctAnswer. Code snippets must be different from batch 1 of 2 and must stay repo-grounded when repo context is available. Count the items before returning. Vary difficulty: roughly 30% easy, 50% medium, 20% hard.`,
+        });
+
+      const [phase1aQuestions, phase1bQuestions, phase2aQuestions, phase2bQuestions] = await Promise.all([
+        phase1aPromise,
+        phase1bPromise,
+        phase2aPromise,
+        phase2bPromise,
       ]);
 
       console.log('[practice-gen] done', { topic: params.topic, domain: params.domain, durationMs: Date.now() - start });
-      const mcq = comprehensionQuestions.filter((question) => question.type === 'mcq').slice(0, 10);
-      const fillBlank = comprehensionQuestions.filter((question) => question.type === 'fill-blank').slice(0, 10);
+      const mcq = phase1aQuestions.filter((question) => question.type === 'mcq').slice(0, 10);
+      const fillBlank = phase1bQuestions.filter((question) => question.type === 'fill-blank').slice(0, 10);
       const codeReading = [...phase2aQuestions, ...phase2bQuestions].filter((question) => question.type === 'code-reading').slice(0, 20);
       questions = [...mcq, ...fillBlank, ...codeReading];
       const mergedValidation = validatePracticeSession({ questions }, 40);
@@ -4698,6 +4898,40 @@ async function callGithubStructuredModel<T>(
   throw lastError instanceof Error ? lastError : new Error('model_generation_failed');
 }
 
+async function callGithubTextModel(
+  systemPrompt: string,
+  userPrompt: string,
+  options: { maxTokens?: number; timeoutMs?: number; temperature?: number; topP?: number; jobId?: string; repoName?: string; stage?: string } = {},
+): Promise<{ text: string; provider: string; model: string; rawLength: number }> {
+  let lastError: unknown = null;
+  for (const model of githubScanModelCandidates()) {
+    try {
+      return await callTextModel(systemPrompt, userPrompt, {
+        model,
+        maxTokens: options.maxTokens,
+        timeoutMs: options.timeoutMs,
+        temperature: options.temperature,
+        topP: options.topP,
+      });
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error ?? '');
+      console.warn('GitHub repo scan model attempt failed', {
+        jobId: options.jobId,
+        repoName: options.repoName,
+        stage: options.stage,
+        model,
+        error: message,
+      });
+      if (!isRetryableGithubModelError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('model_generation_failed');
+}
+
 function parseGitHubRepository(input: string): { owner: string; repo: string } | null {
   const match = input.trim().match(/github\.com\/(.+?)\/(.+?)(?:\.git|\/|$)/i);
   if (!match) return null;
@@ -4821,11 +5055,71 @@ type GithubRepoContext = {
 
 type RepoFileCategory = 'auth' | 'schema' | 'routes' | 'stack' | 'readme' | 'env' | 'components' | 'other';
 
+type RepoCommitSummary = {
+  sha?: string;
+};
+
+type RepoCommitFileSummary = {
+  filename?: string;
+  changes?: number;
+  additions?: number;
+  deletions?: number;
+};
+
+function isGithubReadmeFile(filePath: string) {
+  return /(^|\/)readme(\.[^.]+)?$/i.test(filePath);
+}
+
+function isGithubConfigFile(filePath: string) {
+  return /(^|\/)(package\.json|requirements\.txt|pyproject\.toml|go\.mod|cargo\.toml|dockerfile|docker-compose\.(yml|yaml)|compose\.(yml|yaml)|vercel\.json|netlify\.toml|tsconfig(\.[^.]+)?\.json|jsconfig(\.[^.]+)?\.json|vite\.config\.(ts|js|mjs|cjs)|next\.config\.(ts|js|mjs|cjs)|tailwind\.config\.(ts|js|mjs|cjs)|postcss\.config\.(ts|js|mjs|cjs)|nuxt\.config\.(ts|js|mjs|cjs)|svelte\.config\.(ts|js|mjs|cjs)|astro\.config\.(ts|js|mjs|cjs)|webpack\.config\.(ts|js|mjs|cjs)|babel\.config\.(ts|js|mjs|cjs|json)|jest\.config\.(ts|js|mjs|cjs)|pytest\.ini|\.github\/workflows\/[^\n]+\.(yml|yaml))$/i.test(filePath);
+}
+
+function isGithubEntryPointFile(filePath: string) {
+  return /(^|\/)(index|main|app|server|entry|cli)\.(tsx?|jsx?|py|go|rs|java|cs|php|rb|mjs|cjs|vue|svelte)$/i.test(filePath);
+}
+
+function githubRepoFileCharLimit(file: { path: string; category: RepoFileCategory }) {
+  if (isGithubReadmeFile(file.path)) return 3_500;
+  if (isGithubEntryPointFile(file.path)) return 2_800;
+  if (isGithubConfigFile(file.path) || file.category === 'stack') return 2_000;
+  if (file.category === 'auth' || file.category === 'schema' || file.category === 'routes') return 2_400;
+  return 1_800;
+}
+
+function githubRepoFileScore(file: { path: string; category: RepoFileCategory; lineChangeCount: number }) {
+  const lower = file.path.toLowerCase();
+  let score = file.lineChangeCount * 3;
+  if (isGithubReadmeFile(file.path)) score += 900;
+  if (isGithubEntryPointFile(file.path)) score += 750;
+  if (isGithubConfigFile(file.path)) score += 650;
+  if (file.category === 'auth' || file.category === 'schema' || file.category === 'routes') score += 320;
+  if (file.category === 'components') score += 180;
+  if (/(route|api|server|controller|handler|auth|middleware|schema|model|db|database|prisma)/i.test(lower)) score += 220;
+  if (/(test|spec|stories|mock|fixture|sample|example)/i.test(lower)) score -= 450;
+  score -= Math.min(50, Math.floor(file.path.length / 12));
+  return score;
+}
+
 function stripGithubFileForModel(filePath: string, content: string) {
   const lower = filePath.toLowerCase();
   if (/\.(css|scss|svg|lock|map|min\.js|d\.ts)$/i.test(lower)) return '';
-  if (/(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb|tailwind\.config|next\.config|vite\.config|tsconfig|postcss\.config)/i.test(lower)) {
+  if (/(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb)$/i.test(lower)) {
     return '';
+  }
+  if (isGithubReadmeFile(filePath)) {
+    return content
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/```[\s\S]*?```/g, '')
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return false;
+        if (/^!\[/.test(trimmed)) return false;
+        return true;
+      })
+      .join('\n')
+      .slice(0, 6_000);
   }
   const withoutBlockComments = content
     .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -4864,22 +5158,43 @@ export async function fetchGithubRepoForQuestionSet(repoUrlInput: string, access
   const repoData = await repoResponse.json().catch(() => ({})) as Record<string, unknown>;
   const defaultBranch = String(repoData.default_branch ?? 'main');
   const repoName = String(repoData.name ?? parsed.repo);
-  const [languagesResponse, treeResponse] = await Promise.all([
+  const [languagesResponse, treeResponse, recentCommitsResponse] = await Promise.all([
     fetch(`${repoUrl}/languages`, { headers }).catch(() => null),
     fetch(`${repoUrl}/git/trees/${encodeURIComponent(defaultBranch)}?recursive=1`, { headers }).catch(() => null),
+    fetch(`${repoUrl}/commits?sha=${encodeURIComponent(defaultBranch)}&per_page=6`, { headers }).catch(() => null),
   ]);
   const languagesData = languagesResponse?.ok ? await languagesResponse.json().catch(() => ({})) as Record<string, number> : {};
   if (treeResponse?.status === 403) throw new Error('rate_limited');
   if (treeResponse?.status === 404) throw new Error('private_repo');
   if (!treeResponse?.ok) throw new Error('github_fetch_failed');
   const treeData = await treeResponse.json().catch(() => ({})) as { tree?: RepoTreeItem[] };
+  const recentCommits = recentCommitsResponse?.ok
+    ? await recentCommitsResponse.json().catch(() => []) as RepoCommitSummary[]
+    : [];
   const codeExtensions = /\.(tsx?|jsx?|py|go|rs|java|cs|php|rb|sql|prisma|md|yml|yaml|toml|svelte|vue)$/i;
   const ignored = /(^|\/)(node_modules|dist|build|coverage|\.git|vendor|__pycache__|\.next|target)\//i;
+  const lineChangesByFile = new Map<string, number>();
+  await Promise.all(recentCommits.slice(0, 6).map(async (commit) => {
+    const sha = String(commit?.sha ?? '').trim();
+    if (!sha) return;
+    const commitResponse = await fetch(`${repoUrl}/commits/${encodeURIComponent(sha)}`, { headers }).catch(() => null);
+    if (!commitResponse?.ok) return;
+    const commitData = await commitResponse.json().catch(() => ({})) as { files?: RepoCommitFileSummary[] };
+    for (const file of commitData.files ?? []) {
+      const filename = String(file.filename ?? '').trim();
+      if (!filename || ignored.test(filename)) continue;
+      const changedLines = Number.isFinite(file.changes)
+        ? Number(file.changes)
+        : Number(file.additions ?? 0) + Number(file.deletions ?? 0);
+      if (changedLines <= 0) continue;
+      lineChangesByFile.set(filename, (lineChangesByFile.get(filename) ?? 0) + changedLines);
+    }
+  }));
   const categoryForPath = (filePath: string): RepoFileCategory | null => {
     const lower = filePath.toLowerCase();
     const fileName = lower.split('/').pop() ?? lower;
-    if (['package.json', 'requirements.txt', 'pyproject.toml', 'go.mod', 'cargo.toml'].includes(fileName)) return 'stack';
-    if (lower === 'readme.md') return 'readme';
+    if (isGithubReadmeFile(filePath)) return 'readme';
+    if (isGithubConfigFile(filePath)) return 'stack';
     if (fileName === '.env.example') return 'env';
     if (/(auth|middleware|guard)/i.test(filePath)) return 'auth';
     if (/(schema|model|migration|prisma)/i.test(filePath)) return 'schema';
@@ -4888,33 +5203,20 @@ export async function fetchGithubRepoForQuestionSet(repoUrlInput: string, access
     if (codeExtensions.test(filePath)) return 'other';
     return null;
   };
-  const priorityScore = (category: RepoFileCategory) => ({
-    auth: 0,
-    schema: 1,
-    routes: 2,
-    components: 3,
-    stack: 4,
-    readme: 5,
-    env: 6,
-    other: 7,
-  })[category];
-  const relevanceScore = (file: { path: string; category: RepoFileCategory }) => {
-    const lower = file.path.toLowerCase();
-    let score = 100 - (priorityScore(file.category) * 10);
-    if (/(route|api|server|controller|handler|auth|middleware|schema|model|db|database|prisma)/i.test(lower)) score += 30;
-    if (/(app|src|lib|server|api)\//i.test(lower)) score += 12;
-    if (/(test|spec|stories|mock|fixture|sample|example)/i.test(lower)) score -= 35;
-    score -= Math.min(20, Math.floor(file.path.length / 12));
-    return score;
-  };
   const files = (treeData.tree ?? [])
     .filter((item) => item.type === 'blob' && item.path && !ignored.test(item.path))
     .map((item) => {
       const category = categoryForPath(item.path!);
-      return category ? { path: item.path!, category } : null;
+      return category
+        ? {
+            path: item.path!,
+            category,
+            lineChangeCount: lineChangesByFile.get(item.path!) ?? 0,
+          }
+        : null;
     })
-    .filter((item): item is { path: string; category: RepoFileCategory } => Boolean(item))
-    .sort((a, b) => relevanceScore(b) - relevanceScore(a) || a.path.length - b.path.length || a.path.localeCompare(b.path))
+    .filter((item): item is { path: string; category: RepoFileCategory; lineChangeCount: number } => Boolean(item))
+    .sort((a, b) => githubRepoFileScore(b) - githubRepoFileScore(a) || b.lineChangeCount - a.lineChangeCount || a.path.length - b.path.length || a.path.localeCompare(b.path))
     .slice(0, 24);
   const fetchedFiles = await Promise.all(files.map(async (file) => {
     const rawUrl = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${encodeURIComponent(defaultBranch)}/${file.path.split('/').map(encodeURIComponent).join('/')}`;
@@ -4935,7 +5237,7 @@ export async function fetchGithubRepoForQuestionSet(repoUrlInput: string, access
 
   for (const file of fetchedFiles.filter(Boolean) as Array<{ path: string; category: RepoFileCategory; content: string }>) {
     if (remainingBudget <= 0) break;
-    const text = file.content.slice(0, Math.min(remainingBudget, file.category === 'components' || file.category === 'other' ? 10000 : 16000));
+    const text = file.content.slice(0, Math.min(remainingBudget, githubRepoFileCharLimit(file)));
     if (!text.trim()) continue;
     remainingBudget -= text.length;
     if (file.category === 'stack') {
@@ -5352,12 +5654,9 @@ function ensureGithubQuestionTargetCount(result: GithubQuestionSet, context: Git
 }
 
 function buildGithubQuestionUserPrompt(context: GithubRepoContext, options: { compact?: boolean } = {}) {
-  const fileContents = options.compact
-    ? context.fileContents.slice(0, 120000)
-    : context.fileContents;
-  const readmeContent = options.compact
-    ? context.readmeContent.slice(0, 16000)
-    : context.readmeContent;
+  const readmeBudget = options.compact ? 3_000 : 4_000;
+  const readmeContent = context.readmeContent.slice(0, Math.min(readmeBudget, GITHUB_SCAN_INPUT_CHAR_BUDGET));
+  const fileContents = context.fileContents.slice(0, Math.max(0, GITHUB_SCAN_INPUT_CHAR_BUDGET - readmeContent.length));
 
   return GITHUB_REPO_SCAN_USER_PROMPT
     .replace('{repoName}', context.repoName)
@@ -5377,8 +5676,8 @@ function buildGithubSectionPrompt(
   spec: GithubSectionSpec,
   options: { compact?: boolean; instructions?: string } = {},
 ) {
-  const fileContents = context.fileContents.slice(0, options.compact ? Math.min(GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET, 80000) : GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET);
-  const readmeContent = context.readmeContent.slice(0, options.compact ? 8000 : 12000);
+  const fileContents = context.fileContents.slice(0, options.compact ? GITHUB_SCAN_STAGED_COMPACT_CONTEXT_CHAR_BUDGET : GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET);
+  const readmeContent = context.readmeContent.slice(0, options.compact ? GITHUB_SCAN_STAGED_COMPACT_README_CHAR_BUDGET : 12000);
   return `REPO NAME: ${context.repoName}
 
 DETECTED FILES AND CONTENTS:
@@ -5419,6 +5718,262 @@ Rules:
 }
 
 type GithubProjectProfile = Pick<GithubQuestionSet, 'projectName' | 'detectedDomains' | 'projectSummary'>;
+
+type GithubDirectQuestionBatchPlan = {
+  label: 'architecture-design' | 'implementation-debugging';
+  focus: string;
+};
+
+const GITHUB_SCAN_DIRECT_BATCH_QUESTION_COUNT = 20;
+const GITHUB_SCAN_ARCHITECTURE_BATCH_QUESTION_COUNT = 10;
+
+const GITHUB_SCAN_DIRECT_BATCH_PLANS: GithubDirectQuestionBatchPlan[] = [
+  {
+    label: 'architecture-design',
+    focus: 'Focus on architecture, design tradeoffs, file responsibilities, data flow, boundaries between layers, and scenario reasoning grounded in the repository. Prioritize open, mcq, and scenario questions over coding exercises.',
+  },
+  {
+    label: 'implementation-debugging',
+    focus: 'Focus on implementation details, debugging paths, code-reading, runtime behavior, failure modes, concrete fixes, and safe refactors grounded in the repository. Prioritize coding, open, and scenario questions over mcq.',
+  },
+];
+
+function buildGithubProfileFallback(context: GithubRepoContext): GithubProjectProfile {
+  const files = extractRepoFilesFromContext(context).slice(0, 3);
+  const stack = context.detectedStack.slice(0, 6).join(', ') || 'the detected project stack';
+  return {
+    projectName: context.repoName,
+    detectedDomains: inferGithubFallbackDomains(context),
+    projectSummary: `${context.repoName} includes concrete files such as ${files.join(', ') || 'the provided repository files'} and uses ${stack}. The scanned context highlights repo-specific architecture and implementation choices from those files, and the generated questions stay anchored to the fetched code rather than generic framework trivia.`,
+  };
+}
+
+function allocateGithubDirectQuestionCounts(totalQuestions: number, sectionCount: number) {
+  const weights = [3, 4, 4, 3, 2, 2, 2].slice(0, sectionCount);
+  const weightSum = weights.reduce((sum, weight) => sum + weight, 0) || 1;
+  let counts = weights.map((weight) => Math.floor((totalQuestions * weight) / weightSum));
+
+  if (totalQuestions >= sectionCount) {
+    counts = counts.map((count, index) => (index < sectionCount ? Math.max(1, count) : count));
+  }
+
+  let assigned = counts.reduce((sum, count) => sum + count, 0);
+  while (assigned > totalQuestions) {
+    for (let index = counts.length - 1; index >= 0 && assigned > totalQuestions; index -= 1) {
+      const minimum = totalQuestions >= sectionCount ? 1 : 0;
+      if (counts[index] > minimum) {
+        counts[index] -= 1;
+        assigned -= 1;
+      }
+    }
+  }
+
+  const priority = [1, 2, 0, 3, 4, 5, 6].filter((index) => index < sectionCount);
+  let priorityIndex = 0;
+  while (assigned < totalQuestions) {
+    const target = priority[priorityIndex % priority.length] ?? 0;
+    counts[target] += 1;
+    assigned += 1;
+    priorityIndex += 1;
+  }
+
+  return counts;
+}
+
+function buildGithubDirectQuestionBatchPrompt(
+  context: GithubRepoContext,
+  batch: GithubDirectQuestionBatchPlan,
+  options: { compact?: boolean } = {},
+) {
+  const isArchitectureBatch = batch.label === 'architecture-design';
+  const readmeBudget = isArchitectureBatch ? 1_000 : (options.compact ? 3_000 : 4_000);
+  const inputBudget = isArchitectureBatch ? Math.min(GITHUB_SCAN_INPUT_CHAR_BUDGET, 8_000) : GITHUB_SCAN_INPUT_CHAR_BUDGET;
+  const readmeContent = context.readmeContent.slice(0, Math.min(readmeBudget, GITHUB_SCAN_INPUT_CHAR_BUDGET));
+  const fileContents = context.fileContents.slice(0, Math.max(0, inputBudget - readmeContent.length));
+  return `REPO NAME: ${context.repoName}
+
+DETECTED FILES AND CONTENTS:
+${fileContents || 'No meaningful code files found.'}
+
+README:
+${readmeContent || 'No README found.'}
+
+${batch.label === 'architecture-design' ? 'Generate 10 architecture and system design interview questions based on this codebase. Return ONLY a JSON array starting with [ and ending with ].' : `
+
+${batch.focus}
+
+Each question object must use this shape:
+[{"id":"q1","questionText":"...","type":"mcq"|"open"|"coding"|"scenario","difficulty":"easy"|"medium"|"hard","fileReference":"exact provided file path","conceptTag":"short repo-grounded concept","correctAnswer":"repo-grounded answer","options":["..."]}]
+
+Rules:
+- Use only the provided repository files and README context.
+- Every question must cite an exact provided file path in fileReference.
+- Keep questions repo-grounded and implementation-specific.
+- Use exactly 4 options for mcq and omit options for non-mcq questions.
+- Mix question types realistically, but stay consistent with the requested focus.
+- Do not invent files, layers, or systems not present in the supplied context.
+
+Generate exactly 20 questions. Return ONLY a raw JSON array starting with [ and ending with ]. No markdown, no prose.`}`;
+}
+
+function getGithubDirectBatchQuestionCount(batch: GithubDirectQuestionBatchPlan) {
+  return batch.label === 'architecture-design'
+    ? GITHUB_SCAN_ARCHITECTURE_BATCH_QUESTION_COUNT
+    : GITHUB_SCAN_DIRECT_BATCH_QUESTION_COUNT;
+}
+
+function buildGithubArchitectureFallbackQuestions(context: GithubRepoContext): GithubQuestion[] {
+  const files = extractRepoFilesFromContext(context);
+  const stack = context.detectedStack.slice(0, 5).join(', ') || 'the detected stack';
+  const prompts = [
+    'How would you describe the main architectural boundary in this codebase, and which file best shows it?',
+    'Which part of this codebase would you isolate first if the product needed to scale to more users or data?',
+    'What data flow does this project appear to rely on, and where would you add validation or normalization?',
+    'Which file suggests the strongest coupling risk, and how would you refactor that boundary?',
+    'How would you explain the frontend-to-data or service boundary in this repository during a system design interview?',
+    'What operational failure mode is most likely in this architecture, and where would you add observability?',
+    'Which module should own authorization or access-control decisions, and why?',
+    'How would you redesign this codebase if multiple teams needed to work on it independently?',
+    'What caching, batching, or precomputation strategy would fit this project based on the scanned files?',
+    'Which architectural tradeoff in this repository is acceptable now but likely to become risky later?',
+  ];
+
+  return prompts.map((prompt, index) => {
+    const fileReference = files[index % Math.max(1, files.length)] ?? context.repoName;
+    return {
+      id: `q${index + 1}`,
+      questionText: `${prompt} Refer to ${fileReference} and the ${stack} stack in your answer.`,
+      type: index % 3 === 1 ? 'scenario' : 'open',
+      difficulty: index < 3 ? 'medium' : 'hard',
+      fileReference,
+      conceptTag: 'Architecture design',
+      correctAnswer: `A strong answer should cite ${fileReference}, explain the relevant architecture or system design tradeoff, and connect it to boundaries, data flow, scaling, reliability, or ownership in this codebase.`,
+    };
+  });
+}
+
+async function generateGithubDirectQuestionBatch(params: {
+  context: GithubRepoContext;
+  batch: GithubDirectQuestionBatchPlan;
+  compact: boolean;
+  jobId: string;
+}) {
+  let textResult: Awaited<ReturnType<typeof callGithubTextModel>>;
+  try {
+    textResult = await callGithubTextModel(
+      GITHUB_REPO_SCAN_SYSTEM_PROMPT,
+      buildGithubDirectQuestionBatchPrompt(params.context, params.batch, { compact: params.compact }),
+      {
+        maxTokens: params.batch.label === 'architecture-design' ? Math.min(GITHUB_SCAN_MAX_TOKENS, 2500) : GITHUB_SCAN_MAX_TOKENS,
+        timeoutMs: GITHUB_SCAN_TIMEOUT_MS,
+        temperature: GITHUB_SCAN_TEMPERATURE,
+        topP: GITHUB_SCAN_TOP_P,
+        jobId: params.jobId,
+        repoName: params.context.repoName,
+        stage: `full:${params.batch.label}${params.compact ? ':compact' : ''}`,
+      },
+    );
+  } catch (error) {
+    if (params.batch.label === 'architecture-design') {
+      console.warn('GitHub repo scan architecture batch using repo-grounded fallback questions', {
+        jobId: params.jobId,
+        repoName: params.context.repoName,
+        error: error instanceof Error ? error.message : error,
+      });
+      return {
+        questions: buildGithubArchitectureFallbackQuestions(params.context),
+        rawLength: 0,
+      };
+    }
+    throw error;
+  }
+  const trimmedText = trimRawJsonArrayPayload(textResult.text);
+  if (!trimmedText) {
+    if (params.batch.label === 'architecture-design') {
+      return {
+        questions: buildGithubArchitectureFallbackQuestions(params.context),
+        rawLength: textResult.rawLength,
+      };
+    }
+    throw toRawJsonArrayParseError(textResult.text);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = parseStructuredPayload(trimmedText);
+  } catch {
+    if (params.batch.label === 'architecture-design') {
+      return {
+        questions: buildGithubArchitectureFallbackQuestions(params.context),
+        rawLength: textResult.rawLength,
+      };
+    }
+    throw toRawJsonArrayParseError(textResult.text);
+  }
+
+  const questions = params.batch.label === 'architecture-design'
+    ? normalizeGithubArchitectureQuestionArray(parsed, params.context)
+    : normalizeGithubQuestionArray(parsed, 'Implementation Debugging');
+  const questionCount = getGithubDirectBatchQuestionCount(params.batch);
+  if (questions.length < questionCount) {
+    if (params.batch.label === 'architecture-design') {
+      return {
+        questions: buildGithubArchitectureFallbackQuestions(params.context),
+        rawLength: textResult.rawLength,
+      };
+    }
+    throw new Error('model_invalid_repo_question_json');
+  }
+
+  return {
+    questions: questions.slice(0, questionCount),
+    rawLength: textResult.rawLength,
+  };
+}
+
+function buildGithubQuestionSetFromDirectQuestions(
+  context: GithubRepoContext,
+  profile: GithubProjectProfile,
+  questions: GithubQuestion[],
+  extraWarnings: string[] = [],
+): GithubQuestionSet {
+  const specs = buildStagedSectionSpecs(profile);
+  const counts = allocateGithubDirectQuestionCounts(questions.length, specs.length);
+  let cursor = 0;
+  let nextQuestionId = 1;
+  const sections = specs.map((spec, index) => {
+    const takeCount = counts[index] ?? 0;
+    const assignedQuestions = questions.slice(cursor, cursor + takeCount).map((question) => ({
+      ...question,
+      id: `q${nextQuestionId++}`,
+    }));
+    cursor += takeCount;
+    return {
+      sectionId: spec.sectionId,
+      sectionTitle: spec.sectionTitle,
+      sectionDescription: spec.sectionDescription,
+      questions: assignedQuestions,
+    };
+  });
+
+  if (cursor < questions.length) {
+    sections[sections.length - 1]?.questions.push(...questions.slice(cursor).map((question) => ({
+      ...question,
+      id: `q${nextQuestionId++}`,
+    })));
+  }
+
+  return {
+    projectName: profile.projectName || context.repoName,
+    detectedDomains: profile.detectedDomains,
+    projectSummary: profile.projectSummary,
+    warnings: Array.from(new Set([
+      ...(context.limited ? ['limited_code_files'] : []),
+      ...extraWarnings,
+    ])),
+    sections,
+  };
+}
 
 function normalizeGithubProjectProfile(payload: unknown): GithubProjectProfile {
   const source = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
@@ -5498,52 +6053,110 @@ function assertUsableGithubQuestionSet(result: GithubQuestionSet) {
 
 export async function generateGithubQuestionSet(context: GithubRepoContext, jobId: string, userId?: string): Promise<GithubQuestionSet> {
   let lastError: unknown = null;
-  const stagedFullOnly = process.env.GITHUB_SCAN_STAGED_FULL === 'true' || GITHUB_SCAN_MODEL === 'deepseek-v4-pro';
+  const stagedFullOnly = process.env.GITHUB_SCAN_STAGED_FULL === 'true';
   if (stagedFullOnly) {
-    lastError = new Error('model_empty_response');
+    lastError = new Error('staged_full_forced');
   } else {
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const directBatchPlans = context.limited
+      ? [GITHUB_SCAN_DIRECT_BATCH_PLANS[0]]
+      : GITHUB_SCAN_DIRECT_BATCH_PLANS;
+    const maxAttempts = GITHUB_SCAN_FAST_MODE ? 1 : 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         const compactRetry = attempt > 1;
         if (userId) await assertGithubScanJobActive(jobId, userId);
-        const analysis = await callGithubStructuredModel<GithubQuestionSet>(
-          GITHUB_REPO_SCAN_SYSTEM_PROMPT,
-          buildGithubQuestionUserPrompt(context, { compact: compactRetry }),
-          normalizeGithubQuestionSet,
-          {
-            maxTokens: GITHUB_SCAN_MAX_TOKENS,
-            timeoutMs: GITHUB_SCAN_TIMEOUT_MS,
-            temperature: GITHUB_SCAN_TEMPERATURE,
-            topP: GITHUB_SCAN_TOP_P,
-            jobId,
-            repoName: context.repoName,
-            stage: compactRetry ? 'full-compact' : 'full',
-          },
-        );
-        const result = analysis.result;
-        if (context.limited) {
-          result.warnings = Array.from(new Set([...(result.warnings ?? []), 'limited_code_files']));
+        const directBatchResults = await Promise.all(directBatchPlans.map(async (batch) => {
+          try {
+            return {
+              batch,
+              outcome: await generateGithubDirectQuestionBatch({
+                context,
+                batch,
+                compact: compactRetry,
+                jobId,
+              }),
+              error: null,
+            };
+          } catch (error) {
+            console.warn('GitHub repo scan direct batch failed', {
+              jobId,
+              repoName: context.repoName,
+              batch: batch.label,
+              error: error instanceof Error ? error.message : error,
+            });
+            return {
+              batch,
+              outcome: null,
+              error,
+            };
+          }
+        }));
+        const successfulBatchResults = directBatchResults.filter((result) => result.outcome);
+        if (successfulBatchResults.length) {
+          const directQuestions = successfulBatchResults.flatMap((result) => result.outcome?.questions ?? []);
+          const extraWarnings = directBatchResults.some((result) => result.error) ? ['partial_direct_batch_coverage'] : [];
+          let profile = buildGithubProfileFallback(context);
+          try {
+            if (userId) await assertGithubScanJobActive(jobId, userId);
+            const profileAnalysis = await callGithubStructuredModel<GithubProjectProfile>(
+              GITHUB_REPO_SCAN_SYSTEM_PROMPT,
+              buildGithubQuestionProfilePrompt(context),
+              normalizeGithubProjectProfile,
+              {
+                maxTokens: Math.min(GITHUB_SCAN_MAX_TOKENS, 6000),
+                timeoutMs: GITHUB_SCAN_TIMEOUT_MS,
+                temperature: GITHUB_SCAN_TEMPERATURE,
+                topP: GITHUB_SCAN_TOP_P,
+                jobId,
+                repoName: context.repoName,
+                stage: `full-profile${compactRetry ? ':compact' : ''}`,
+              },
+            );
+            profile = profileAnalysis.result;
+          } catch (error) {
+            console.warn('GitHub repo scan direct profile generation failed; using inferred profile', {
+              jobId,
+              repoName: context.repoName,
+              error: error instanceof Error ? error.message : error,
+            });
+          }
+
+          const result = buildGithubQuestionSetFromDirectQuestions(context, profile, directQuestions, extraWarnings);
+          ensureGithubQuestionTargetCount(result, context);
+          assertUsableGithubQuestionSet(result);
+          return result;
         }
-        ensureGithubQuestionTargetCount(result, context);
-        assertUsableGithubQuestionSet(result);
-        return result;
+
+        const batchErrors = directBatchResults
+          .map((result) => result.error)
+          .filter((error): error is unknown => Boolean(error));
+        lastError = batchErrors.some((error) => error instanceof Error && error.message === 'analysis_timeout')
+          ? new Error('analysis_timeout')
+          : batchErrors[0] ?? new Error('model_generation_failed');
       } catch (error) {
         lastError = error;
-        if (attempt === 1) {
+        if (error instanceof Error && error.message === 'scan_job_replaced') {
+          throw error;
+        }
+      }
+
+      if (!GITHUB_SCAN_FAST_MODE && attempt === 1) {
           console.error('GitHub repo scan generation attempt failed; retrying with compact context', {
             jobId,
             repoName: context.repoName,
-            error: error instanceof Error ? error.message : error,
+            error: lastError instanceof Error ? lastError.message : lastError,
           });
           await db.prepare('UPDATE repo_scan_jobs SET retry_count = retry_count + 1 WHERE id = ?').run(jobId);
           await wait(3000);
-        }
       }
     }
   }
 
   const lastMessage = lastError instanceof Error ? lastError.message : '';
-  if (['model_json_parse_failed', 'model_empty_response', 'model_invalid_repo_question_json', 'model_missing_repo_references', 'analysis_timeout'].includes(lastMessage)) {
+  if (lastMessage === 'scan_job_replaced') {
+    throw lastError instanceof Error ? lastError : new Error('scan_job_replaced');
+  }
+  if (stagedFullOnly || lastError) {
     console.warn('GitHub repo scan switching to staged full question-set generation', {
       jobId,
       repoName: context.repoName,
@@ -6193,20 +6806,20 @@ async function findOrCreateOAuthUser(provider: 'google' | 'github', providerAcco
         .get<DbUserRow>(user.id);
     }
     if (!user) throw new Error('Unable to load OAuth user after linking.');
-    return user;
+    return { user, isNew: false };
   }
 
   const userId = crypto.randomUUID();
   await db.prepare('INSERT INTO users (id, email, name, password_hash, auth_provider, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())')
     .run(userId, normalizedEmail, name || normalizedEmail.split('@')[0], hashPassword(crypto.randomUUID()), provider, 1);
     await db.prepare('INSERT INTO user_preferences (id, user_id, sidebar_open, theme, domain, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
-      .run(crypto.randomUUID(), userId, 0, 'light', '');
+      .run(crypto.randomUUID(), userId, 0, 'dark', '');
   await db.prepare('INSERT INTO oauth_accounts (id, user_id, provider, provider_account_id, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
     .run(crypto.randomUUID(), userId, provider, providerAccountId, normalizedEmail);
   user = await db.prepare('SELECT id, email, name, password_hash, auth_provider, email_verified, created_at, updated_at FROM users WHERE id = ?')
     .get<DbUserRow>(userId);
   if (!user) throw new Error('Unable to create OAuth user.');
-  return user;
+  return { user, isNew: true };
 }
 
 async function saveGithubAccessToken(userId: string, accessToken: string) {
@@ -6264,6 +6877,10 @@ async function requireUser(request: AuthedRequest, response: express.Response, n
     return;
   }
 
+  const notice = await enforceSubscriptionForRequest(user.id);
+  if (request.path !== '/api/billing/subscription-notices/seen') {
+    attachSubscriptionNotice(response, notice);
+  }
   request.user = user;
   next();
 }
@@ -6271,6 +6888,12 @@ async function requireUser(request: AuthedRequest, response: express.Response, n
 async function getUserSelectedDomain(userId: string) {
   const row = await db.prepare('SELECT domain FROM user_preferences WHERE user_id = ?').get<{ domain: string | null }>(userId);
   return normalizeOptionalDomain(row?.domain);
+}
+
+async function getPostAuthRedirectPath(userId: string, isNewUser: boolean, nextPath = '') {
+  if (nextPath && nextPath !== '/signin' && nextPath !== '/login' && nextPath !== '/signup') return nextPath;
+  const selectedDomain = await getUserSelectedDomain(userId);
+  return isNewUser || !selectedDomain ? '/onboarding' : '/dashboard';
 }
 
 function normalizeBillingPlan(value: unknown): BillingPlan {
@@ -6281,6 +6904,84 @@ function normalizeBillingPlan(value: unknown): BillingPlan {
 function normalizeBillingInterval(value: unknown): BillingInterval {
   const interval = String(value ?? '').trim().toLowerCase();
   return (BILLING_INTERVALS as readonly string[]).includes(interval) ? (interval as BillingInterval) : 'monthly';
+}
+
+function attachSubscriptionNotice(response: express.Response, notice: SubscriptionNotice | null) {
+  if (!notice) return;
+  response.setHeader('X-Repoid-Subscription-Notice', encodeURIComponent(JSON.stringify(notice)));
+  response.setHeader('X-Repoid-Subscription-Notice-Type', notice.type);
+}
+
+async function enforceSubscriptionForRequest(userId: string): Promise<SubscriptionNotice | null> {
+  const row = await db.prepare(`
+    SELECT id, user_id, plan, status, provider, razorpay_customer_id, razorpay_subscription_id,
+           razorpay_payment_id, current_period_end, billing_interval, seats,
+           expired_plan, expired_billing_interval, expired_at, expiry_notice_seen_at, renewal_notice_seen_at
+      FROM subscriptions
+     WHERE user_id = ?
+  `).get<SubscriptionRow>(userId);
+  if (!row) return null;
+
+  const plan = normalizeBillingPlan(row.plan);
+  const billingInterval = normalizeBillingInterval(row.billing_interval);
+  const periodEndMs = row.current_period_end ? new Date(row.current_period_end).getTime() : Number.NaN;
+  const hasExpired = plan !== 'free' && Number.isFinite(periodEndMs) && periodEndMs < Date.now();
+
+  if (hasExpired) {
+    await db.prepare(`
+      UPDATE subscriptions
+         SET plan = 'free',
+             status = 'expired',
+             current_period_end = NULL,
+             expired_plan = ?,
+             expired_billing_interval = ?,
+             expired_at = COALESCE(current_period_end, NOW()),
+             expiry_notice_seen_at = NULL,
+             renewal_notice_seen_at = NULL,
+             updated_at = NOW()
+       WHERE user_id = ?
+    `).run(plan, billingInterval, userId);
+
+    return {
+      type: 'expired',
+      plan,
+      billingInterval,
+      currentPeriodEnd: row.current_period_end,
+      expiredAt: row.current_period_end,
+    };
+  }
+
+  if (
+    plan === 'free'
+    && normalizeBillingPlan(row.expired_plan) !== 'free'
+    && !row.expiry_notice_seen_at
+  ) {
+    return {
+      type: 'expired',
+      plan: normalizeBillingPlan(row.expired_plan),
+      billingInterval: normalizeBillingInterval(row.expired_billing_interval),
+      currentPeriodEnd: null,
+      expiredAt: row.expired_at,
+    };
+  }
+
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+  const expiresWithinSevenDays = plan !== 'free'
+    && row.status === 'active'
+    && Number.isFinite(periodEndMs)
+    && periodEndMs >= Date.now()
+    && periodEndMs - Date.now() <= sevenDaysMs;
+
+  if (expiresWithinSevenDays && !row.renewal_notice_seen_at) {
+    return {
+      type: 'expiring',
+      plan,
+      billingInterval,
+      currentPeriodEnd: row.current_period_end,
+    };
+  }
+
+  return null;
 }
 
 function getPeriodEnd(interval: BillingInterval) {
@@ -6310,20 +7011,16 @@ function toSubscriptionPayload(row: SubscriptionRow | null) {
 }
 
 async function getUserSubscription(userId: string) {
+  await enforceSubscriptionForRequest(userId);
   const row = await db.prepare(`
     SELECT id, user_id, plan, status, provider, razorpay_customer_id, razorpay_subscription_id,
-           razorpay_payment_id, current_period_end, billing_interval, seats
+           razorpay_payment_id, current_period_end, billing_interval, seats,
+           expired_plan, expired_billing_interval, expired_at, expiry_notice_seen_at, renewal_notice_seen_at
       FROM subscriptions
      WHERE user_id = ?
   `).get<SubscriptionRow>(userId);
 
-  if (!row) return null;
-  const expired = row.current_period_end ? new Date(row.current_period_end).getTime() < Date.now() : false;
-  if (expired && row.plan !== 'free') {
-    await db.prepare('UPDATE subscriptions SET plan = ?, status = ?, updated_at = NOW() WHERE user_id = ?').run('free', 'expired', userId);
-    return null;
-  }
-  return row;
+  return row ?? null;
 }
 
 async function getEffectivePlan(userId: string): Promise<BillingPlan> {
@@ -6355,6 +7052,11 @@ async function upsertSubscription(params: {
       seats = EXCLUDED.seats,
       current_period_end = EXCLUDED.current_period_end,
       razorpay_payment_id = EXCLUDED.razorpay_payment_id,
+      expired_plan = NULL,
+      expired_billing_interval = NULL,
+      expired_at = NULL,
+      expiry_notice_seen_at = NULL,
+      renewal_notice_seen_at = NULL,
       updated_at = NOW()
   `).run(
     crypto.randomUUID(),
@@ -6557,6 +7259,9 @@ export async function createApp(options: { listen?: boolean } = {}) {
         fallbackModels: GITHUB_SCAN_FALLBACK_MODELS,
         stagedFull: process.env.GITHUB_SCAN_STAGED_FULL === 'true' || GITHUB_SCAN_MODEL === 'deepseek-v4-pro',
         contextCharBudget: GITHUB_SCAN_STAGED_CONTEXT_CHAR_BUDGET,
+        fastMode: GITHUB_SCAN_FAST_MODE,
+        timeoutMs: GITHUB_SCAN_TIMEOUT_MS,
+        initialResponseTimeoutMs: GITHUB_SCAN_INITIAL_RESPONSE_TIMEOUT_MS,
       },
     });
   });
@@ -6851,6 +7556,20 @@ export async function createApp(options: { listen?: boolean } = {}) {
     const user = (request as AuthedRequest).user!;
     const subscription = await getUserSubscription(user.id);
     response.json({ subscription: toSubscriptionPayload(subscription) });
+  });
+
+  app.post('/api/billing/subscription-notices/seen', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const type = String(request.body?.type ?? '').trim();
+    if (type === 'expired') {
+      await db.prepare('UPDATE subscriptions SET expiry_notice_seen_at = NOW(), updated_at = NOW() WHERE user_id = ?').run(user.id);
+    } else if (type === 'expiring') {
+      await db.prepare('UPDATE subscriptions SET renewal_notice_seen_at = NOW(), updated_at = NOW() WHERE user_id = ?').run(user.id);
+    } else {
+      response.status(400).json({ error: 'notice type is required.' });
+      return;
+    }
+    response.json({ success: true });
   });
 
   app.get('/api/billing/entitlement', requireUser, async (request, response) => {
@@ -7528,6 +8247,137 @@ export async function createApp(options: { listen?: boolean } = {}) {
     `).all(user.id, since, user.id, since, user.id, since, user.id, since, user.id, since);
     response.setHeader('Cache-Control', 'no-store');
     response.json({ rows });
+  });
+
+  app.get('/api/dashboard/domain-stats', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const rows = await db.query<{
+      domain: string;
+      attempted: number;
+      correct_equivalent: number;
+      sessions: number;
+    }>(`
+      WITH domain_activity AS (
+        SELECT
+          domain,
+          GREATEST(COALESCE(NULLIF(total_questions, 0), jsonb_array_length(question_ids), 1), 1)::numeric AS attempted,
+          GREATEST(COALESCE(correct_answers, 0), 0)::numeric AS correct_equivalent
+        FROM round_attempts
+        WHERE user_id = $1 AND status IN ('submitted', 'completed')
+
+        UNION ALL
+
+        SELECT
+          domain,
+          GREATEST(jsonb_array_length(questions), 1)::numeric AS attempted,
+          GREATEST(COALESCE(correct_answers, 0), 0)::numeric AS correct_equivalent
+        FROM open_practice_sessions
+        WHERE user_id = $1 AND (completed_at IS NOT NULL OR status = 'completed')
+
+        UNION ALL
+
+        SELECT
+          s.domain,
+          GREATEST(jsonb_array_length(s.steps), 1)::numeric AS attempted,
+          (GREATEST(LEAST(COALESCE(sa.score, 0), 100), 0)::numeric / 100)
+            * GREATEST(jsonb_array_length(s.steps), 1)::numeric AS correct_equivalent
+        FROM scenario_attempts sa
+        INNER JOIN scenarios s ON s.id = sa.scenario_id
+        WHERE sa.user_id = $1 AND (sa.completed_at IS NOT NULL OR sa.status IN ('completed', 'submitted'))
+
+        UNION ALL
+
+        SELECT
+          cp.domain,
+          1::numeric AS attempted,
+          GREATEST(LEAST(COALESCE(ca.score, 0), 100), 0)::numeric / 100 AS correct_equivalent
+        FROM coding_attempts ca
+        INNER JOIN coding_problems cp ON cp.id = ca.problem_id
+        WHERE ca.user_id = $1 AND (ca.submitted_at IS NOT NULL OR ca.status IN ('completed', 'submitted'))
+
+        UNION ALL
+
+        SELECT
+          mi.domain,
+          GREATEST(
+            COALESCE(
+              CASE
+                WHEN (mi.report_payload->>'answeredCount') ~ '^[0-9]+$'
+                THEN (mi.report_payload->>'answeredCount')::int
+              END,
+              jsonb_array_length(mi.responses),
+              jsonb_array_length(mi.questions),
+              1
+            ),
+            1
+          )::numeric AS attempted,
+          (
+            GREATEST(
+              LEAST(
+                COALESCE(
+                  CASE
+                    WHEN (mi.report_payload->>'overallScore') ~ '^[0-9]+(\\.[0-9]+)?$'
+                    THEN (mi.report_payload->>'overallScore')::numeric
+                  END,
+                  0
+                ),
+                100
+              ),
+              0
+            ) / 100
+          ) * GREATEST(
+            COALESCE(
+              CASE
+                WHEN (mi.report_payload->>'answeredCount') ~ '^[0-9]+$'
+                THEN (mi.report_payload->>'answeredCount')::int
+              END,
+              jsonb_array_length(mi.responses),
+              jsonb_array_length(mi.questions),
+              1
+            ),
+            1
+          )::numeric AS correct_equivalent
+        FROM mock_interviews mi
+        WHERE mi.user_id = $1 AND (mi.completed_at IS NOT NULL OR mi.status IN ('completed', 'submitted'))
+      )
+      SELECT
+        domain,
+        SUM(attempted)::float8 AS attempted,
+        SUM(correct_equivalent)::float8 AS correct_equivalent,
+        COUNT(*)::int AS sessions
+      FROM domain_activity
+      WHERE domain IS NOT NULL AND domain <> ''
+      GROUP BY domain
+      ORDER BY attempted DESC, domain ASC
+    `, [user.id]);
+
+    const totalAttempts = rows.reduce((sum, row) => sum + Number(row.attempted ?? 0), 0);
+    const totalCorrect = rows.reduce((sum, row) => sum + Number(row.correct_equivalent ?? 0), 0);
+    const domains = rows.map((row) => {
+      const domainId = normalizeOptionalDomain(row.domain) || row.domain;
+      const practiceDomain = toPracticeDomain(domainId);
+      const attempted = Number(row.attempted ?? 0);
+      const correctEquivalent = Number(row.correct_equivalent ?? 0);
+      return {
+        domain: domainId,
+        label: practiceDomain ? PRACTICE_DOMAIN_LABELS[practiceDomain] : domainId,
+        attempted: Math.round(attempted),
+        correctRate: attempted > 0 ? Math.round((correctEquivalent / attempted) * 100) : 0,
+        activityShare: totalAttempts > 0 ? Math.round((attempted / totalAttempts) * 100) : 0,
+        sessions: Number(row.sessions ?? 0),
+      };
+    });
+    const strongest = domains
+      .filter((item) => item.attempted >= 3)
+      .sort((left, right) => right.correctRate - left.correctRate || right.attempted - left.attempted)[0] ?? null;
+
+    response.setHeader('Cache-Control', 'no-store');
+    response.json({
+      overallReadiness: totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0,
+      totalAttempts: Math.round(totalAttempts),
+      domains,
+      strongestDomain: strongest,
+    });
   });
 
   app.get('/api/questions', requireUser, async (request, response) => {
@@ -8910,7 +9760,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
     await db.prepare('INSERT INTO users (id, email, name, password_hash, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
       .run(userId, email, name, passwordHash, 1);
     await db.prepare('INSERT INTO user_preferences (id, user_id, sidebar_open, theme, domain, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
-      .run(crypto.randomUUID(), userId, 0, 'light', '');
+      .run(crypto.randomUUID(), userId, 0, 'dark', '');
 
     const createdUser = await db.prepare('SELECT id, email, name, password_hash, auth_provider, email_verified, created_at, updated_at FROM users WHERE id = ?')
       .get<DbUserRow>(userId);
@@ -8939,6 +9789,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
       return;
     }
     setSessionCookie(response, user.id);
+    attachSubscriptionNotice(response, await enforceSubscriptionForRequest(user.id));
     response.json({ user: toSessionUser(user) });
   });
 
@@ -8996,9 +9847,9 @@ export async function createApp(options: { listen?: boolean } = {}) {
       const profile = await userInfoResponse.json().catch(() => ({})) as { email?: string; name?: string; sub?: string };
       if (!userInfoResponse.ok || !profile.email) throw new Error('Google did not return an email address.');
       if (!profile.sub) throw new Error('Google did not return a stable account id.');
-      const user = await findOrCreateOAuthUser('google', profile.sub, profile.email, profile.name ?? '');
+      const { user, isNew } = await findOrCreateOAuthUser('google', profile.sub, profile.email, profile.name ?? '');
       setSessionCookie(response, user.id);
-      response.redirect('/onboarding');
+      response.redirect(await getPostAuthRedirectPath(user.id, isNew));
     } catch (error) {
       response.redirect(`/signin?error=${encodeURIComponent(error instanceof Error ? error.message : 'oauth_failed')}`);
     }
@@ -9062,10 +9913,10 @@ export async function createApp(options: { listen?: boolean } = {}) {
       const email = profile.email || emails.find((item) => item.primary && item.verified)?.email || emails.find((item) => item.verified)?.email;
       if (!email) throw new Error('GitHub did not return a verified email address.');
       if (!profile.id) throw new Error('GitHub did not return a stable account id.');
-      const user = await findOrCreateOAuthUser('github', String(profile.id), email, profile.name ?? profile.login ?? '');
+      const { user, isNew } = await findOrCreateOAuthUser('github', String(profile.id), email, profile.name ?? profile.login ?? '');
       await saveGithubAccessToken(user.id, tokenData.access_token);
       setSessionCookie(response, user.id);
-      response.redirect(oauthState.nextPath || '/onboarding');
+      response.redirect(await getPostAuthRedirectPath(user.id, isNew, oauthState.nextPath));
     } catch (error) {
       response.redirect(`/signin?error=${encodeURIComponent(error instanceof Error ? error.message : 'oauth_failed')}`);
     }
@@ -9078,6 +9929,8 @@ export async function createApp(options: { listen?: boolean } = {}) {
       return;
     }
 
+    const notice = await enforceSubscriptionForRequest(user.id);
+    attachSubscriptionNotice(response, notice);
     response.json({ user: toSessionUser(user) });
   });
 
@@ -9157,11 +10010,11 @@ export async function createApp(options: { listen?: boolean } = {}) {
     let preferences = await db.prepare('SELECT sidebar_open, theme, domain FROM user_preferences WHERE user_id = ?').get<UserPreferencesRow>(user.id);
     if (!preferences) {
       await db.prepare('INSERT INTO user_preferences (id, user_id, sidebar_open, theme, domain, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
-        .run(crypto.randomUUID(), user.id, 0, 'light', '');
-      preferences = { sidebar_open: false, theme: 'light', domain: '' };
+        .run(crypto.randomUUID(), user.id, 0, 'dark', '');
+      preferences = { sidebar_open: false, theme: 'dark', domain: '' };
     }
 
-    response.json({ sidebarOpen: Boolean(preferences.sidebar_open), theme: preferences.theme ?? 'light', domain: normalizeOptionalDomain(preferences.domain) });
+    response.json({ sidebarOpen: Boolean(preferences.sidebar_open), theme: preferences.theme ?? 'dark', domain: normalizeOptionalDomain(preferences.domain) });
   });
 
   app.patch('/api/users/preferences', requireUser, async (request, response) => {
@@ -9177,7 +10030,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
         .run(sidebarOpen === null ? null : (sidebarOpen ? 1 : 0), theme, domain, user.id);
     } else {
       await db.prepare('INSERT INTO user_preferences (id, user_id, sidebar_open, theme, domain, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())')
-        .run(crypto.randomUUID(), user.id, sidebarOpen === null ? 0 : (sidebarOpen ? 1 : 0), theme ?? 'light', domain ?? '');
+        .run(crypto.randomUUID(), user.id, sidebarOpen === null ? 0 : (sidebarOpen ? 1 : 0), theme ?? 'dark', domain ?? '');
     }
 
     response.json({ success: true, sidebarOpen, theme: theme ?? themeValue, domain });
@@ -9644,6 +10497,9 @@ export async function createApp(options: { listen?: boolean } = {}) {
       server: {
         middlewareMode: true,
         hmr: process.env.DISABLE_HMR === 'true' ? false : { port: hmrPort },
+        watch: {
+          ignored: ['**/.chrome*/**', '**/artifacts/**'],
+        },
       },
       appType: 'spa',
     });

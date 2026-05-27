@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, CalendarDays, CheckCircle2, Github, Heart, LoaderCircle, Play, Search, TrendingUp, X } from 'lucide-react';
+import { ArrowRight, CalendarDays, ChartPie, CheckCircle2, Github, Heart, LoaderCircle, Play, Search, TrendingUp, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { getGithubScanJob, listGithubRepos } from '../lib/githubRepos';
@@ -23,13 +23,36 @@ type Recommendation = {
 
 type ActivityRow = { activity_date: string; total: number };
 
+type DomainStatsItem = {
+  domain: string;
+  label: string;
+  attempted: number;
+  correctRate: number;
+  activityShare: number;
+  sessions: number;
+};
+
+type DomainStatsPayload = {
+  overallReadiness: number;
+  totalAttempts: number;
+  domains: DomainStatsItem[];
+  strongestDomain: DomainStatsItem | null;
+};
+
+const DOMAIN_CHART_COLORS = ['#10b981', '#2563eb', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6', '#f97316'];
+
+function activityFillStyle(count: number): React.CSSProperties {
+  if (count <= 0) return { backgroundColor: 'transparent' };
+  return { backgroundColor: `rgba(34, 197, 94, ${Math.min(0.95, 0.35 + count * 0.18)})` };
+}
+
 function ReadinessTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   const value = Number(payload[0]?.value ?? 0);
   return (
-    <div className="rounded-xl border border-blueprint-line bg-[#101010] px-3 py-2 text-sm shadow-xl dark:bg-[#101010]">
-      <p className="font-semibold text-primary dark:text-white">{label}</p>
-      <p className="text-primary dark:text-[#d8ffe9]">Score: {Number.isFinite(value) ? Math.round(value) : 0}%</p>
+    <div className="rounded-xl border border-blueprint-line bg-card px-3 py-2 text-sm text-primary shadow-xl">
+      <p className="font-semibold">{label}</p>
+      <p className="text-blueprint-muted">Score: {Number.isFinite(value) ? Math.round(value) : 0}%</p>
     </div>
   );
 }
@@ -38,10 +61,33 @@ function ActivityTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   const total = Number(payload[0]?.value ?? 0);
   return (
-    <div className="rounded-xl border border-blueprint-line bg-[#101010] px-3 py-2 text-sm shadow-xl dark:bg-[#101010]">
-      <p className="font-semibold text-primary dark:text-white">{label}</p>
-      <p className="text-primary dark:text-[#d8ffe9]">{total} completed session{total === 1 ? '' : 's'}</p>
+    <div className="rounded-xl border border-blueprint-line bg-card px-3 py-2 text-sm text-primary shadow-xl">
+      <p className="font-semibold">{label}</p>
+      <p className="text-blueprint-muted">{total} completed session{total === 1 ? '' : 's'}</p>
     </div>
+  );
+}
+
+function DomainStatsTooltip({ active, payload }: any) {
+  if (!active || !payload?.length) return null;
+  const item = payload[0]?.payload as DomainStatsItem | undefined;
+  if (!item) return null;
+  return (
+    <div className="rounded-xl border border-blueprint-line bg-card px-3 py-2 text-sm text-primary shadow-xl">
+      <p className="font-semibold">{item.label}</p>
+      <p className="text-blueprint-muted">{item.attempted} attempts - {item.activityShare}% of activity</p>
+    </div>
+  );
+}
+
+function renderDomainPieLabel(props: any) {
+  const name = String(props.name ?? '');
+  const percent = Math.round(Number(props.percent ?? 0) * 100);
+  if (!percent) return null;
+  return (
+    <text x={props.x} y={props.y} fill="var(--color-primary)" textAnchor="middle" dominantBaseline="central" fontSize={12}>
+      {`${name} ${percent}%`}
+    </text>
   );
 }
 
@@ -136,8 +182,10 @@ export default function Dashboard() {
   const [goalOpen, setGoalOpen] = useState(false);
   const [consistencyOpen, setConsistencyOpen] = useState(false);
   const [readinessOpen, setReadinessOpen] = useState(false);
+  const [domainStatsOpen, setDomainStatsOpen] = useState(false);
   const [heatmapRange, setHeatmapRange] = useState(30);
   const [activityRows, setActivityRows] = useState<ActivityRow[]>([]);
+  const [domainStats, setDomainStats] = useState<DomainStatsPayload | null>(null);
   const [hoveredActivity, setHoveredActivity] = useState<{ key: string; date: Date; count: number } | null>(null);
   const [activePracticeId, setActivePracticeId] = useState<string | null>(null);
   const [quickRoute, setQuickRoute] = useState('/scenario-round');
@@ -239,6 +287,9 @@ export default function Dashboard() {
       { name: 'Consistency', value: consistencyScore, fill: '#34d399' },
     ];
   }, [attempts, currentDomainPracticeSessions, heatmapDays]);
+  const domainActivityChartData = useMemo(() => {
+    return (domainStats?.domains ?? []).filter((item) => item.attempted > 0);
+  }, [domainStats]);
   const insights = useMemo(() => {
     const practiceInsights = currentDomainPracticeSessions.map(insightFromPracticeSession).filter(Boolean) as Array<{ title: string; body: string; timestamp: string }>;
     const roundInsights = attempts.map(insightFromAttempt).filter(Boolean) as Array<{ title: string; body: string; timestamp: string }>;
@@ -283,6 +334,21 @@ export default function Dashboard() {
       ignore = true;
     };
   }, []);
+
+  useEffect(() => {
+    let ignore = false;
+    fetch(apiUrl('/api/dashboard/domain-stats'), { credentials: 'include' })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Unable to load domain stats.')))
+      .then((payload: DomainStatsPayload) => {
+        if (!ignore) setDomainStats(payload);
+      })
+      .catch(() => {
+        if (!ignore) setDomainStats(null);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [domain]);
 
   useEffect(() => {
     try {
@@ -354,7 +420,7 @@ export default function Dashboard() {
             <div>
               <div className="flex items-center gap-3 text-ui-label text-blueprint-muted">
                 <Github size={18} />
-                <span className="text-primary dark:text-emerald-300">GitHub Repo Scanner for Interviews</span>
+                <span className="text-primary repo-scanner-title">GitHub Repo Scanner for Interviews</span>
               </div>
               <h2 className="mt-3 text-headline-md text-primary not-italic">Generate repo-specific interview questions.</h2>
               <p className="mt-2 max-w-3xl text-body-md text-blueprint-muted">
@@ -444,7 +510,7 @@ export default function Dashboard() {
           </article>
         </section>
 
-        <section className="grid gap-5 lg:grid-cols-3">
+        <section className="grid gap-5 lg:grid-cols-4">
           <button type="button" onClick={() => setGoalOpen(true)} className="surface-card text-left transition-colors hover:bg-white/85">
             <p className="text-ui-label text-blueprint-muted">Daily Goal</p>
             <div className="mt-4 flex items-start gap-3">
@@ -460,8 +526,22 @@ export default function Dashboard() {
             <p className="mt-4 text-headline-md text-primary not-italic">{hasAnyActivity ? '1-day streak' : '0-day streak'}</p>
             <div className="mt-4 grid grid-cols-7 gap-1">
               {heatmapDays.slice(-7).map((day) => (
-                <span key={day.key} className={`h-7 rounded border border-blueprint-line ${day.count >= 3 ? 'bg-emerald-700 dark:bg-emerald-300' : day.count === 2 ? 'bg-emerald-500 dark:bg-emerald-500' : day.count === 1 ? 'bg-emerald-300 dark:bg-emerald-700' : 'bg-[#111111] dark:bg-[#0d0d0d]'}`} />
+                <span key={day.key} className="h-7 rounded border border-blueprint-line" style={activityFillStyle(day.count)} />
               ))}
+            </div>
+          </button>
+          <button type="button" onClick={() => setDomainStatsOpen(true)} className="surface-card text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
+            <p className="text-ui-label text-blueprint-muted">Domain Stats</p>
+            <div className="mt-4 flex items-start gap-3">
+              <ChartPie size={22} className="mt-1 text-emerald-600 dark:text-emerald-300" />
+              <div>
+                <span className="inline-flex items-center gap-2 text-body-md font-medium text-primary">
+                  {domainLabel} <ArrowRight size={14} />
+                </span>
+                <p className="mt-1 text-body-md text-blueprint-muted">
+                  {domainStats?.totalAttempts ? `${domainStats.totalAttempts} total attempts tracked.` : 'Open stats after completing sessions.'}
+                </p>
+              </div>
             </div>
           </button>
           <article className="surface-card">
@@ -482,12 +562,12 @@ export default function Dashboard() {
           <div className="mt-5 h-[250px]">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={activityTrendData} margin={{ top: 8, right: 12, left: -24, bottom: 0 }}>
-                <XAxis dataKey="shortLabel" tick={{ fill: 'currentColor', fontSize: 12 }} />
-                <YAxis allowDecimals={false} tick={{ fill: 'currentColor', fontSize: 12 }} />
+                <XAxis dataKey="shortLabel" tick={{ fill: 'var(--color-primary)', fontSize: 12 }} />
+                <YAxis allowDecimals={false} tick={{ fill: 'var(--color-primary)', fontSize: 12 }} />
                 <Tooltip cursor={{ fill: 'rgba(16,185,129,0.08)' }} content={<ActivityTooltip />} />
-                <Bar dataKey="total" minPointSize={4} radius={[8, 8, 0, 0]}>
+                <Bar dataKey="total" radius={[8, 8, 0, 0]}>
                   {activityTrendData.map((entry, index) => (
-                    <Cell key={`${entry.label}-${index}`} fill={entry.total >= 3 ? '#047857' : entry.total === 2 ? '#10b981' : entry.total === 1 ? '#6ee7b7' : '#cfcaca'} />
+                    <Cell key={`${entry.label}-${index}`} fill={entry.total > 0 ? '#22c55e' : 'transparent'} />
                   ))}
                 </Bar>
               </BarChart>
@@ -495,25 +575,7 @@ export default function Dashboard() {
           </div>
         </section>
 
-        <section className="surface-card">
-          <div className="border-b border-blueprint-line pb-4">
-            <p className="text-ui-label text-blueprint-muted"></p>
-            <h2 className="mt-1 text-headline-md text-primary not-italic">Where to focus next</h2>
-          </div>
-          <div className="mt-5 grid gap-4">
-            {domainBreakdown.map((item) => (
-              <div key={item.label}>
-                <div className="mb-2 flex items-center justify-between text-body-md">
-                  <span className="font-medium text-primary">{item.label}</span>
-                  <span className="text-blueprint-muted">{item.value}%</span>
-                </div>
-                <div className="h-2 rounded-full bg-[#e4e2e2]">
-                  <div className="h-2 rounded-full bg-primary" style={{ width: `${item.value}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
+
 
         {insights.length || focusAreas.length ? (
           <section className="surface-card">
@@ -680,27 +742,137 @@ export default function Dashboard() {
               ))}
             </div>
             <div className="relative mt-5 grid gap-1" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(14px, 1fr))' }}>
-              {heatmapDays.map((day) => {
-                return (
-                  <span
-                    key={day.key}
-                    onMouseEnter={() => setHoveredActivity(day)}
-                    onMouseLeave={() => setHoveredActivity(null)}
-                    onFocus={() => setHoveredActivity(day)}
-                    onBlur={() => setHoveredActivity(null)}
-                    tabIndex={0}
-                    className={`aspect-square rounded-sm border border-blueprint-line outline-none ${day.count >= 3 ? 'bg-emerald-700 dark:bg-emerald-300' : day.count === 2 ? 'bg-emerald-500 dark:bg-emerald-500' : day.count === 1 ? 'bg-emerald-300 dark:bg-emerald-700' : 'bg-[#111111] dark:bg-[#202020]'}`}
-                  />
-                );
-              })}
+              {heatmapDays.map((day) => (
+                <span
+                  key={day.key}
+                  onMouseEnter={() => setHoveredActivity(day)}
+                  onMouseLeave={() => setHoveredActivity(null)}
+                  onFocus={() => setHoveredActivity(day)}
+                  onBlur={() => setHoveredActivity(null)}
+                  tabIndex={0}
+                  className="aspect-square rounded-sm border border-blueprint-line bg-transparent outline-none"
+                  style={activityFillStyle(day.count)}
+                />
+              ))}
               {hoveredActivity ? (
-                <div className="pointer-events-none absolute left-1/2 top-0 z-10 -translate-x-1/2 -translate-y-[calc(100%+8px)] rounded-xl border border-blueprint-line bg-[#101010] px-3 py-2 text-xs shadow-xl">
-                  <p className="font-semibold text-primary dark:text-white">{hoveredActivity.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
-                  <p className="text-primary dark:text-[#d8ffe9]">{hoveredActivity.count === 0 ? 'No activity' : `${hoveredActivity.count} session${hoveredActivity.count === 1 ? '' : 's'}`}</p>
+                <div className="pointer-events-none absolute left-1/2 top-0 z-10 -translate-x-1/2 -translate-y-[calc(100%+8px)] rounded-xl border border-blueprint-line bg-card px-3 py-2 text-xs text-primary shadow-xl">
+                  <p className="font-semibold">{hoveredActivity.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
+                  <p className="text-blueprint-muted">{hoveredActivity.count === 0 ? 'No activity' : `${hoveredActivity.count} session${hoveredActivity.count === 1 ? '' : 's'}`}</p>
                 </div>
               ) : null}
             </div>
-            <p className="mt-4 text-body-md text-blueprint-muted">Darker squares mean more completed practice activity on that day.</p>
+            <p className="mt-4 text-body-md text-blueprint-muted">Brighter green squares mean more completed practice activity on that day.</p>
+          </div>
+        </div>
+      ) : null}
+
+      {domainStatsOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
+          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-blueprint-line bg-card p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-ui-label text-blueprint-muted">Domain Stats</p>
+                <h2 className="mt-2 text-headline-md text-primary not-italic">{domainLabel} readiness</h2>
+              </div>
+              <button type="button" aria-label="Close" onClick={() => setDomainStatsOpen(false)} className="text-blueprint-muted hover:text-primary"><X size={18} /></button>
+            </div>
+
+            <div className="mt-5 grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)]">
+              <div className="surface-inset">
+                <p className="text-ui-label text-blueprint-muted">Overall Readiness</p>
+                <p className="mt-3 font-serif text-[56px] leading-none text-primary">
+                  {domainStats?.overallReadiness ?? 0}
+                  <span className="align-super text-lg font-sans text-blueprint-muted">%</span>
+                </p>
+                <p className="mt-3 text-body-md text-blueprint-muted">
+                  Based on correct answers divided by total attempted questions across all tracked sessions.
+                </p>
+              </div>
+
+              <div className="surface-inset min-h-[300px]">
+                <div className="flex h-full flex-col gap-4 lg:flex-row lg:items-center">
+                  <div className="h-[260px] min-w-0 flex-1">
+                    {domainActivityChartData.length ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={domainActivityChartData}
+                            dataKey="attempted"
+                            nameKey="label"
+                            innerRadius={58}
+                            outerRadius={92}
+                            paddingAngle={3}
+                            labelLine={false}
+                            label={renderDomainPieLabel}
+                          >
+                            {domainActivityChartData.map((entry, index) => (
+                              <Cell key={entry.domain} fill={DOMAIN_CHART_COLORS[index % DOMAIN_CHART_COLORS.length]} />
+                            ))}
+                          </Pie>
+                          <Tooltip content={<DomainStatsTooltip />} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="flex h-full flex-col items-center justify-center p-6 text-center text-body-md text-blueprint-muted">
+                        Complete more sessions to see your domain activity breakdown.
+                      </div>
+                    )}
+                  </div>
+                  <div className="grid gap-2 lg:w-56">
+                    {domainActivityChartData.map((item, index) => (
+                      <div key={item.domain} className="flex items-center justify-between gap-3 text-body-md">
+                        <span className="flex min-w-0 items-center gap-2 text-primary">
+                          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: DOMAIN_CHART_COLORS[index % DOMAIN_CHART_COLORS.length] }} />
+                          <span className="truncate">{item.label}</span>
+                        </span>
+                        <span className="text-blueprint-muted">{item.activityShare}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+              <div className="surface-inset">
+                <p className="text-ui-label text-blueprint-muted">Strongest Domain</p>
+                {domainStats?.strongestDomain ? (
+                  <>
+                    <p className="mt-3 text-headline-md text-primary not-italic">{domainStats.strongestDomain.label}</p>
+                    <p className="mt-2 text-body-md text-blueprint-muted">
+                      {domainStats.strongestDomain.correctRate}% score across {domainStats.strongestDomain.attempted} attempted question{domainStats.strongestDomain.attempted === 1 ? '' : 's'}.
+                    </p>
+                  </>
+                ) : (
+                  <p className="mt-3 text-body-md text-blueprint-muted">Complete more sessions to see your strongest domain.</p>
+                )}
+              </div>
+
+              <div className="surface-inset">
+                <p className="text-ui-label text-blueprint-muted">Per-domain Breakdown</p>
+                {domainActivityChartData.length ? (
+                  <div className="mt-4 grid gap-3">
+                    {domainActivityChartData.map((item) => (
+                      <div key={item.domain} className="rounded-xl border border-blueprint-line bg-card p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="min-w-0 truncate text-body-md font-medium text-primary">{item.label}</p>
+                          <span className="shrink-0 text-ui-label text-blueprint-muted">{item.correctRate}%</span>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between gap-3 text-sm text-blueprint-muted">
+                          <span>{item.attempted} attempt{item.attempted === 1 ? '' : 's'}</span>
+                          <span>{item.sessions} session{item.sessions === 1 ? '' : 's'}</span>
+                        </div>
+                        <div className="mt-3 h-2 rounded-full bg-blueprint-line/40">
+                          <div className="h-2 rounded-full bg-emerald-500" style={{ width: `${Math.min(100, Math.max(0, item.correctRate))}%` }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-3 text-body-md text-blueprint-muted">No completed session data is available yet.</p>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
@@ -726,8 +898,8 @@ export default function Dashboard() {
               <div className="surface-inset min-h-[260px]">
                 <ResponsiveContainer width="100%" height={240}>
                   <BarChart data={readinessChartData} margin={{ top: 12, right: 12, left: -24, bottom: 0 }}>
-                    <XAxis dataKey="name" tick={{ fill: 'currentColor', fontSize: 12 }} />
-                    <YAxis domain={[0, 100]} tick={{ fill: 'currentColor', fontSize: 12 }} />
+                    <XAxis dataKey="name" tick={{ fill: 'var(--color-primary)', fontSize: 12 }} />
+                    <YAxis domain={[0, 100]} tick={{ fill: 'var(--color-primary)', fontSize: 12 }} />
                     <Tooltip cursor={{ fill: 'rgba(16,185,129,0.08)' }} content={<ReadinessTooltip />} />
                     <Bar dataKey="value" minPointSize={4} radius={[8, 8, 0, 0]}>
                       {readinessChartData.map((entry) => <Cell key={entry.name} fill={entry.fill} />)}

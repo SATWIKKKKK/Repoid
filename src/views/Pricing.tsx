@@ -205,7 +205,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
               >
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-ui-label text-blueprint-muted">{plan.name}</p>
-                  {isCurrent ? <span className="rounded-full border border-blueprint-line bg-card px-3 py-1 text-ui-label text-primary dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-300">Current</span> : null}
+                  {isCurrent ? <span className="pricing-current-badge rounded-full border border-blueprint-line bg-card px-3 py-1 text-ui-label text-primary">Current</span> : null}
                 </div>
                 <h2 className="mt-3 text-headline-lg text-primary not-italic">
                   {plan.price}
@@ -222,7 +222,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
                   ))}
                 </ul>
                 {isCurrent && subscription?.currentPeriodEnd ? (
-                  <p className={cn('mt-5 rounded-xl border px-3 py-2 text-body-sm', subscription.status === 'expired' ? 'border-red-300/40 bg-red-500/10 text-red-600 dark:text-red-300' : 'border-blueprint-line bg-card text-primary dark:border-emerald-300/40 dark:bg-emerald-500/10 dark:text-emerald-300')}>
+                  <p className={cn('mt-5 rounded-xl border px-3 py-2 text-body-sm', subscription.status === 'expired' ? 'border-red-300/40 bg-red-500/10 text-red-600 dark:text-red-300' : 'pricing-active-until border-blueprint-line bg-card text-primary')}>
                     {subscription.status === 'expired' ? 'Expired on' : 'Active until'} {new Date(subscription.currentPeriodEnd).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                   </p>
                 ) : null}

@@ -23,6 +23,16 @@ export type SubscriptionState = {
   limits: PlanLimits;
 };
 
+export type SubscriptionNoticeType = 'expired' | 'expiring';
+
+export type SubscriptionNotice = {
+  type: SubscriptionNoticeType;
+  plan: BillingPlan;
+  billingInterval: BillingInterval;
+  currentPeriodEnd: string | null;
+  expiredAt?: string | null;
+};
+
 export type BillingOrder = {
   keyId: string;
   orderId: string;
@@ -72,6 +82,13 @@ export async function fetchSubscription(): Promise<ApiResult<SubscriptionState>>
   const result = await requestJson<{ subscription: SubscriptionState }>('/api/billing/subscription');
   if (result.ok === false) return result;
   return { ok: true as const, data: result.data.subscription };
+}
+
+export async function markSubscriptionNoticeSeen(type: SubscriptionNoticeType): Promise<ApiResult<{ success: boolean }>> {
+  return requestJson<{ success: boolean }>('/api/billing/subscription-notices/seen', {
+    method: 'POST',
+    body: JSON.stringify({ type }),
+  });
 }
 
 export async function createBillingOrder(payload: {

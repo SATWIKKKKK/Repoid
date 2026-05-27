@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <style>
+    .light-bg { fill: #fbf9f9; } /* OFF-WHITE BACKGROUND */
+    .logo-light { fill: none; stroke: #1a1a1a; stroke-width: 16; stroke-linecap: round; stroke-linejoin: round; } /* LOGO COLOR */
+    .node-light { fill: #ffffff; stroke: #1a1a1a; stroke-width: 16; } /* CRISP WHITE FILL, DARK OUTLINE */
+  </style>
+
+  <rect class="light-bg" width="400" height="400"/>
+
+  <path class="logo-light" d="M140,80v240" /> <path class="logo-light" d="M140,80c130,0 130,140 0,140" /> <path class="logo-light" d="M140,220c60,0 60,100 120,100" /> <circle class="node-light" cx="140" cy="80" r="22" /> <circle class="node-light" cx="140" cy="320" r="22" /> <circle class="node-light" cx="260" cy="320" r="22" /> </svg>

@@ -1,14 +1,16 @@
 import React, { Suspense, lazy, useEffect, useState } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { BrowserRouter, Navigate, Route, Routes, matchPath, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { CheckCircle2, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock3, X } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import PageProgress from './components/PageProgress';
-import { fetchCurrentUser, getStoredUser, persistSessionUser, SessionUser } from './lib/session';
+import { clearStoredUserCache, fetchCurrentUser, persistSessionUser, SessionUser } from './lib/session';
 import { getStoredPrepWorkspace, isOnboardingComplete, updatePrepWorkspace } from './lib/prep';
 import { applyThemePreference, normalizeThemePreference } from './lib/theme';
 import { fetchUserPreferences } from './lib/userPreferences';
+import { markSubscriptionNoticeSeen, type SubscriptionNotice } from './lib/billing';
 
 const Dashboard = lazy(() => import('./views/Dashboard'));
 const Builder = lazy(() => import('./views/Builder'));
@@ -96,16 +98,53 @@ function RouteFallback() {
   );
 }
 
+function subscriptionPlanName(notice: SubscriptionNotice) {
+  if (notice.plan === 'team' || notice.billingInterval === 'annual') return 'Yearly';
+  if (notice.plan === 'pro') return 'Monthly';
+  return 'Free';
+}
+
+function daysUntil(value: string | null) {
+  if (!value) return 0;
+  return Math.max(0, Math.ceil((new Date(value).getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
+}
+
 function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-  const [user, setUser] = useState<SessionUser | null>(() => getStoredUser());
-  const [sessionChecked, setSessionChecked] = useState(() => Boolean(getStoredUser()));
+  const [user, setUser] = useState<SessionUser | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [onboardingComplete, setOnboardingComplete] = useState(() => isOnboardingComplete());
+  const [preferencesChecked, setPreferencesChecked] = useState(true);
   const [blockedPracticeId, setBlockedPracticeId] = useState<string | null>(null);
   const [paymentNotice, setPaymentNotice] = useState<{ planName: string; expiry: string | null } | null>(null);
+  const [subscriptionNotice, setSubscriptionNotice] = useState<SubscriptionNotice | null>(null);
+
+  useEffect(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const response = await originalFetch(input, init);
+      const encodedNotice = response.headers.get('X-Repoid-Subscription-Notice');
+      if (encodedNotice) {
+        try {
+          const notice = JSON.parse(decodeURIComponent(encodedNotice)) as SubscriptionNotice;
+          setSubscriptionNotice(notice);
+          if (notice.type === 'expired') {
+            window.dispatchEvent(new CustomEvent('repoid-subscription-plan-updated', { detail: { plan: 'free' } }));
+          }
+        } catch {
+          undefined;
+        }
+      }
+      return response;
+    };
+
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, []);
 
   useEffect(() => {
     let ignore = false;
@@ -115,14 +154,19 @@ function AppShell() {
         if (sessionUser) {
           persistSessionUser(sessionUser);
           setUser(sessionUser);
+          setPreferencesChecked(false);
         } else {
+          clearStoredUserCache();
           setUser(null);
+          setPreferencesChecked(true);
         }
         setSessionChecked(true);
       })
       .catch(() => {
         if (!ignore) {
+          clearStoredUserCache();
           setUser(null);
+          setPreferencesChecked(true);
           setSessionChecked(true);
         }
       });
@@ -142,7 +186,7 @@ function AppShell() {
   const isSettingsPath = location.pathname === '/settings' || location.pathname.startsWith('/settings/');
   const isAdminPath = location.pathname === '/admin' || location.pathname.startsWith('/admin/');
   const isAuthShellPath = ['/', '/signin', '/login', '/signup', '/onboarding'].includes(location.pathname) || isAdminPath;
-  const showAppChrome = Boolean(user?.loggedIn) && !isAuthShellPath && !isRoundPath && !isLiveRoundPath;
+  const showAppChrome = sessionChecked && Boolean(user?.loggedIn) && !isAuthShellPath && !isRoundPath && !isLiveRoundPath;
 
   const pathToView: Record<string, View> = {
     '/': 'landing',
@@ -195,7 +239,7 @@ function AppShell() {
     terms: 'Terms',
     security: 'Security',
     contact: 'Contact',
-  } as Record<View, string | undefined>)[currentView] ?? 'Repoid';
+  } as Record<View, string | undefined>)[currentView] ?? '';
 
   const handleViewChange = (view: View) => {
     const destination = ({
@@ -250,8 +294,12 @@ function AppShell() {
   }, [location.hash, location.pathname, location.search, location.state, navigate]);
 
   useEffect(() => {
-    if (!user?.loggedIn) return;
+    if (!user?.loggedIn) {
+      setPreferencesChecked(true);
+      return;
+    }
     let ignore = false;
+    setPreferencesChecked(false);
 
     void fetchUserPreferences()
       .then((result) => {
@@ -260,9 +308,15 @@ function AppShell() {
         if (result.data.domain) {
           updatePrepWorkspace({ selections: { ...getStoredPrepWorkspace().selections, domain: result.data.domain } });
         }
+        setOnboardingComplete(Boolean(result.data.domain));
         applyThemePreference(normalizeThemePreference(result.data.theme));
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!ignore) setOnboardingComplete(isOnboardingComplete());
+      })
+      .finally(() => {
+        if (!ignore) setPreferencesChecked(true);
+      });
 
     return () => {
       ignore = true;
@@ -273,7 +327,10 @@ function AppShell() {
     const handlePreferencesUpdated = (event: Event) => {
       const detail = (event as CustomEvent<{ sidebarOpen?: boolean; theme?: string; domain?: string }>).detail;
       if (typeof detail?.sidebarOpen === 'boolean') setIsSidebarCollapsed(!detail.sidebarOpen);
-      if (detail?.domain) updatePrepWorkspace({ selections: { ...getStoredPrepWorkspace().selections, domain: detail.domain } });
+      if (detail?.domain) {
+        updatePrepWorkspace({ selections: { ...getStoredPrepWorkspace().selections, domain: detail.domain } });
+        setOnboardingComplete(true);
+      }
       if (detail?.theme) applyThemePreference(normalizeThemePreference(detail.theme));
     };
     window.addEventListener('repoid-preferences-updated', handlePreferencesUpdated);
@@ -293,7 +350,14 @@ function AppShell() {
     }
   };
 
-  const hasCompletedOnboarding = onboardingComplete || isOnboardingComplete();
+  const hasCompletedOnboarding = onboardingComplete;
+
+  const closeSubscriptionNotice = (viewPricing = false) => {
+    const notice = subscriptionNotice;
+    setSubscriptionNotice(null);
+    if (notice) void markSubscriptionNoticeSeen(notice.type).catch(() => undefined);
+    if (viewPricing) navigate('/pricing');
+  };
 
   useEffect(() => {
     if (!user?.loggedIn) return;
@@ -359,13 +423,13 @@ function AppShell() {
             <Routes>
               <Route path="/admin" element={<Admin />} />
               <Route path="/admin/login" element={<Admin />} />
-              <Route path="/" element={<Landing onStart={() => navigate('/signup')} onViewDocs={() => navigate('/dashboard')} onViewChange={handleViewChange} />} />
-            <Route path="/signin" element={user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="login" onAuthSuccess={() => { setUser(getStoredUser()); setOnboardingComplete(isOnboardingComplete()); navigate('/dashboard', { replace: true }); }} onBackToLanding={() => navigate('/', { replace: true })} />} />
+              <Route path="/" element={<Landing isAuthenticated={sessionChecked && Boolean(user?.loggedIn)} onStart={() => navigate('/signup')} onViewDocs={() => navigate('/dashboard')} onViewChange={handleViewChange} />} />
+            <Route path="/signin" element={!sessionChecked ? <RouteFallback /> : user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="login" onAuthSuccess={() => { void fetchCurrentUser().then((sessionUser) => { setUser(sessionUser); setPreferencesChecked(false); navigate('/dashboard', { replace: true }); }); }} onBackToLanding={() => navigate('/', { replace: true })} />} />
             <Route path="/login" element={<Navigate to="/signin" replace />} />
-            <Route path="/signup" element={user?.loggedIn ? <Navigate to={hasCompletedOnboarding ? '/dashboard' : '/onboarding'} replace /> : <Auth initialMode="signup" onAuthSuccess={() => { setUser(getStoredUser()); setOnboardingComplete(false); navigate('/onboarding', { replace: true }); }} onBackToLanding={() => navigate('/', { replace: true })} />} />
+            <Route path="/signup" element={!sessionChecked ? <RouteFallback /> : user?.loggedIn ? <Navigate to="/dashboard" replace /> : <Auth initialMode="signup" onAuthSuccess={() => { setOnboardingComplete(false); setPreferencesChecked(false); void fetchCurrentUser().then((sessionUser) => { setUser(sessionUser); navigate('/dashboard', { replace: true }); }); }} onBackToLanding={() => navigate('/', { replace: true })} />} />
 
-            <Route path="/dashboard" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}>{hasCompletedOnboarding ? <Dashboard /> : <Navigate to="/onboarding" replace />}</ProtectedRoute>} />
-            <Route path="/onboarding" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Builder onViewChange={handleViewChange} /></ProtectedRoute>} />
+            <Route path="/dashboard" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}>{preferencesChecked ? (hasCompletedOnboarding ? <Dashboard /> : <Navigate to="/onboarding" replace />) : <RouteFallback />}</ProtectedRoute>} />
+            <Route path="/onboarding" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}>{preferencesChecked ? (hasCompletedOnboarding ? <Navigate to="/dashboard" replace /> : <Builder onViewChange={handleViewChange} />) : <RouteFallback />}</ProtectedRoute>} />
             <Route path="/builder" element={<Navigate to="/onboarding" replace />} />
             <Route path="/practice-tracks" element={<ProtectedRoute user={user} sessionChecked={sessionChecked}><Workflows /></ProtectedRoute>} />
             <Route path="/workflows" element={<Navigate to="/practice-tracks" replace />} />
@@ -437,6 +501,59 @@ function AppShell() {
         </div>
       ) : null}
 
+      {subscriptionNotice ? (
+        <div className="fixed inset-0 z-140 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-[28px] border border-blueprint-line bg-card p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-full border border-amber-300/60 bg-amber-50 p-2 text-amber-800 dark:border-amber-300/30 dark:bg-amber-500/10 dark:text-amber-200">
+                  {subscriptionNotice.type === 'expired' ? <AlertTriangle size={18} /> : <Clock3 size={18} />}
+                </div>
+                <div>
+                  <p className="text-ui-label text-blueprint-muted">
+                    {subscriptionNotice.type === 'expired' ? 'Subscription ended' : 'Subscription reminder'}
+                  </p>
+                  <h2 className="mt-1 text-headline-md text-primary not-italic">
+                    {subscriptionNotice.type === 'expired'
+                      ? "You've been moved back to Free."
+                      : `${subscriptionPlanName(subscriptionNotice)} expires in ${daysUntil(subscriptionNotice.currentPeriodEnd)} day${daysUntil(subscriptionNotice.currentPeriodEnd) === 1 ? '' : 's'}.`}
+                  </h2>
+                  <p className="mt-2 text-body-md text-blueprint-muted">
+                    {subscriptionNotice.type === 'expired'
+                      ? 'Your subscription has ended. Free tier limits now apply to repo scans, rounds, and exports.'
+                      : `Your ${subscriptionPlanName(subscriptionNotice)} plan is close to expiry. Renew or upgrade to keep paid access without interruption.`}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => closeSubscriptionNotice(false)}
+                className="rounded-full border border-blueprint-line p-2 text-blueprint-muted transition-colors hover:border-primary hover:text-primary"
+                aria-label="Close subscription notice"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => closeSubscriptionNotice(false)}
+                className="rounded-full border border-blueprint-line px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5"
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                onClick={() => closeSubscriptionNotice(true)}
+                className="rounded-full bg-primary px-5 py-2.5 text-ui-label text-white transition-colors hover:bg-[#303031]"
+              >
+                View pricing
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {paymentNotice ? (
         <div className="fixed inset-0 z-140 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-[28px] border border-blueprint-line bg-card p-6 shadow-2xl">
@@ -483,6 +600,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AppShell />
+      <Analytics />
     </BrowserRouter>
   );
 }
