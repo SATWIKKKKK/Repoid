@@ -14,9 +14,8 @@ The product is designed for software engineers, data practitioners, and security
 
 ---
 
-## Screenshot
+<img width="1917" height="885" alt="image" src="https://github.com/user-attachments/assets/b92ec5c0-fbfd-49d2-96d6-a7050fc40f75" />
 
-<!-- Attach a screenshot of the dashboard or the question bank view here -->
 
 ---
 
@@ -120,9 +119,17 @@ Payments are processed via Razorpay. Upgrades and downgrades take effect immedia
 
 ---
 
-## Screenshot
+<img width="1519" height="839" alt="image" src="https://github.com/user-attachments/assets/983204ef-1e68-4fcc-a61a-25040fa9777f" />
 
-<!-- Attach a screenshot of a coding round or scenario round in progress here -->
+---
+<img width="1803" height="640" alt="image" src="https://github.com/user-attachments/assets/cee5f8b3-56ab-478c-9cad-b5b0d6579bc6" />
+
+---
+<img width="1417" height="576" alt="image" src="https://github.com/user-attachments/assets/5a657591-3efa-41af-8de8-f1cf2293ad26" />
+
+---
+
+
 
 ---
 
