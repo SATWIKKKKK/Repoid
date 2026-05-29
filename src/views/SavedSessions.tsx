@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { BookmarkCheck, LoaderCircle, RotateCcw } from 'lucide-react';
+import { BookmarkCheck, LoaderCircle, RotateCcw, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { DOMAIN_LABELS, getVisibleDomainOptions } from '../lib/prep';
-import { fetchSavedSessions, type SavedRoundType, type SavedSessionCard } from '../lib/savedSessions';
+import { deleteSavedSession, fetchSavedSessions, type SavedRoundType, type SavedSessionCard } from '../lib/savedSessions';
 
 const ROUND_FILTERS: Array<{ id: 'all' | SavedRoundType; label: string }> = [
   { id: 'all', label: 'ALL' },
@@ -10,6 +10,7 @@ const ROUND_FILTERS: Array<{ id: 'all' | SavedRoundType; label: string }> = [
   { id: 'scenario', label: 'SCENARIO' },
   { id: 'coding', label: 'CODING' },
   { id: 'mock', label: 'MOCK' },
+  { id: 'github', label: 'GITHUB' },
 ];
 
 const ROUND_BADGES: Record<SavedRoundType, string> = {
@@ -17,6 +18,7 @@ const ROUND_BADGES: Record<SavedRoundType, string> = {
   scenario: 'SCENARIO',
   coding: 'CODING',
   mock: 'MOCK',
+  github: 'GITHUB',
 };
 
 function formatDate(value: string) {
@@ -38,6 +40,7 @@ export default function SavedSessions() {
   const [selectedRoundType, setSelectedRoundType] = useState<'all' | SavedRoundType>('all');
   const [sessions, setSessions] = useState<SavedSessionCard[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -64,6 +67,18 @@ export default function SavedSessions() {
   }, [selectedDomain, selectedRoundType]);
 
   const selectedLabel = selectedDomain === 'all' ? 'all domains' : (DOMAIN_LABELS[selectedDomain] ?? selectedDomain);
+
+  const removeSession = async (session: SavedSessionCard) => {
+    setDeletingId(session.id);
+    setError(null);
+    const result = await deleteSavedSession(session.roundType, session.id);
+    setDeletingId(null);
+    if (result.ok === false) {
+      setError(result.error);
+      return;
+    }
+    setSessions((current) => current.filter((item) => !(item.id === session.id && item.roundType === session.roundType)));
+  };
 
   return (
     <div className="min-h-full bg-background px-4 py-8 sm:px-6 lg:px-10 xl:px-14">
@@ -166,6 +181,14 @@ export default function SavedSessions() {
                         See Notes
                       </button>
                     ) : null}
+                    <button
+                      type="button"
+                      disabled={deletingId === session.id}
+                      onClick={() => { void removeSession(session); }}
+                      className="inline-flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-5 py-2.5 text-ui-label text-red-700 disabled:opacity-60"
+                    >
+                      <Trash2 size={14} /> Delete
+                    </button>
                   </div>
                 </article>
               );

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Download, LoaderCircle, Search } from 'lucide-react';
-import { fetchQuestions, fetchQuestionStats } from '../lib/questionBankApi';
+import { Download, LoaderCircle, Search, Sparkles } from 'lucide-react';
+import { fetchQuestions, fetchQuestionStats, generateBankQuestions } from '../lib/questionBankApi';
 import DomainPickerDialog from '../components/DomainPickerDialog';
 import { QUESTION_TYPES, type BankQuestion, type QuestionType } from '../lib/questionBank';
 import { usePrepWorkspace } from '../hooks/usePrepWorkspace';
@@ -282,6 +282,9 @@ export default function QuestionBank() {
   const [savingDomain, setSavingDomain] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiGeneratedQuestions, setAiGeneratedQuestions] = useState<BankQuestion[]>([]);
+  const [aiGenerateError, setAiGenerateError] = useState<string | null>(null);
 
   const allTypesSelected = selectedTypes.length === ALL_QUESTION_TYPES.length;
   const hasCuratedFilters = ['frontend', 'backend', 'ai-ml', 'cybersecurity', 'data-science', 'data-analytics'].includes(domain);
@@ -342,6 +345,8 @@ export default function QuestionBank() {
     setTopicDropdownValue('');
     setRoundDropdownValue('');
     setFaangOnly(false);
+    setAiGeneratedQuestions([]);
+    setAiGenerateError(null);
   }, [domain]);
 
   useEffect(() => {
@@ -411,6 +416,8 @@ export default function QuestionBank() {
     setSelectedBackendRounds([roundDropdownValue]);
     setSearch('');
     setPage(1);
+    setAiGeneratedQuestions([]);
+    setAiGenerateError(null);
   };
 
   const handleExportPdf = async () => {
@@ -439,6 +446,22 @@ export default function QuestionBank() {
     if (round) return round.label;
     if (question.tags.includes('round:mock-interview')) return 'Mock Interview';
     return QUESTION_TYPE_LABELS[question.type] ?? question.type.replace('_', ' ');
+  };
+
+  const handleGenerateWithAI = async () => {
+    const topic = selectedBackendTopics[0] ?? '';
+    const roundType = selectedBackendRounds[0] ?? '';
+    if (!topic || !roundType) return;
+    setAiGenerating(true);
+    setAiGenerateError(null);
+    setAiGeneratedQuestions([]);
+    const result = await generateBankQuestions({ domain, topic, roundType });
+    setAiGenerating(false);
+    if (result.ok === false) {
+      setAiGenerateError(result.error);
+      return;
+    }
+    setAiGeneratedQuestions(result.data);
   };
 
   const handleDomainSave = async (nextDomain: string) => {
@@ -653,9 +676,59 @@ export default function QuestionBank() {
               </div>
             ) : null}
             {error ? <p className="text-body-md text-red-600">{error}</p> : null}
-            {!loading && !error && !questions.length ? (
-              <div className="surface-card text-body-md text-blueprint-muted">
-                No questions found.
+            {aiGenerating ? (
+              <div className="surface-card space-y-4">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">
+                    <Sparkles size={18} className="text-primary animate-pulse" />
+                  </span>
+                  <div>
+                    <p className="text-ui-label text-primary">Generating with DeepSeek AI</p>
+                    <p className="mt-0.5 text-body-md text-blueprint-muted">Building questions for <strong>{selectedBackendTopics[0]}</strong> — {CURATED_ROUND_FILTERS.find((r) => r.id === selectedBackendRounds[0])?.label ?? selectedBackendRounds[0]}...</p>
+                  </div>
+                </div>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <div key={i} className="surface-card flex animate-pulse flex-col gap-3">
+                      <div className="flex flex-wrap gap-2">
+                        <div className="h-7 w-20 rounded-full bg-blueprint-line/40" />
+                        <div className="h-7 w-24 rounded-full bg-blueprint-line/40" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="h-4 w-full rounded bg-blueprint-line/40" />
+                        <div className="h-4 w-5/6 rounded bg-blueprint-line/40" />
+                        <div className="h-4 w-3/4 rounded bg-blueprint-line/40" />
+                      </div>
+                      <div className="mt-auto h-10 rounded-xl bg-blueprint-line/25" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {!loading && !error && !questions.length && !aiGenerating && !aiGeneratedQuestions.length ? (
+              <div className="surface-card space-y-4">
+                <div>
+                  <p className="text-body-md text-blueprint-muted">
+                    No stored questions found for this topic and round-type combination.
+                  </p>
+                  {hasCuratedFilters && selectedBackendTopics.length > 0 && selectedBackendRounds.length > 0 ? (
+                    <>
+                      <p className="mt-2 text-body-md text-blueprint-muted">
+                        Generate fresh questions for <strong>{selectedBackendTopics[0]}</strong> — {CURATED_ROUND_FILTERS.find((r) => r.id === selectedBackendRounds[0])?.label ?? selectedBackendRounds[0]} using DeepSeek AI.
+                      </p>
+                      {aiGenerateError ? <p className="mt-2 text-body-md text-red-600">{aiGenerateError}</p> : null}
+                      <button
+                        type="button"
+                        onClick={() => { void handleGenerateWithAI(); }}
+                        className="mt-4 inline-flex items-center gap-2 rounded-full bg-primary px-6 py-3 text-ui-label text-white hover:bg-[#303031]"
+                      >
+                        <Sparkles size={16} /> Generate with AI
+                      </button>
+                    </>
+                  ) : (
+                    <p className="mt-2 text-body-md text-blueprint-muted">Try enabling more round types or changing the domain.</p>
+                  )}
+                </div>
               </div>
             ) : null}
 
@@ -759,6 +832,102 @@ export default function QuestionBank() {
                     </div>
                   </div>
                 </>
+              );
+            })() : null}
+
+            {!aiGenerating && aiGeneratedQuestions.length > 0 ? (() => {
+              const aiCard = (question: BankQuestion, idx: number) => (
+                <article key={`ai-${question.id}-${idx}`} className="surface-card flex min-w-0 flex-col overflow-hidden ring-1 ring-primary/20">
+                  <div className="mb-4 flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-primary/30 bg-primary/5 px-3 py-1.5 text-ui-label text-primary">AI Generated</span>
+                    <span className="rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-blueprint-muted">{CURATED_ROUND_FILTERS.find((r) => r.id === selectedBackendRounds[0])?.label ?? selectedBackendRounds[0]}</span>
+                    <span className="rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-blueprint-muted">{question.topic}</span>
+                    <span className="rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-blueprint-muted">D{question.difficulty}</span>
+                  </div>
+                  <h2 className="mt-2 min-h-24 wrap-break-word text-body-lg font-semibold text-primary">{question.questionText}</h2>
+                  {question.codeSnippet ? (
+                    <pre className="surface-inset mt-4 max-w-full overflow-x-auto whitespace-pre-wrap wrap-break-word text-[13px] leading-6 text-blueprint-muted sm:whitespace-pre"><code className="block min-w-0">{question.codeSnippet}</code></pre>
+                  ) : null}
+                  {question.options?.length ? (
+                    <div className="mt-4 grid gap-2">
+                      {question.options.map((option) => (
+                        <div key={option} className="surface-inset px-3 py-2 text-body-md text-blueprint-muted">{option}</div>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="surface-inset mt-4 min-w-0 p-3">
+                    <button
+                      type="button"
+                      onClick={() => setOpenAnswers((current) => ({ ...current, [question.id]: !current[question.id] }))}
+                      className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-4 text-left text-ui-label text-primary"
+                      aria-expanded={Boolean(openAnswers[question.id])}
+                    >
+                      <span className="min-w-0">Answer</span>
+                      <span className="whitespace-nowrap text-blueprint-muted">{openAnswers[question.id] ? 'Hide' : 'Show'}</span>
+                    </button>
+                    {openAnswers[question.id] ? (
+                      <>
+                        {hasCodeBlock(question.correctAnswer) ? (
+                          <div className="mt-3 space-y-3">
+                            {parseAnswerSegments(question.correctAnswer).map((seg, si) =>
+                              seg.kind === 'code' ? (
+                                <pre key={si} className="max-w-full overflow-x-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-blueprint-line bg-[#f8f7f5] p-3 text-[0.78rem] leading-relaxed text-primary sm:whitespace-pre dark:bg-white/5">
+                                  <code className="block min-w-0">{seg.code}</code>
+                                </pre>
+                              ) : (
+                                <ul key={si} className="space-y-1.5 text-body-md text-primary">
+                                  {toPoints(seg.text, { allowCommaFallback: false }).map((point, pi) => (
+                                    <li key={pi} className="flex items-baseline gap-2">
+                                      <span className={`${bulletDotClass} bg-primary`} />
+                                      <span className="min-w-0 wrap-break-word">{renderInlineCode(point)}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )
+                            )}
+                          </div>
+                        ) : (
+                          <ul className="mt-3 space-y-1.5 text-body-md text-primary">
+                            {toPoints(question.correctAnswer, { allowCommaFallback: false }).map((point, pi) => (
+                              <li key={pi} className="flex items-baseline gap-2">
+                                <span className={`${bulletDotClass} bg-primary`} />
+                                <span className="min-w-0 wrap-break-word">{renderInlineCode(point)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {question.explanation ? (
+                          <ul className="mt-3 space-y-1.5 text-body-md text-blueprint-muted">
+                            {toPoints(question.explanation, { allowCommaFallback: false }).map((point, pi) => (
+                              <li key={pi} className="flex items-baseline gap-2">
+                                <span className={`${bulletDotClass} bg-blueprint-muted`} />
+                                <span className="min-w-0 wrap-break-word">{renderInlineCode(point)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </div>
+                </article>
+              );
+              const aiLeft = aiGeneratedQuestions.filter((_, i) => i % 2 === 0);
+              const aiRight = aiGeneratedQuestions.filter((_, i) => i % 2 === 1);
+              return (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 text-ui-label text-blueprint-muted">
+                    <Sparkles size={14} className="text-primary" />
+                    AI-generated — {aiGeneratedQuestions.length} questions for {selectedBackendTopics[0]}
+                    <button type="button" onClick={() => { void handleGenerateWithAI(); }} className="ml-2 rounded-full border border-blueprint-line px-3 py-1 text-ui-label text-primary hover:bg-[#f5f3f3]">Regenerate</button>
+                  </div>
+                  <div className="flex flex-col gap-4 xl:hidden">
+                    {aiGeneratedQuestions.map((q, i) => aiCard(q, i))}
+                  </div>
+                  <div className="hidden min-w-0 xl:flex xl:gap-4">
+                    <div className="flex min-w-0 flex-1 flex-col gap-4">{aiLeft.map((q, i) => aiCard(q, i * 2))}</div>
+                    <div className="flex min-w-0 flex-1 flex-col gap-4">{aiRight.map((q, i) => aiCard(q, i * 2 + 1))}</div>
+                  </div>
+                </div>
               );
             })() : null}
 

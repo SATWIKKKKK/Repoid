@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, ChevronLeft, ChevronRight, Circle, LoaderCircle } from 'lucide-react';
+import { CheckCircle2, ChevronLeft, ChevronRight, Circle, LoaderCircle, XCircle } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import RoundShell from '../components/RoundShell';
 import {
@@ -319,17 +319,17 @@ export default function PracticeRound() {
                   type="button"
                   onClick={() => setCurrentQuestionIndex(index)}
                   className={`inline-flex h-9 w-9 items-center justify-center rounded-full border text-ui-label transition-colors ${
-                    active
-                      ? 'border-primary bg-primary text-white'
-                      : answered
-                        ? answeredCorrectly
-                          ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
-                          : 'border-red-300 bg-red-50 text-red-700'
+                    answered
+                      ? answeredCorrectly
+                        ? `border-emerald-400 bg-emerald-50 text-emerald-700 ${active ? 'ring-2 ring-emerald-500/40' : ''}`
+                        : `border-red-400 bg-red-50 text-red-700 ${active ? 'ring-2 ring-red-500/40' : ''}`
+                      : active
+                        ? 'border-primary bg-primary text-white'
                         : 'border-blueprint-line bg-white text-blueprint-muted'
                   }`}
                   aria-label={`Go to question ${index + 1}`}
                 >
-                  {answered ? <CheckCircle2 size={15} /> : <Circle size={14} />}
+                  {answered ? (answeredCorrectly ? <CheckCircle2 size={15} /> : <XCircle size={15} />) : <Circle size={14} />}
                 </button>
               );
             })}
@@ -394,20 +394,26 @@ export default function PracticeRound() {
             )}
 
             {isConfirmed ? (
-              <div className={`mt-6 rounded-2xl border px-4 py-4 ${currentIsCorrect ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
-                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-                  <div>
-                    {!currentIsCorrect ? (
-                      <span className="text-body-md text-primary">Correct answer: {currentQuestion.correctAnswer}</span>
-                    ) : (
-                      <span className="text-body-md text-primary">Answer confirmed.</span>
-                    )}
+              <div className="mt-6 rounded-2xl border border-blueprint-line bg-card px-4 py-4">
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                  <div className="space-y-2">
+                    <p className={`inline-flex rounded-full px-3 py-1 text-ui-label ${currentIsCorrect ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'}`}>
+                      {currentIsCorrect ? 'Correct answer' : 'Incorrect answer'}
+                    </p>
+                    <p className={`w-fit rounded-xl border px-3 py-2 text-body-md ${currentIsCorrect ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-red-300 bg-red-50 text-red-800'}`}>
+                      Your answer: {confirmedAnswer}
+                    </p>
+                    <p className="w-fit rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-body-md text-emerald-800">
+                      Correct answer: {currentQuestion.correctAnswer}
+                    </p>
+                    {currentQuestion.type === 'code-reading' ? (
+                      <p className="text-body-md text-primary">{currentQuestion.explanation || 'Explanation unavailable for this coding question.'}</p>
+                    ) : null}
                   </div>
-                  <span className={`justify-self-end rounded-full px-3 py-1 text-ui-label ${currentIsCorrect ? 'bg-emerald-600 text-white' : 'bg-amber-600 text-white'}`}>
+                  <span className={`justify-self-end rounded-full px-3 py-1 text-ui-label ${currentIsCorrect ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'}`}>
                     {currentIsCorrect ? 'Correct' : 'Incorrect'}
                   </span>
                 </div>
-                <p className="mt-3 text-body-md text-primary">{currentQuestion.explanation || 'Explanation unavailable for this question.'}</p>
               </div>
             ) : null}
 

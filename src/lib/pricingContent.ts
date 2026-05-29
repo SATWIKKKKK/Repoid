@@ -28,7 +28,7 @@ export const PRICING_PLANS: PricingPlanContent[] = [
     cadence: 'per 3 months',
     description: 'Quarterly sprint access for serious prep with higher limits and every round unlocked.',
     billingInterval: 'monthly',
-    features: ['Everything in Free', 'Unlimited coding rounds', 'Unlimited scenario rounds', 'Unlimited mock interviews', '7 GitHub repo scans per month'],
+    features: ['Everything in Free', 'Unlimited coding rounds', 'Unlimited scenario rounds', 'Unlimited mock interviews', '15 GitHub repo scans per month'],
     featured: true,
   },
   {
@@ -53,7 +53,7 @@ export const PRICING_FAQS = [
   },
   {
     question: 'What is the difference between Monthly and Yearly for repo scans and PDF exports?',
-    answer: 'Monthly gives you 7 GitHub repo scans each month for a focused prep sprint. Yearly unlocks unlimited GitHub repo scans and PDF exports, so it is better if you plan to revise many projects, keep downloadable notes, or prepare across a full placement season.',
+    answer: 'Monthly gives you 15 GitHub repo scans each month for a focused prep sprint. Yearly unlocks unlimited GitHub repo scans and PDF exports, so it is better if you plan to revise many projects, keep downloadable notes, or prepare across a full placement season.',
   },
   {
     question: 'Do you offer refunds?',

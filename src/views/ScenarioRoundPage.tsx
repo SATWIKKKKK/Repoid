@@ -21,6 +21,7 @@ import { updateUserPreferences } from '../lib/userPreferences';
 
 const PENDING_SCENARIO_KEY = 'repoid-pending-scenario-generation';
 const VOICE_TOOLTIP_KEY = 'repoid_voice_tooltip_seen';
+const SCENARIO_DRAFT_PREFIX = 'repoid-scenario-answer-draft:';
 const SCENARIO_GENERATION_ESTIMATED_TOTAL_SECONDS = 12;
 
 type SpeechRecognitionAlternativeLike = {
@@ -80,6 +81,10 @@ function appendTranscript(base: string, chunk: string) {
   return `${normalizedBase} ${normalizedChunk}`;
 }
 
+function scenarioDraftKey(attemptId: string) {
+  return `${SCENARIO_DRAFT_PREFIX}${attemptId}`;
+}
+
 function formatScenarioTypeLabel(value: string) {
   if (!value) return 'Scenario';
   return value.charAt(0).toUpperCase() + value.slice(1);
@@ -132,6 +137,10 @@ export default function ScenarioRoundPage() {
   const voiceProcessingTimeoutRef = useRef<number | null>(null);
   const voiceStoppedManuallyRef = useRef(true);
   const accumulatedTranscriptRef = useRef('');
+  // Keep a ref always in sync with draftAnswer so callbacks/event handlers always read the latest value.
+  const draftAnswerRef = useRef('');
+  // Debounce timer for server-side draft saves.
+  const serverSaveTimerRef = useRef<number | null>(null);
 
   const voiceSupported = useMemo(() => {
     if (typeof window === 'undefined') return false;
@@ -263,11 +272,19 @@ export default function ScenarioRoundPage() {
         if (voiceRestartTimeoutRef.current !== null) window.clearTimeout(voiceRestartTimeoutRef.current);
         voiceRestartTimeoutRef.current = window.setTimeout(() => {
           if (voiceStoppedManuallyRef.current) return;
+          // Re-seed accumulated from the actual DOM value so any typing done between
+          // voice sessions is preserved when voice auto-restarts.
+          const currentText = textareaRef.current?.value ?? draftAnswerRef.current;
+          accumulatedTranscriptRef.current = currentText;
           try {
             recognition.start();
             setVoiceListening(true);
-          } catch {
-            stopVoiceInput('Voice input stopped. Your text is saved - continue typing.', true);
+          } catch (err) {
+            const msg = String(err).toLowerCase();
+            // 'already started' / 'invalid state' means recognition is already running — that's fine.
+            if (!msg.includes('already started') && !msg.includes('invalid state')) {
+              stopVoiceInput('Voice input stopped. Your text is saved - continue typing.', true);
+            }
           }
         }, 300);
       };
@@ -287,11 +304,11 @@ export default function ScenarioRoundPage() {
     }
 
     voiceStoppedManuallyRef.current = false;
-    accumulatedTranscriptRef.current = '';
+    // Always seed from the actual DOM value so any typed text is never lost when resuming voice.
+    accumulatedTranscriptRef.current = textareaRef.current.value;
     setInterimTranscript('');
     setVoiceError(null);
     setVoiceMessage(null);
-    applyVoiceText('');
     textareaRef.current.focus();
 
     try {
@@ -300,7 +317,7 @@ export default function ScenarioRoundPage() {
     } catch {
       stopVoiceInput('Voice input stopped. Your text is saved - continue typing.', true);
     }
-  }, [applyVoiceText, stopVoiceInput, voiceSupported]);
+  }, [applyVoiceText, draftAnswer, stopVoiceInput, voiceSupported]);
 
   const launchTopic = useCallback(async (rawTopic?: string) => {
     const nextTopic = (rawTopic ?? topic).trim();
@@ -527,7 +544,13 @@ export default function ScenarioRoundPage() {
       }
       setAttempt(result.data);
       setScenario(result.data.scenario);
-      setDraftAnswer(result.data.answer ?? '');
+      let savedDraft = '';
+      try {
+        savedDraft = window.localStorage.getItem(scenarioDraftKey(result.data.id)) ?? '';
+      } catch {
+        savedDraft = '';
+      }
+      setDraftAnswer(savedDraft || result.data.answer || '');
       if (result.data.status === 'completed') {
         navigate(`/results/scenario/${encodeURIComponent(result.data.id)}`, { replace: true });
       }
@@ -536,6 +559,39 @@ export default function ScenarioRoundPage() {
       ignore = true;
     };
   }, [attemptId, navigate]);
+
+  useEffect(() => {
+    // Keep draftAnswerRef always in sync so callbacks can read latest without stale closures.
+    draftAnswerRef.current = draftAnswer;
+    if (!attempt?.id || attempt.status === 'completed') return;
+    try {
+      window.localStorage.setItem(scenarioDraftKey(attempt.id), draftAnswer);
+    } catch {
+      // Local draft persistence is best-effort.
+    }
+    // Debounced server-side save every 8 s of inactivity.
+    if (serverSaveTimerRef.current !== null) window.clearTimeout(serverSaveTimerRef.current);
+    serverSaveTimerRef.current = window.setTimeout(() => {
+      serverSaveTimerRef.current = null;
+      void fetch(`/api/round-drafts/scenario-round/${encodeURIComponent(attempt.id)}`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payload: { answer: draftAnswer } }),
+      }).catch(() => undefined);
+    }, 8000);
+  }, [attempt?.id, attempt?.status, draftAnswer]);
+
+  // Save to localStorage synchronously on page unload so a hard refresh doesn't lose data.
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      const id = attempt?.id;
+      if (!id || attempt?.status === 'completed') return;
+      try { window.localStorage.setItem(scenarioDraftKey(id), draftAnswerRef.current); } catch { /* ignore */ }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [attempt?.id, attempt?.status]);
 
   useEffect(() => {
     if (!attempt) return undefined;
@@ -644,7 +700,10 @@ export default function ScenarioRoundPage() {
                     <textarea
                       ref={textareaRef}
                       value={draftAnswer}
-                      onChange={(event) => setDraftAnswer(event.target.value)}
+                      onChange={(event) => {
+                        setDraftAnswer(event.target.value);
+                        accumulatedTranscriptRef.current = event.target.value;
+                      }}
                       disabled={submittingRound || expiring}
                       className={`min-h-[16rem] w-full resize-none rounded-2xl border border-blueprint-line bg-blueprint-bg p-5 text-body-md text-primary outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-70 sm:min-h-[18rem] ${interimTranscript ? 'italic opacity-80' : ''}`}
                       placeholder="Answer as if you are explaining your diagnosis, decision, tradeoff, and validation plan to a senior interviewer."
@@ -772,9 +831,6 @@ export default function ScenarioRoundPage() {
           <div className="rounded-2xl border border-blueprint-line bg-card px-6 py-5 text-center shadow-2xl">
             <LoaderCircle size={24} className="mx-auto animate-spin text-primary" />
             <p ref={generationPhaseRef} className="mt-4 text-body-lg text-primary">Building your scenario...</p>
-            <p className="mt-2 text-body-md text-blueprint-muted">Elapsed: <span ref={elapsedRef}>0s</span></p>
-            <p className="mt-1 text-body-md text-blueprint-muted">Estimated total: ~{SCENARIO_GENERATION_ESTIMATED_TOTAL_SECONDS}s</p>
-            <p className="mt-1 text-body-md text-blueprint-muted">Estimated time remaining: <span ref={remainingRef}>{SCENARIO_GENERATION_ESTIMATED_TOTAL_SECONDS}s</span></p>
           </div>
         </div>
       ) : null}

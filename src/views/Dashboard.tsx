@@ -196,7 +196,7 @@ export default function Dashboard() {
   const [readinessOpen, setReadinessOpen] = useState(false);
   const [domainStatsOpen, setDomainStatsOpen] = useState(false);
   const [heatmapRange, setHeatmapRange] = useState(30);
-  const [heatmapMonth, setHeatmapMonth] = useState('recent');
+  const [heatmapMonth, setHeatmapMonth] = useState('');
   const [activityRows, setActivityRows] = useState<ActivityRow[]>([]);
   const [domainStats, setDomainStats] = useState<DomainStatsPayload | null>(null);
   const [hoveredActivity, setHoveredActivity] = useState<{ key: string; date: Date; count: number } | null>(null);
@@ -252,7 +252,7 @@ export default function Dashboard() {
     });
   }, []);
   const displayedHeatmapDays = useMemo(() => {
-    if (heatmapMonth === 'recent') return heatmapDays;
+    if (!heatmapMonth) return heatmapDays;
     return daysForMonth(heatmapMonth, activityByDate);
   }, [activityByDate, heatmapDays, heatmapMonth]);
   const activityTrendData = useMemo(() => {
@@ -404,7 +404,7 @@ export default function Dashboard() {
   useEffect(() => {
     let ignore = false;
     setLoadingPractice(true);
-    void fetchPracticeSessions({ savedOnly: true }).then((result) => {
+    void fetchPracticeSessions({ savedOnly: false }).then((result) => {
       if (ignore) return;
       setLoadingPractice(false);
       if (result.ok === false) return;
@@ -550,8 +550,8 @@ export default function Dashboard() {
                 <button
                   key={String(days)}
                   type="button"
-                  onClick={() => { setHeatmapMonth('recent'); setHeatmapRange(Number(days)); }}
-                  className={`rounded-full border px-3 py-2 text-ui-label ${heatmapMonth === 'recent' && heatmapRange === days ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-primary'}`}
+                  onClick={() => { setHeatmapMonth(''); setHeatmapRange(Number(days)); }}
+                  className={`rounded-full border px-3 py-2 text-ui-label ${!heatmapMonth && heatmapRange === days ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-primary'}`}
                 >
                   {label}
                 </button>
@@ -562,7 +562,7 @@ export default function Dashboard() {
                 className="rounded-full border border-blueprint-line bg-card px-3 py-2 text-ui-label text-primary outline-none"
                 aria-label="Filter activity heatmap by month"
               >
-                <option value="recent">Recent</option>
+                <option value="">Month</option>
                 {heatmapMonthOptions.map((month) => (
                   <option key={month.value} value={month.value}>{month.label}</option>
                 ))}
@@ -592,61 +592,11 @@ export default function Dashboard() {
           </div>
         </section>
 
-        <section className="grid gap-5 lg:grid-cols-4">
-          <button type="button" onClick={() => setGoalOpen(true)} className="surface-card text-left transition-colors hover:bg-white/85">
-            <p className="text-ui-label text-blueprint-muted">Daily Goal</p>
-            <div className="mt-4 flex items-start gap-3">
-              <CheckCircle2 size={24} className={hasAnyActivity ? 'text-emerald-600' : 'text-blueprint-muted'} />
-              <div>
-                <p className="text-body-md font-medium text-primary">Today's goal: complete 1 session</p>
-                <p className="mt-1 text-body-md text-blueprint-muted">{hasAnyActivity ? 'Goal filled by your latest round or saved practice session.' : 'One saved practice session or timed round will complete this for today.'}</p>
-              </div>
-            </div>
-          </button>
-          <button type="button" onClick={() => navigate('/practice-tracks')} className="surface-card text-left transition-colors hover:bg-white/85">
-            <p className="text-ui-label text-blueprint-muted">Gap Review</p>
-            <p className="mt-4 text-headline-md text-primary not-italic">Current weak areas</p>
-            {gapTopics.length ? (
-              <div className="mt-4 grid gap-2">
-                {gapTopics.slice(0, 3).map((topic, index) => (
-                  <div key={topic} className="rounded-lg border border-blueprint-line bg-blueprint-bg px-3 py-2">
-                    <p className="text-ui-label text-blueprint-muted">Priority {index + 1}</p>
-                    <p className="mt-1 truncate text-body-md text-primary">{topic}</p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="mt-4 text-body-md text-blueprint-muted">Complete your first round to see your weak areas.</p>
-            )}
-          </button>
-          <button type="button" onClick={() => setDomainStatsOpen(true)} className="surface-card text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
-            <p className="text-ui-label text-blueprint-muted">Domain Stats</p>
-            <div className="mt-3 flex items-start gap-3">
-              <ChartPie size={22} className="mt-0.5 text-emerald-600 dark:text-emerald-300" />
-              <div>
-                <span className="inline-flex items-center gap-2 text-body-md font-medium text-primary">
-                  {domainLabel} <ArrowRight size={14} />
-                </span>
-                <p className="mt-1 text-body-md text-blueprint-muted">
-                  {domainStats?.totalAttempts ? `${domainStats.totalAttempts} total attempts tracked.` : 'Open stats after completing sessions.'}
-                </p>
-              </div>
-            </div>
-          </button>
-          <article className="surface-card">
-            <p className="text-ui-label text-blueprint-muted">Mock Interview</p>
-            <div className="mt-4 flex gap-3">
-              <CalendarDays size={22} className="text-blueprint-muted" />
-              <p className="text-body-md text-primary">Add your interview date later; for now, focus on one scenario and one review round this week.</p>
-            </div>
-          </article>
-        </section>
-
         <section className="surface-card">
           <div className="border-b border-blueprint-line pb-4">
             <p className="text-ui-label text-blueprint-muted">Live Activity</p>
             <h2 className="mt-1 text-headline-md text-primary not-italic">Recent sessions</h2>
-            <p className="mt-2 text-body-md text-blueprint-muted">Updated from your latest saved sessions and timed round completions.</p>
+            <p className="mt-2 text-body-md text-blueprint-muted">Updated from practice tracks, coding rounds, scenario rounds, and mock interviews.</p>
           </div>
           <div className="mt-5 h-[250px]">
             <ResponsiveContainer width="100%" height="100%">
@@ -664,14 +614,62 @@ export default function Dashboard() {
           </div>
         </section>
 
-
-
-        {insights.length || focusAreas.length ? (
-          <section className="surface-card">
-            <div className="border-b border-blueprint-line pb-4">
-              <p className="text-ui-label text-blueprint-muted"></p>
-              <h2 className="mt-1 text-headline-md text-primary not-italic">What we observed</h2>
+        <section className="grid gap-5 lg:grid-cols-4">
+          <button type="button" onClick={() => setGoalOpen(true)} className="surface-card aspect-square text-left transition-colors hover:bg-white/85">
+            <p className="text-ui-label text-blueprint-muted">Daily Goal</p>
+            <div className="mt-4 flex items-start gap-3">
+              <CheckCircle2 size={24} className={hasAnyActivity ? 'text-emerald-600' : 'text-blueprint-muted'} />
+              <div>
+                <p className="text-body-md font-medium text-primary">Today's goal: complete 1 session</p>
+                <p className="mt-1 text-body-md text-blueprint-muted">{hasAnyActivity ? 'Goal filled by your latest round or saved practice session.' : 'One saved practice session or timed round will complete this for today.'}</p>
+              </div>
             </div>
+          </button>
+          <button type="button" onClick={() => navigate('/practice-tracks')} className="surface-card aspect-square text-left transition-colors hover:bg-white/85">
+            <p className="text-ui-label text-blueprint-muted">Gap Review</p>
+            <p className="mt-4 text-headline-md text-primary not-italic">Current weak areas</p>
+            {gapTopics.length ? (
+              <div className="mt-4 grid gap-2">
+                {gapTopics.slice(0, 3).map((topic, index) => (
+                  <div key={topic} className="rounded-lg border border-blueprint-line bg-blueprint-bg px-3 py-2">
+                    <p className="text-ui-label text-blueprint-muted">Priority {index + 1}</p>
+                    <p className="mt-1 truncate text-body-md text-primary">{topic}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-4 text-body-md text-blueprint-muted">Complete your first round to see your weak areas.</p>
+            )}
+          </button>
+          <button type="button" onClick={() => setDomainStatsOpen(true)} className="surface-card aspect-square text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
+            <p className="text-ui-label text-blueprint-muted">Domain Stats</p>
+            <div className="mt-3 flex items-start gap-3">
+              <ChartPie size={22} className="mt-0.5 text-emerald-600 dark:text-emerald-300" />
+              <div>
+                <span className="inline-flex items-center gap-2 text-body-md font-medium text-primary">
+                  {domainLabel} <ArrowRight size={14} />
+                </span>
+                <p className="mt-1 text-body-md text-blueprint-muted">
+                  {domainStats?.totalAttempts ? `${domainStats.totalAttempts} total attempts tracked.` : 'Open stats after completing sessions.'}
+                </p>
+              </div>
+            </div>
+          </button>
+          <article className="surface-card aspect-square">
+            <p className="text-ui-label text-blueprint-muted">Mock Interview</p>
+            <div className="mt-4 flex gap-3">
+              <CalendarDays size={22} className="text-blueprint-muted" />
+              <p className="text-body-md text-primary">Add your interview date later; for now, focus on one scenario and one review round this week.</p>
+            </div>
+          </article>
+        </section>
+
+        <section className="surface-card">
+          <div className="border-b border-blueprint-line pb-4">
+            <p className="text-ui-label text-blueprint-muted">{domainLabel}</p>
+            <h2 className="mt-1 text-headline-md text-primary not-italic">What we observed</h2>
+          </div>
+          {insights.length ? (
             <div className="mt-5 grid gap-4 lg:grid-cols-3">
               {insights.map((signal) => (
                 <div key={`${signal.title}-${signal.timestamp}`} className="surface-inset">
@@ -682,16 +680,11 @@ export default function Dashboard() {
                   </span>
                 </div>
               ))}
-              {!insights.length && focusAreas.map((focus) => (
-                <div key={focus} className="surface-inset">
-                  <p className="text-body-md font-medium text-primary">{focus}</p>
-                  <p className="mt-2 text-body-md text-blueprint-muted">Generated from your saved prep plan.</p>
-                </div>
-              ))}
             </div>
-          </section>
-        ) : null}
-
+          ) : (
+            <p className="mt-5 text-body-md text-blueprint-muted">Complete a {domainLabel.toLowerCase()} round or practice session to generate real observations.</p>
+          )}
+        </section>
         <section className="surface-card">
           <div className="mb-5 flex items-end justify-between border-b border-blueprint-line pb-4">
             <div>

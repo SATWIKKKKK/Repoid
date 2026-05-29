@@ -464,7 +464,7 @@ const PLAN_LIMITS: Record<BillingPlan, {
     mockInterviewsPerMonth: 5,
     codingRoundsPerMonth: 10,
     scenarioRounds: 'unlimited',
-    githubRepos: 7,
+    githubRepos: 15,
     pdfExport: false,
     teamFeatures: false,
   },
@@ -2370,9 +2370,10 @@ async function generateScenarioForTopic(params: {
       scenarioType,
     });
     try {
-      const systemPrompt = `You are a senior ${SCENARIO_DOMAIN_LABELS[params.domain]} engineer creating a realistic workplace scenario for interview preparation. The scenario must reflect real engineering situations. Every question must be a workplace situation in third person. Format: 'You are a [ROLE] at [COMPANY_TYPE]. [SITUATION]. What do you do?' The situation must be a specific crisis or decision point. Never ask 'Tell me about a time' — always present a specific scenario the candidate is currently inside. Return only valid JSON. Start with { and end with }. No markdown fences. No preamble.`;
+      const systemPrompt = `You are a senior ${SCENARIO_DOMAIN_LABELS[params.domain]} engineer creating a realistic workplace scenario for interview preparation. The scenario must be grounded in real-world engineering situations that any engineer in this domain could encounter — NOT limited to any specific repository or codebase. Every question must be a workplace situation in second person. Format: 'You are a [ROLE] at [COMPANY_TYPE]. [SITUATION]. What do you do?' The situation must be a specific crisis or decision point. Never ask 'Tell me about a time' — always present a specific scenario the candidate is currently inside. Vary the company type (startup, scale-up, enterprise, fintech, healthcare, e-commerce, SaaS, etc.) and the nature of the crisis across sessions. Return only valid JSON. Start with { and end with }. No markdown fences. No preamble.`;
       const seenHashList = JSON.stringify([...seenHashes, ...additionalAvoidHashes]);
-      const userPrompt = `Domain: ${SCENARIO_DOMAIN_LABELS[params.domain]}. Topic: ${params.topic}. Level: ${params.level}. Repo context: ${repoContext || 'none'}. Session seed: ${seed}. Preferred scenario angle: ${scenarioType}. Avoid hashes: ${seenHashList}. Generate a scenario with exactly 5 steps. Return JSON: { id: string, title: string, domain: string, topic: string, level: string, context: string, role: string, steps: [ { stepNumber: number, question: string, type: 'decision' | 'technical' | 'tradeoff' | 'communication', hint: string } ] }. Rules: the context must be specific to ${params.topic} - not generic. Steps must escalate in complexity - step 1 is situational awareness, step 5 is a hard tradeoff or architectural decision. Use this step-type pattern unless the scenario strongly requires a different one: step 1 communication, step 2 technical, step 3 decision, step 4 technical, step 5 tradeoff. Never repeat the same step type consecutively. The scenario must feel like a real conversation with a senior engineer, not a quiz. If a similar scenario hash appears in Avoid hashes, generate a different angle on the same topic.`;
+      const repoHint = repoContext && repoContext !== 'none' ? ` Optional background (do NOT anchor the scenario to this specific repo — use it only as inspiration for realistic tech-stack colour): ${repoContext}.` : '';
+      const userPrompt = `Domain: ${SCENARIO_DOMAIN_LABELS[params.domain]}. Topic: ${params.topic}. Level: ${params.level}. Session seed: ${seed}. Preferred scenario angle: ${scenarioType}.${repoHint} Avoid hashes: ${seenHashList}. Generate a scenario with exactly 5 steps. Return JSON: { id: string, title: string, domain: string, topic: string, level: string, context: string, role: string, steps: [ { stepNumber: number, question: string, type: 'decision' | 'technical' | 'tradeoff' | 'communication', hint: string } ] }. Rules: the context must be specific to ${params.topic} — create a fresh, realistic workplace situation that does not reference any particular open-source project by name. Steps must escalate in complexity — step 1 is situational awareness, step 5 is a hard tradeoff or architectural decision. Use this step-type pattern unless the scenario strongly requires a different one: step 1 communication, step 2 technical, step 3 decision, step 4 technical, step 5 tradeoff. Never repeat the same step type consecutively. The scenario must feel like a real conversation with a senior engineer, not a quiz. If a similar scenario hash appears in Avoid hashes, generate a completely different angle on the same topic.`;
 
       const generated = await callStructuredModel(
         systemPrompt,
@@ -7135,7 +7136,7 @@ async function getEntitlement(userId: string, feature: string) {
       const resetDate = new Date();
       resetDate.setMonth(resetDate.getMonth() + 1, 1);
       resetDate.setHours(0, 0, 0, 0);
-      reason = hasAccess ? null : `You've used all 7 GitHub repo scans for this month. Your limit resets on ${resetDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}.`;
+      reason = hasAccess ? null : `You've used all 15 GitHub repo scans for this month. Your limit resets on ${resetDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}.`;
       suggestedPlan = 'team';
     } else {
       usage.githubRepos = await getGithubRepoUsage(userId);
@@ -7899,7 +7900,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
       const requestedDomain = String(request.query.domain ?? 'all').trim();
       const sessions: Array<{
         id: string;
-        roundType: 'practice' | 'scenario' | 'coding' | 'mock';
+        roundType: 'practice' | 'scenario' | 'coding' | 'mock' | 'github';
         domain: string;
         domainLabel: string;
         title: string;
@@ -8013,11 +8014,62 @@ export async function createApp(options: { listen?: boolean } = {}) {
         }
       }
 
+      if (requestedRoundType === 'all' || requestedRoundType === 'github') {
+        const rows = await db.query<{ id: string; repo_name: string; repo_url: string; scanned_at: string; status: string }>(`
+          SELECT id, repo_name, repo_url, scanned_at, status
+            FROM github_repos
+           WHERE user_id = $1 AND status IN ('complete','completed','ready')
+           ORDER BY scanned_at DESC
+        `, [user.id]);
+        for (const row of rows) {
+          sessions.push({
+            id: row.id,
+            roundType: 'github',
+            domain: 'github',
+            domainLabel: 'GitHub Repo',
+            title: row.repo_name,
+            savedAt: row.scanned_at,
+            status: row.status,
+            score: null,
+            resumePath: `/github-project-qs/${row.id}`,
+            resultsPath: `/github-project-qs/${row.id}`,
+          });
+        }
+      }
+
       sessions.sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());
       response.json({ sessions });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to load saved sessions.' });
     }
+  });
+
+  app.delete('/api/saved-sessions/:roundType/:sessionId', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    const roundType = String(request.params.roundType ?? '').trim().toLowerCase();
+    const sessionId = String(request.params.sessionId ?? '').trim();
+    if (!sessionId) {
+      response.status(400).json({ error: 'Session id is required.' });
+      return;
+    }
+
+    if (roundType === 'practice') {
+      await db.prepare('UPDATE open_practice_sessions SET saved_at = NULL WHERE id = ? AND user_id = ?').run(sessionId, user.id);
+    } else if (roundType === 'scenario') {
+      await db.prepare('UPDATE scenario_attempts SET saved_at = NULL WHERE id = ? AND user_id = ?').run(sessionId, user.id);
+    } else if (roundType === 'coding') {
+      await db.prepare('UPDATE coding_attempts SET saved_at = NULL WHERE id = ? AND user_id = ?').run(sessionId, user.id);
+    } else if (roundType === 'mock') {
+      await db.prepare('UPDATE mock_interviews SET saved_at = NULL WHERE id = ? AND user_id = ?').run(sessionId, user.id);
+    } else if (roundType === 'github') {
+      await db.prepare('DELETE FROM repo_question_sets WHERE repo_id = ?').run(sessionId);
+      await db.prepare('DELETE FROM github_repos WHERE id = ? AND user_id = ?').run(sessionId, user.id);
+    } else {
+      response.status(400).json({ error: 'Unsupported saved session type.' });
+      return;
+    }
+
+    response.json({ success: true });
   });
 
   app.post('/api/practice/search', requireUser, async (request, response) => {
@@ -8378,6 +8430,76 @@ export async function createApp(options: { listen?: boolean } = {}) {
       domains,
       strongestDomain: strongest,
     });
+  });
+
+  // POST /api/questions/generate  — on-demand AI generation when DB has no results
+  app.post('/api/questions/generate', requireUser, async (request, response) => {
+    try {
+      const user = (request as AuthedRequest).user!;
+      const domain = normalizeDomain(String(request.body?.domain ?? ''));
+      const topic = String(request.body?.topic ?? '').trim();
+      const roundType = String(request.body?.roundType ?? '').trim();
+      if (!domain || !topic || !roundType) {
+        response.status(400).json({ error: 'domain, topic, and roundType are required.' });
+        return;
+      }
+      await checkAiRateLimit(user.id, 'question-bank-generate', 2);
+      const domainLabel = PRACTICE_DOMAIN_LABELS[toPracticeDomain(domain) || 'frontend'] ?? domain;
+      const roundTypeLabel: Record<string, string> = {
+        'concept-mcq': 'Concept MCQ',
+        'fill-in-the-blank': 'Fill in the Blank',
+        'scenario': 'Scenario / Situational',
+        'architecture': 'Architecture / System Design',
+        'coding-round': 'Coding Round',
+        'mock-interview': 'Mock Interview',
+        'faang-tagged': 'FAANG-level',
+      };
+      const roundLabel = roundTypeLabel[roundType] ?? roundType;
+      const systemPrompt = `You are a senior ${domainLabel} engineer creating interview preparation questions. Return only a raw JSON array starting with [ and ending with ]. No markdown fences. No preamble. No trailing text.`;
+      const userPrompt = `Domain: ${domainLabel}. Topic: ${topic}. Round type: ${roundLabel}.
+Generate exactly 10 interview questions of type "${roundLabel}" for the topic "${topic}" in ${domainLabel}.
+Rules:
+- Each question must be realistic and specific to the topic, not generic.
+- For MCQ: provide 4 options (A/B/C/D) and the correct answer letter.
+- For Fill in the Blank: use ___ for the blank; the answer fills the blank.
+- For Scenario/Architecture/Mock: open-ended question; correctAnswer is a detailed model answer (3-5 sentences).
+- For Coding: describe a concrete coding task; correctAnswer shows the key implementation logic.
+- difficulty must be 1, 2, or 3 (integer).
+- explanation must be 2-4 sentences.
+Return a JSON array of objects: [{ "questionText": string, "options": string[] | null, "correctAnswer": string, "explanation": string, "difficulty": 1|2|3, "codeSnippet": string|null }]`;
+
+      const generated = await callStructuredModel(
+        systemPrompt,
+        userPrompt,
+        (payload) => {
+          const arr = Array.isArray(payload) ? payload : null;
+          if (!arr || !arr.length) throw new Error('Expected JSON array of questions');
+          return arr.slice(0, 12).map((item: Record<string, unknown>, index: number) => ({
+            id: `ai-gen-${domain}-${Date.now()}-${index}`,
+            domain,
+            domainLabel,
+            topic,
+            type: (['scenario', 'architecture', 'mock-interview'].includes(roundType) ? 'scenario'
+              : roundType === 'fill-in-the-blank' ? 'fill_blank'
+              : roundType === 'coding-round' ? 'coding'
+              : 'mcq') as import('./src/lib/questionBank.js').QuestionType,
+            difficulty: ([1, 2, 3].includes(Number(item.difficulty)) ? Number(item.difficulty) : 2) as 1 | 2 | 3,
+            questionText: String(item.questionText ?? ''),
+            options: Array.isArray(item.options) && item.options.length ? item.options.map(String) : undefined,
+            correctAnswer: String(item.correctAnswer ?? ''),
+            explanation: String(item.explanation ?? ''),
+            codeSnippet: item.codeSnippet ? String(item.codeSnippet) : undefined,
+            tags: [`round:${roundType}`, 'ai-generated'],
+            timeLimitMinutes: 3,
+          }));
+        },
+        { maxTokens: 3500, timeoutMs: 45000, model: DEEPSEEK_CHAT_MODEL, temperature: 0.7 },
+      );
+      response.json({ questions: generated.result });
+    } catch (error) {
+      const statusCode = (error as Error & { statusCode?: number }).statusCode ?? 500;
+      response.status(statusCode).json({ error: error instanceof Error ? error.message : 'Unable to generate questions.' });
+    }
   });
 
   app.get('/api/questions', requireUser, async (request, response) => {
@@ -10268,9 +10390,8 @@ export async function createApp(options: { listen?: boolean } = {}) {
       `).run(user.id, repoUrl);
     }
 
-    const isSavedRepoRescan = Boolean(force && existing?.status === 'complete');
-    const entitlement = isSavedRepoRescan ? null : await getEntitlement(user.id, 'github-scan');
-    if (entitlement && !entitlement.hasAccess) {
+    const entitlement = await getEntitlement(user.id, 'github-scan');
+    if (!entitlement.hasAccess) {
       releaseSingleFlight();
       response.status(403).json({ status: 'upgrade_required', message: entitlement.upgradeMessage ?? entitlement.reason ?? 'Upgrade required.', error: entitlement.upgradeMessage ?? entitlement.reason ?? 'Upgrade required.', ...entitlement });
       return;

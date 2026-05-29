@@ -1,4 +1,4 @@
-export type SavedRoundType = 'practice' | 'scenario' | 'coding' | 'mock';
+export type SavedRoundType = 'practice' | 'scenario' | 'coding' | 'mock' | 'github';
 
 export type SavedSessionCard = {
   id: string;
@@ -17,9 +17,9 @@ type ApiResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: string };
 
-async function requestJson<T>(path: string): Promise<ApiResult<T>> {
+async function requestJson<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   try {
-    const response = await fetch(path, { credentials: 'include' });
+    const response = await fetch(path, { credentials: 'include', ...init });
     const data = (await response.json().catch(() => ({}))) as T & { error?: string };
     if (!response.ok) return { ok: false, error: String(data.error ?? 'Request failed.') };
     return { ok: true, data };
@@ -36,4 +36,8 @@ export async function fetchSavedSessions(options: { domain?: string; roundType?:
   const result = await requestJson<{ sessions: SavedSessionCard[] }>(`/api/saved-sessions${suffix}`);
   if (result.ok === false) return result;
   return { ok: true as const, data: result.data.sessions };
+}
+
+export async function deleteSavedSession(roundType: SavedRoundType, sessionId: string) {
+  return requestJson<{ success: boolean }>(`/api/saved-sessions/${encodeURIComponent(roundType)}/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
 }

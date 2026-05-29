@@ -205,3 +205,16 @@ export async function fetchRoundFocusSummary(attemptId: string): Promise<ApiResu
   if ('error' in result) return { ok: false, error: result.error };
   return { ok: true, data: result.data.events };
 }
+
+export async function generateBankQuestions(params: {
+  domain: string;
+  topic: string;
+  roundType: string;
+}): Promise<ApiResult<BankQuestion[]>> {
+  const result = await requestJson<{ questions: BankQuestion[] }>('/api/questions/generate', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  });
+  if ('error' in result) return { ok: false, error: result.error };
+  return { ok: true, data: result.data.questions };
+}

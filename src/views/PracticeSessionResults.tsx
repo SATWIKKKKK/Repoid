@@ -161,21 +161,27 @@ export default function PracticeSessionResults() {
           </div>
           <div className="mt-5 space-y-4">
             {session.results.map((result, index) => (
-              <details key={result.questionId} className="rounded-2xl border border-blueprint-line bg-blueprint-bg p-4" open={index === 0}>
+              <details key={result.questionId} className="rounded-2xl border border-blueprint-line bg-blueprint-bg p-4">
                 <summary className="cursor-pointer list-none">
                   <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                     <div className="min-w-0">
                       <p className="text-ui-label text-blueprint-muted">Question {index + 1}</p>
                       <p className="mt-1 text-body-md font-medium text-primary">{result.question}</p>
                     </div>
-                    <span className={`justify-self-end rounded-full px-3 py-1 text-ui-label ${result.isCorrect ? 'bg-emerald-600 text-white' : 'bg-amber-600 text-white'}`}>
+                    <span className={`justify-self-end rounded-full px-3 py-1 text-ui-label ${result.isCorrect ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'}`}>
                       {result.isCorrect ? 'Correct' : 'Incorrect'}
                     </span>
                   </div>
                 </summary>
                 <div className="mt-4 space-y-3 text-body-md text-primary">
-                  <p><span className="font-medium">Your answer:</span> {result.userAnswer || 'Skipped'}</p>
-                  {!result.isCorrect ? <p><span className="font-medium">Correct answer:</span> {result.correctAnswer}</p> : null}
+                  <p className={`w-fit rounded-xl border px-3 py-2 ${result.isCorrect ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-red-300 bg-red-50 text-red-800'}`}>
+                    <span className="font-medium">Your answer:</span> {result.userAnswer || 'Skipped'}
+                  </p>
+                  {!result.isCorrect ? (
+                    <p className="w-fit rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-emerald-800">
+                      <span className="font-medium">Correct answer:</span> {result.correctAnswer}
+                    </p>
+                  ) : null}
                   <p><span className="font-medium">Explanation:</span> {result.explanation || 'No explanation provided.'}</p>
                   {result.tags.length ? (
                     <div className="flex flex-wrap gap-2 pt-1">
