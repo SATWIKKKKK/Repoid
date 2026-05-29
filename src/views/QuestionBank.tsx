@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Download, LoaderCircle, Search } from 'lucide-react';
+import { Download, LoaderCircle, RefreshCw, Search, Sparkles } from 'lucide-react';
 import { fetchQuestions, fetchQuestionStats, generateBankQuestions } from '../lib/questionBankApi';
 import DomainPickerDialog from '../components/DomainPickerDialog';
 import { QUESTION_TYPES, type BankQuestion, type QuestionType } from '../lib/questionBank';
@@ -285,7 +285,7 @@ export default function QuestionBank() {
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiGeneratedQuestions, setAiGeneratedQuestions] = useState<BankQuestion[]>([]);
   const [aiGenerateError, setAiGenerateError] = useState<string | null>(null);
-  const autoGenerateKeyRef = useRef('');
+  const lastAutoGenerateKey = useRef<string | null>(null);
 
   const allTypesSelected = selectedTypes.length === ALL_QUESTION_TYPES.length;
   const hasCuratedFilters = ['frontend', 'backend', 'ai-ml', 'cybersecurity', 'data-science', 'data-analytics'].includes(domain);
@@ -348,13 +348,14 @@ export default function QuestionBank() {
     setFaangOnly(false);
     setAiGeneratedQuestions([]);
     setAiGenerateError(null);
+    lastAutoGenerateKey.current = null;
   }, [domain]);
 
   useEffect(() => {
     let ignore = false;
     void fetchQuestionStats().then((result) => {
       if (!result.ok || ignore) return;
-      setStats(result.data ?? []);
+      setStats(result.data);
     });
     return () => {
       ignore = true;
@@ -398,13 +399,6 @@ export default function QuestionBank() {
   const selectedStats = stats.find((item) => item.id === domain);
   const projectQuestions = workspace.repoAnalysis?.projectSpecificQuestions ?? workspace.manualAnalysis?.projectSpecificQuestions ?? [];
   const bulletDotClass = 'relative top-[-0.08em] h-1.5 w-1.5 shrink-0 rounded-full';
-  const selectedTopic = selectedBackendTopics[0] ?? '';
-  const selectedRound = selectedBackendRounds[0] ?? '';
-  const selectedRoundLabel = CURATED_ROUND_FILTERS.find((item) => item.id === selectedRound)?.label ?? selectedRound;
-  const generationKey = selectedTopic && selectedRound ? `${domain}:${selectedTopic}:${selectedRound}` : '';
-  const showingGeneratedQuestions = !questions.length && aiGeneratedQuestions.length > 0;
-  const visibleQuestions = showingGeneratedQuestions ? aiGeneratedQuestions : questions;
-  const exportableQuestions = visibleQuestions;
 
   const toggleType = (typeId: QuestionType) => {
     setSelectedTypes((current) => {
@@ -426,7 +420,7 @@ export default function QuestionBank() {
     setPage(1);
     setAiGeneratedQuestions([]);
     setAiGenerateError(null);
-    autoGenerateKeyRef.current = '';
+    lastAutoGenerateKey.current = null;
   };
 
   const handleExportPdf = async () => {
@@ -437,7 +431,7 @@ export default function QuestionBank() {
         title: `${selectedStats?.label ?? domain} question bank`,
         domain: selectedStats?.label ?? domain,
         exportType: 'question-bank',
-        questions: exportableQuestions.map((question) => ({
+        questions: questions.map((question) => ({
           questionText: question.questionText,
           correctAnswer: question.correctAnswer,
           explanation: question.explanation,
@@ -458,13 +452,12 @@ export default function QuestionBank() {
   };
 
   const handleGenerateWithAI = useCallback(async () => {
-    const topic = selectedTopic;
-    const roundType = selectedRound;
+    const topic = selectedBackendTopics[0] ?? '';
+    const roundType = selectedBackendRounds[0] ?? '';
     if (!topic || !roundType) return;
     setAiGenerating(true);
     setAiGenerateError(null);
     setAiGeneratedQuestions([]);
-    setOpenAnswers({});
     const result = await generateBankQuestions({ domain, topic, roundType });
     setAiGenerating(false);
     if (result.ok === false) {
@@ -472,18 +465,18 @@ export default function QuestionBank() {
       return;
     }
     setAiGeneratedQuestions(result.data);
-  }, [domain, selectedRound, selectedTopic]);
+  }, [domain, selectedBackendTopics, selectedBackendRounds]);
 
+  // Auto-trigger AI generation when DB returns empty for a curated filter combo.
   useEffect(() => {
-    if (!generationKey) {
-      autoGenerateKeyRef.current = '';
-      return;
-    }
-    if (!hasCuratedFilters || loading || error || questions.length || aiGenerating || aiGeneratedQuestions.length) return;
-    if (autoGenerateKeyRef.current === generationKey) return;
-    autoGenerateKeyRef.current = generationKey;
+    if (loading || error || !hasCuratedFilters) return;
+    if (questions.length > 0 || aiGenerating || aiGeneratedQuestions.length > 0) return;
+    if (!selectedBackendTopics.length || !selectedBackendRounds.length) return;
+    const key = `${selectedBackendTopics[0]}::${selectedBackendRounds[0]}`;
+    if (lastAutoGenerateKey.current === key) return;
+    lastAutoGenerateKey.current = key;
     void handleGenerateWithAI();
-  }, [aiGeneratedQuestions.length, aiGenerating, error, generationKey, handleGenerateWithAI, hasCuratedFilters, loading, questions.length]);
+  }, [loading, error, questions.length, aiGenerating, aiGeneratedQuestions.length, hasCuratedFilters, selectedBackendTopics, selectedBackendRounds, handleGenerateWithAI]);
 
   const handleDomainSave = async (nextDomain: string) => {
     setDomainError(null);
@@ -501,9 +494,9 @@ export default function QuestionBank() {
 
   return (
     <>
-    <div className="min-h-full bg-background px-4 py-8 sm:px-8 xl:px-10 2xl:px-14">
+    <div className="min-h-full bg-background px-4 py-8 sm:px-8 lg:px-16">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-30" />
-      <main className="relative z-10 mx-auto w-full max-w-410 space-y-8">
+      <main className="relative z-10 mx-auto w-full max-w-360 space-y-8">
         <section className="border-b border-blueprint-line pb-8">
           <div>
             <p className="text-ui-label text-blueprint-muted">Question Bank</p>
@@ -535,162 +528,65 @@ export default function QuestionBank() {
         ) : null}
 
         <section className="space-y-4">
-          <div className="grid gap-4 xl:grid-cols-[minmax(280px,0.34fr)_minmax(0,1fr)]">
-            <div className="surface-card-compact">
-              <p className="text-ui-label text-primary">Selected Domain</p>
-              <div className="mt-3 rounded-2xl border border-blueprint-line bg-card p-4">
-                <p className="text-body-lg font-semibold text-primary">{selectedStats?.label ?? DOMAIN_LABELS[domain] ?? 'Domain'}</p>
-                <p className="mt-2 text-body-md text-blueprint-muted">
-                  {selectedStats
-                    ? `${selectedStats.total} questions currently available in this track.`
-                    : 'Question counts will appear once the bank loads for this track.'}
-                </p>
+          {/* ── Compact horizontal filter bar ── */}
+          <div className="surface-card-compact">
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+              {/* Domain indicator */}
+              <div className="flex shrink-0 items-center gap-2 text-ui-label">
+                <span className="font-semibold text-primary">{selectedStats?.label ?? DOMAIN_LABELS[domain] ?? 'Domain'}</span>
+                <button type="button" onClick={() => setDomainDialogOpen(true)} className="text-blueprint-muted underline underline-offset-4 hover:text-primary">Change</button>
               </div>
-              <button type="button" onClick={() => setDomainDialogOpen(true)} className="mt-3 text-ui-label text-blueprint-muted underline underline-offset-4 hover:text-primary">
-                Change domain
-              </button>
-            </div>
 
-            {hasCuratedFilters ? (
-              <div className="surface-card-compact space-y-5">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <p className="text-ui-label text-primary">Topic and Round Type</p>
-                    <p className="mt-2 text-body-md text-blueprint-muted">Pick a topic and round type. If that exact combination has no stored questions, this page will load a full set with answers automatically.</p>
-                  </div>
-                  {showingGeneratedQuestions ? (
-                    <button
-                      type="button"
-                      onClick={() => { void handleGenerateWithAI(); }}
-                      className="rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5"
-                    >
-                      Regenerate
-                    </button>
-                  ) : null}
-                </div>
-                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.42fr)_auto] lg:items-end">
-                  <label className="min-w-0">
-                    <span className="text-ui-label text-primary">Topic</span>
-                    <select value={topicDropdownValue} onChange={(event) => setTopicDropdownValue(event.target.value)} className="mt-2 w-full rounded-xl border border-blueprint-line bg-card px-4 py-3 text-body-md text-primary outline-none focus:border-primary">
-                      <option value="">Select {curatedDomainLabel} topic</option>
-                      {curatedTopicOptions.map((item) => (
-                        <option key={`${item.domain}-${item.topic}`} value={item.value}>{item.topic}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="min-w-0">
-                    <span className="text-ui-label text-primary">Round Type</span>
-                    <select value={roundDropdownValue} onChange={(event) => setRoundDropdownValue(event.target.value)} className="mt-2 w-full rounded-xl border border-blueprint-line bg-card px-4 py-3 text-body-md text-primary outline-none focus:border-primary">
-                      <option value="">Select round type</option>
-                      {CURATED_ROUND_FILTERS.map((item) => (
-                        <option key={item.id} value={item.id}>{item.label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <button type="button" onClick={handleCuratedSearch} disabled={!topicDropdownValue || !roundDropdownValue} className="inline-flex items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-ui-label text-white disabled:cursor-not-allowed disabled:opacity-50">
-                    <Search size={16} /> Load Questions
+              {hasCuratedFilters ? (
+                <div className="flex flex-1 flex-wrap items-center gap-2">
+                  <select value={topicDropdownValue} onChange={(event) => setTopicDropdownValue(event.target.value)} className="min-w-[170px] flex-1 rounded-xl border border-blueprint-line bg-card px-3 py-2.5 text-body-md text-primary outline-none focus:border-primary">
+                    <option value="">Select {curatedDomainLabel} topic</option>
+                    {curatedTopicOptions.map((item) => (
+                      <option key={`${item.domain}-${item.topic}`} value={item.value}>{item.topic}</option>
+                    ))}
+                  </select>
+                  <select value={roundDropdownValue} onChange={(event) => setRoundDropdownValue(event.target.value)} className="min-w-[150px] flex-1 rounded-xl border border-blueprint-line bg-card px-3 py-2.5 text-body-md text-primary outline-none focus:border-primary">
+                    <option value="">Select round type</option>
+                    {CURATED_ROUND_FILTERS.map((item) => (
+                      <option key={item.id} value={item.id}>{item.label}</option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={handleCuratedSearch} disabled={!topicDropdownValue || !roundDropdownValue} className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-ui-label text-white disabled:cursor-not-allowed disabled:opacity-50">
+                    <Search size={16} /> Search
                   </button>
                 </div>
-              </div>
-            ) : (
-              <div className="surface-card-compact">
-                <p className="text-ui-label text-primary">Round Type</p>
-                <p className="mt-2 text-body-md text-blueprint-muted">Select one or more round types to narrow the question bank.</p>
-                <div className={`mt-3 flex flex-wrap gap-2 transition-opacity ${faangOnly ? 'pointer-events-none opacity-35' : ''}`}>
-                  <button
-                    type="button"
-                    disabled={faangOnly}
-                    onClick={() => setSelectedTypes(ALL_QUESTION_TYPES)}
-                    className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${allTypesSelected ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                  >
-                    All
-                  </button>
+              ) : (
+                <div className={`flex flex-1 flex-wrap gap-2 transition-opacity ${faangOnly ? 'pointer-events-none opacity-35' : ''}`}>
+                  <button type="button" disabled={faangOnly} onClick={() => setSelectedTypes(ALL_QUESTION_TYPES)} className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${allTypesSelected ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}>All</button>
                   {QUESTION_TYPES.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      disabled={faangOnly}
-                      onClick={() => toggleType(item.id)}
-                      className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${selectedTypes.includes(item.id) ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}
-                    >
-                      {item.label}
-                    </button>
+                    <button key={item.id} type="button" disabled={faangOnly} onClick={() => toggleType(item.id)} className={`rounded-full border px-4 py-2 text-ui-label transition-colors ${selectedTypes.includes(item.id) ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-blueprint-muted hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5'}`}>{item.label}</button>
                   ))}
+                  <button type="button" onClick={() => { setFaangOnly((value) => !value); setSelectedTypes(ALL_QUESTION_TYPES); setPage(1); }} className={`rounded-full border px-4 py-2 text-ui-label font-semibold transition-colors ${faangOnly ? 'border-amber-400 bg-amber-400/10 text-amber-600 dark:border-amber-400 dark:bg-amber-400/15 dark:text-amber-300' : 'border-blueprint-line bg-card text-blueprint-muted hover:border-amber-400 hover:bg-amber-400/10 hover:text-amber-600 dark:hover:border-amber-400 dark:hover:bg-amber-400/15 dark:hover:text-amber-300'}`}>✦ FAANG</button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFaangOnly((value) => !value);
-                    setSelectedTypes(ALL_QUESTION_TYPES);
-                    setPage(1);
-                  }}
-                  className={`mt-4 rounded-full border px-4 py-2 text-ui-label font-semibold transition-colors ${
-                    faangOnly
-                      ? 'border-amber-400 bg-amber-400/10 text-amber-600 dark:border-amber-400 dark:bg-amber-400/15 dark:text-amber-300'
-                      : 'border-blueprint-line bg-card text-blueprint-muted hover:border-amber-400 hover:bg-amber-400/10 hover:text-amber-600 dark:hover:border-amber-400 dark:hover:bg-amber-400/15 dark:hover:text-amber-300'
-                  }`}
-                >
-                  ✦ FAANG tagged only
-                </button>
-              </div>
-            )}
-          </div>
+              )}
 
-          {exportError ? <div className="rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-body-md text-red-700 dark:text-red-200">{exportError.split(/\b(Upgrade)\b/i).map((part, i) => /^upgrade$/i.test(part) ? <button key={i} type="button" onClick={() => navigate('/pricing')} className="font-bold underline hover:opacity-80">{part}</button> : part)}</div> : null}
-          {aiGenerateError && !visibleQuestions.length ? (
-            <div className="rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-body-md text-red-700 dark:text-red-200">
-              {aiGenerateError}
-            </div>
-          ) : null}
-
-          {visibleQuestions.length ? (
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div className="min-w-0">
-                <p className="text-ui-label text-blueprint-muted">
-                  {hasCuratedFilters && selectedTopic && selectedRound
-                    ? `${selectedTopic} · ${selectedRoundLabel}`
-                    : `${selectedStats?.label ?? DOMAIN_LABELS[domain] ?? 'Domain'} question bank`}
-                </p>
-                <p className="mt-1 text-body-md text-blueprint-muted">
-                  {showingGeneratedQuestions
-                    ? `Loaded ${visibleQuestions.length} questions with answers for this exact combination.`
-                    : total
-                      ? `Showing ${rangeStart}–${rangeEnd} of ${total} questions.`
-                      : ''}
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                {!showingGeneratedQuestions && !loading && totalPages > 1 ? <span className="text-ui-label text-blueprint-muted">{page} / {totalPages}</span> : null}
-                <button
-                  type="button"
-                  onClick={handleExportPdf}
-                  disabled={!exportableQuestions.length || exportingPdf}
-                  className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5"
-                >
-                  {exportingPdf ? <LoaderCircle size={15} className="animate-spin" /> : <Download size={15} />} Export PDF
-                </button>
-                {showingGeneratedQuestions ? (
-                  <button
-                    type="button"
-                    onClick={() => { void handleGenerateWithAI(); }}
-                    className="rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5"
-                  >
-                    Regenerate
+              {/* Right-side controls: regenerate + export */}
+              <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+                {!aiGenerating && aiGeneratedQuestions.length > 0 ? (
+                  <button type="button" onClick={() => { void handleGenerateWithAI(); }} className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3] dark:hover:bg-white/5">
+                    <RefreshCw size={14} /> Regenerate
+                  </button>
+                ) : null}
+                {!loading && questions.length > 0 ? (
+                  <button type="button" onClick={handleExportPdf} disabled={exportingPdf} className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5">
+                    {exportingPdf ? <LoaderCircle size={15} className="animate-spin" /> : <Download size={15} />} Export PDF
                   </button>
                 ) : null}
               </div>
             </div>
-          ) : null}
+          </div>
 
-          {(loading && !visibleQuestions.length) || aiGenerating ? (
-            <div className="space-y-4">
-              {(selectedTopic && selectedRound) || aiGenerating ? (
-                <div>
-                  <p className="text-ui-label text-primary">Loading questions and answers...</p>
-                  {selectedTopic && selectedRound ? <p className="mt-1 text-body-md text-blueprint-muted">{selectedTopic} · {selectedRoundLabel}</p> : null}
-                </div>
-              ) : null}
-              <div className="grid gap-4 lg:grid-cols-2">
+          {/* ── Full-width questions area ── */}
+          <div className="min-w-0 space-y-4">
+            {exportError ? <div className="rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-body-md text-red-700 dark:text-red-200">{exportError.split(/\b(Upgrade)\b/i).map((part, i) => /^upgrade$/i.test(part) ? <button key={i} type="button" onClick={() => navigate('/pricing')} className="font-bold underline hover:opacity-80">{part}</button> : part)}</div> : null}
+
+            {loading ? (
+              <div className="grid gap-4 xl:grid-cols-2">
                 {Array.from({ length: 6 }).map((_, i) => (
                   <div key={i} className="surface-card flex animate-pulse flex-col gap-3">
                     <div className="flex flex-wrap gap-2">
@@ -708,26 +604,57 @@ export default function QuestionBank() {
                   </div>
                 ))}
               </div>
-            </div>
-          ) : null}
-          {error ? <p className="text-body-md text-red-600">{error}</p> : null}
-          {!loading && !aiGenerating && !error && !visibleQuestions.length ? (
-            <div className="surface-card text-body-md text-blueprint-muted">
-              {hasCuratedFilters && !selectedTopic && !selectedRound
-                ? 'Select a topic and round type to load questions for a specific combination.'
-                : 'No questions are available for the current filters.'}
-            </div>
-          ) : null}
+            ) : null}
+            {error ? <p className="text-body-md text-red-600">{error}</p> : null}
+            {aiGenerating ? (
+              <div className="surface-card space-y-4">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">
+                    <Sparkles size={18} className="text-primary animate-pulse" />
+                  </span>
+                  <div>
+                    <p className="text-ui-label text-primary">Generating with DeepSeek AI</p>
+                    <p className="mt-0.5 text-body-md text-blueprint-muted">Building questions for <strong>{selectedBackendTopics[0]}</strong> — {CURATED_ROUND_FILTERS.find((r) => r.id === selectedBackendRounds[0])?.label ?? selectedBackendRounds[0]}...</p>
+                  </div>
+                </div>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <div key={i} className="surface-card flex animate-pulse flex-col gap-3">
+                      <div className="flex flex-wrap gap-2">
+                        <div className="h-7 w-20 rounded-full bg-blueprint-line/40" />
+                        <div className="h-7 w-24 rounded-full bg-blueprint-line/40" />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="h-4 w-full rounded bg-blueprint-line/40" />
+                        <div className="h-4 w-5/6 rounded bg-blueprint-line/40" />
+                        <div className="h-4 w-3/4 rounded bg-blueprint-line/40" />
+                      </div>
+                      <div className="mt-auto h-10 rounded-xl bg-blueprint-line/25" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {!loading && !error && !questions.length && !aiGenerating && !aiGeneratedQuestions.length ? (
+              <div className="surface-card space-y-4">
+                <div>
+                  {hasCuratedFilters && selectedBackendTopics.length > 0 && selectedBackendRounds.length > 0 ? (
+                    <>
+                      <p className="text-body-md text-blueprint-muted">
+                        No stored questions found — generating fresh questions for <strong>{selectedBackendTopics[0]}</strong>…
+                      </p>
+                      {aiGenerateError ? <p className="mt-2 text-body-md text-red-600">{aiGenerateError}</p> : null}
+                    </>
+                  ) : (
+                    <p className="text-body-md text-blueprint-muted">No stored questions found for this combination. Try enabling more round types or changing the domain.</p>
+                  )}
+                </div>
+              </div>
+            ) : null}
 
-          {!loading && !aiGenerating && !error && visibleQuestions.length ? (() => {
-            const card = (question: BankQuestion, idx: number) => {
-              const codeBlockClass = question.type === 'coding'
-                ? 'surface-inset mt-4 max-w-full overflow-auto scrollbar-hidden whitespace-pre rounded-xl text-[13px] leading-6 text-primary max-h-104'
-                : 'surface-inset mt-4 max-w-full overflow-x-auto whitespace-pre-wrap wrap-break-word text-[13px] leading-6 text-blueprint-muted sm:whitespace-pre';
-              const answerHasCode = hasCodeBlock(question.correctAnswer);
-              const shouldForceCodeAnswer = question.type === 'coding' && !answerHasCode;
-
-              return (
+            {!loading && !error ? (() => {
+              const isCodingRound = selectedBackendRounds[0] === 'coding-round';
+              const card = (question: (typeof questions)[number], idx: number) => (
                 <article key={`${question.id}-${idx}`} className="surface-card flex min-w-0 flex-col overflow-hidden">
                   <div className="mb-4 flex flex-wrap items-center gap-2">
                     <span className="rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-primary">{question.domainLabel}</span>
@@ -737,9 +664,9 @@ export default function QuestionBank() {
                     {question.tags.includes('faang') ? <span className="rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-primary">FAANG</span> : null}
                   </div>
                   {domain !== 'backend' ? <p className="text-ui-label text-blueprint-muted">{question.topic}</p> : null}
-                  <h2 className={`mt-2 min-h-24 wrap-break-word text-body-lg font-semibold text-primary ${question.type === 'coding' ? 'whitespace-pre-line' : ''}`}>{question.questionText}</h2>
+                  <h2 className="mt-2 min-h-24 wrap-break-word text-body-lg font-semibold text-primary">{question.questionText}</h2>
                   {question.codeSnippet ? (
-                    <pre className={codeBlockClass}><code className="block min-w-max">{question.codeSnippet}</code></pre>
+                    <pre className="surface-inset mt-4 max-h-64 overflow-auto text-[13px] leading-6 text-blueprint-muted"><code className="block whitespace-pre">{question.codeSnippet}</code></pre>
                   ) : null}
                   {question.options?.length ? (
                     <div className="mt-4 grid gap-2">
@@ -762,16 +689,14 @@ export default function QuestionBank() {
                     </button>
                     {openAnswers[question.id] ? (
                       <>
-                        {answerHasCode ? (
+                        {hasCodeBlock(question.correctAnswer) || question.type === 'coding' || isCodingRound ? (
                           <div className="mt-3 space-y-3">
                             {parseAnswerSegments(question.correctAnswer).map((seg, si) =>
                               seg.kind === 'code' ? (
-                                <pre key={si} className="max-w-full overflow-auto scrollbar-hidden whitespace-pre rounded-lg border border-blueprint-line bg-[#f8f7f5] p-3 text-[0.78rem] leading-relaxed text-primary max-h-104 dark:bg-white/5">
-                                  <code className="block min-w-max">{seg.code}</code>
-                                </pre>
+                                <pre key={si} className="max-h-96 overflow-auto rounded-lg border border-blueprint-line bg-[#f8f7f5] p-3 text-[0.78rem] leading-relaxed text-primary dark:bg-white/5"><code className="block whitespace-pre">{seg.code}</code></pre>
                               ) : (
                                 <ul key={si} className="space-y-1.5 text-body-md text-primary">
-                                  {toPoints(seg.text, { allowCommaFallback: question.type !== 'coding' }).map((point, pi) => (
+                                  {toPoints(seg.text, { allowCommaFallback: false }).map((point, pi) => (
                                     <li key={pi} className="flex items-baseline gap-2">
                                       <span className={`${bulletDotClass} bg-primary`} />
                                       <span className="min-w-0 wrap-break-word">{renderInlineCode(point)}</span>
@@ -781,13 +706,9 @@ export default function QuestionBank() {
                               )
                             )}
                           </div>
-                        ) : shouldForceCodeAnswer ? (
-                          <pre className="mt-3 max-w-full overflow-auto scrollbar-hidden whitespace-pre rounded-lg border border-blueprint-line bg-[#f8f7f5] p-3 text-[0.78rem] leading-relaxed text-primary max-h-104 dark:bg-white/5">
-                            <code className="block min-w-max">{question.correctAnswer}</code>
-                          </pre>
                         ) : (
                           <ul className="mt-3 space-y-1.5 text-body-md text-primary">
-                            {toPoints(question.correctAnswer, { allowCommaFallback: question.type !== 'coding' }).map((point, pi) => (
+                            {toPoints(question.correctAnswer, { allowCommaFallback: true }).map((point, pi) => (
                               <li key={pi} className="flex items-baseline gap-2">
                                 <span className={`${bulletDotClass} bg-primary`} />
                                 <span className="min-w-0 wrap-break-word">{renderInlineCode(point)}</span>
@@ -810,49 +731,139 @@ export default function QuestionBank() {
                   </div>
                 </article>
               );
-            };
 
-            const left = visibleQuestions.filter((_, i) => i % 2 === 0);
-            const right = visibleQuestions.filter((_, i) => i % 2 === 1);
+              // Two independent flex columns — zero cross-card height coupling.
+              // min-h on h2 keeps answer bars at a consistent level for typical question lengths.
+              const left  = questions.filter((_, i) => i % 2 === 0);
+              const right = questions.filter((_, i) => i % 2 === 1);
 
-            return (
-              <>
-                <div className="flex flex-col gap-4 lg:hidden">
-                  {visibleQuestions.map((question, index) => card(question, index))}
-                </div>
-                <div className="hidden min-w-0 lg:flex lg:gap-5">
-                  <div className="flex min-w-0 flex-1 flex-col gap-5">
-                    {left.map((question, index) => card(question, index * 2))}
+              return (
+                <>
+                  <div className="flex flex-col gap-4 xl:hidden">
+                    {questions.map((q, i) => card(q, i))}
                   </div>
-                  <div className="flex min-w-0 flex-1 flex-col gap-5">
-                    {right.map((question, index) => card(question, (index * 2) + 1))}
+                  <div className="hidden min-w-0 xl:flex xl:gap-4">
+                    <div className="flex min-w-0 flex-1 flex-col gap-4">
+                      {left.map((q, i) => card(q, i * 2))}
+                    </div>
+                    <div className="flex min-w-0 flex-1 flex-col gap-4">
+                      {right.map((q, i) => card(q, i * 2 + 1))}
+                    </div>
+                  </div>
+                </>
+              );
+            })() : null}
+
+            {!aiGenerating && aiGeneratedQuestions.length > 0 ? (() => {
+              const aiCard = (question: BankQuestion, idx: number) => (
+                <article key={`ai-${question.id}-${idx}`} className="surface-card flex min-w-0 flex-col overflow-hidden ring-1 ring-primary/20">
+                  <div className="mb-4 flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-blueprint-muted">{CURATED_ROUND_FILTERS.find((r) => r.id === selectedBackendRounds[0])?.label ?? selectedBackendRounds[0]}</span>
+                    <span className="rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-blueprint-muted">{question.topic}</span>
+                    <span className="rounded-full border border-blueprint-line bg-card px-3 py-1.5 text-ui-label text-blueprint-muted">D{question.difficulty}</span>
+                  </div>
+                  <h2 className="mt-2 min-h-24 wrap-break-word text-body-lg font-semibold text-primary">{question.questionText}</h2>
+                  {question.codeSnippet ? (
+                    <pre className="surface-inset mt-4 max-h-64 overflow-auto text-[13px] leading-6 text-blueprint-muted"><code className="block whitespace-pre">{question.codeSnippet}</code></pre>
+                  ) : null}
+                  {question.options?.length ? (
+                    <div className="mt-4 grid gap-2">
+                      {question.options.map((option) => (
+                        <div key={option} className="surface-inset px-3 py-2 text-body-md text-blueprint-muted">{option}</div>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="surface-inset mt-4 min-w-0 p-3">
+                    <button
+                      type="button"
+                      onClick={() => setOpenAnswers((current) => ({ ...current, [question.id]: !current[question.id] }))}
+                      className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-4 text-left text-ui-label text-primary"
+                      aria-expanded={Boolean(openAnswers[question.id])}
+                    >
+                      <span className="min-w-0">Answer</span>
+                      <span className="whitespace-nowrap text-blueprint-muted">{openAnswers[question.id] ? 'Hide' : 'Show'}</span>
+                    </button>
+                    {openAnswers[question.id] ? (
+                      <>
+                        {hasCodeBlock(question.correctAnswer) || question.type === 'coding' ? (
+                          <div className="mt-3 space-y-3">
+                            {parseAnswerSegments(question.correctAnswer).map((seg, si) =>
+                              seg.kind === 'code' ? (
+                                <pre key={si} className="max-h-96 overflow-auto rounded-lg border border-blueprint-line bg-[#f8f7f5] p-3 text-[0.78rem] leading-relaxed text-primary dark:bg-white/5"><code className="block whitespace-pre">{seg.code}</code></pre>
+                              ) : (
+                                <ul key={si} className="space-y-1.5 text-body-md text-primary">
+                                  {toPoints(seg.text, { allowCommaFallback: false }).map((point, pi) => (
+                                    <li key={pi} className="flex items-baseline gap-2">
+                                      <span className={`${bulletDotClass} bg-primary`} />
+                                      <span className="min-w-0 wrap-break-word">{renderInlineCode(point)}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              )
+                            )}
+                          </div>
+                        ) : (
+                          <ul className="mt-3 space-y-1.5 text-body-md text-primary">
+                            {toPoints(question.correctAnswer, { allowCommaFallback: false }).map((point, pi) => (
+                              <li key={pi} className="flex items-baseline gap-2">
+                                <span className={`${bulletDotClass} bg-primary`} />
+                                <span className="min-w-0 wrap-break-word">{renderInlineCode(point)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {question.explanation ? (
+                          <ul className="mt-3 space-y-1.5 text-body-md text-blueprint-muted">
+                            {toPoints(question.explanation, { allowCommaFallback: false }).map((point, pi) => (
+                              <li key={pi} className="flex items-baseline gap-2">
+                                <span className={`${bulletDotClass} bg-blueprint-muted`} />
+                                <span className="min-w-0 wrap-break-word">{renderInlineCode(point)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </div>
+                </article>
+              );
+              const aiLeft = aiGeneratedQuestions.filter((_, i) => i % 2 === 0);
+              const aiRight = aiGeneratedQuestions.filter((_, i) => i % 2 === 1);
+              return (
+                <div className="space-y-4">
+                  <div className="flex flex-col gap-4 xl:hidden">
+                    {aiGeneratedQuestions.map((q, i) => aiCard(q, i))}
+                  </div>
+                  <div className="hidden min-w-0 xl:flex xl:gap-4">
+                    <div className="flex min-w-0 flex-1 flex-col gap-4">{aiLeft.map((q, i) => aiCard(q, i * 2))}</div>
+                    <div className="flex min-w-0 flex-1 flex-col gap-4">{aiRight.map((q, i) => aiCard(q, i * 2 + 1))}</div>
                   </div>
                 </div>
-              </>
-            );
-          })() : null}
+              );
+            })() : null}
 
-          {!showingGeneratedQuestions && !loading && totalPages > 1 ? (
-            <div className="flex items-center justify-center gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => { setPage((current) => Math.max(1, current - 1)); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                disabled={page <= 1}
-                className="rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5"
-              >
-                Previous
-              </button>
-              <span className="text-ui-label text-blueprint-muted">{page} / {totalPages}</span>
-              <button
-                type="button"
-                onClick={() => { setPage((current) => Math.min(totalPages, current + 1)); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                disabled={page >= totalPages}
-                className="rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5"
-              >
-                Next
-              </button>
-            </div>
-          ) : null}
+            {!loading && totalPages > 1 ? (
+              <div className="flex items-center justify-center gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => { setPage((current) => Math.max(1, current - 1)); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                  disabled={page <= 1}
+                  className="rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5"
+                >
+                  Previous
+                </button>
+                <span className="text-ui-label text-blueprint-muted">{page} / {totalPages}</span>
+                <button
+                  type="button"
+                  onClick={() => { setPage((current) => Math.min(totalPages, current + 1)); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                  disabled={page >= totalPages}
+                  className="rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5"
+                >
+                  Next
+                </button>
+              </div>
+            ) : null}
+          </div>
         </section>
       </main>
     </div>

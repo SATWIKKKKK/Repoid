@@ -8455,63 +8455,7 @@ export async function createApp(options: { listen?: boolean } = {}) {
         'faang-tagged': 'FAANG-level',
       };
       const roundLabel = roundTypeLabel[roundType] ?? roundType;
-      const codingLanguage = getCodingLanguageForDomain(domain);
-      const codingLanguageLabel = formatCodingLanguageLabel(codingLanguage);
-      const commentPrefix = codingLanguage === 'python' || codingLanguage === 'bash'
-        ? '# '
-        : codingLanguage === 'sql'
-          ? '-- '
-          : '// ';
-      const buildCodingStarterCode = (questionTopic: string, index: number) => {
-        if (codingLanguage === 'python') {
-          return [
-            `def solve_${index + 1}(items):`,
-            `    """Implement the ${questionTopic} solution here."""`,
-            '    # TODO: add validation and the core algorithm',
-            '    result = []',
-            '    return result',
-          ].join('\n');
-        }
-        if (codingLanguage === 'sql') {
-          return [
-            `-- Solve the ${questionTopic} task.`,
-            'WITH source AS (',
-            '  SELECT *',
-            '  FROM your_table',
-            ')',
-            'SELECT *',
-            'FROM source;',
-          ].join('\n');
-        }
-        if (codingLanguage === 'bash') {
-          return [
-            '#!/usr/bin/env bash',
-            '# Solve the task here.',
-            'set -euo pipefail',
-            '',
-            '# TODO: implement the required steps',
-          ].join('\n');
-        }
-        return [
-          `function solve${index + 1}(items: string[]): string[] {`,
-          `  // Implement the ${questionTopic} solution here.`,
-          '  // TODO: validate input and apply the required logic',
-          '  const result: string[] = [];',
-          '  return result;',
-          '}',
-        ].join('\n');
-      };
-      const normalizeCodingAnswer = (value: string, explanation: string) => {
-        if (value.includes('```')) return value;
-        const commentedBody = value
-          .split(/\n+/)
-          .map((line) => `${commentPrefix}${line.trim()}`)
-          .join('\n')
-          .trim();
-        const fenced = `\`\`\`${codingLanguage}\n${commentedBody || `${commentPrefix}Reference solution sketch`}\n\`\`\``;
-        return explanation ? `${fenced}\n\n${explanation}` : fenced;
-      };
-      const systemPrompt = `You are a senior ${domainLabel} engineer creating interview preparation questions. Return only a raw JSON array starting with [ and ending with ]. No markdown fences around the JSON. No preamble. No trailing text.`;
+      const systemPrompt = `You are a senior ${domainLabel} engineer creating interview preparation questions. Return only a raw JSON array starting with [ and ending with ]. No markdown fences. No preamble. No trailing text.`;
       const userPrompt = `Domain: ${domainLabel}. Topic: ${topic}. Round type: ${roundLabel}.
 Generate exactly 10 interview questions of type "${roundLabel}" for the topic "${topic}" in ${domainLabel}.
 Rules:
@@ -8519,9 +8463,7 @@ Rules:
 - For MCQ: provide 4 options (A/B/C/D) and the correct answer letter.
 - For Fill in the Blank: use ___ for the blank; the answer fills the blank.
 - For Scenario/Architecture/Mock: open-ended question; correctAnswer is a detailed model answer (3-5 sentences).
-- For Coding: questionText must read like a real machine-coding prompt with input/output expectations and edge cases.
-- For Coding: codeSnippet must contain starter code only, with NO markdown fences, in ${codingLanguageLabel}.
-- For Coding: correctAnswer must contain a fenced ${codingLanguageLabel} code block with a reference solution, followed by a short explanation paragraph.
+- For Coding: describe a concrete coding task; correctAnswer MUST start with a brief 1-sentence explanation, then wrap ALL code in triple-backtick fences with the language identifier (e.g. \`\`\`javascript\nfunction example() {}\n\`\`\`). Never return code as plain text.
 - difficulty must be 1, 2, or 3 (integer).
 - explanation must be 2-4 sentences.
 Return a JSON array of objects: [{ "questionText": string, "options": string[] | null, "correctAnswer": string, "explanation": string, "difficulty": 1|2|3, "codeSnippet": string|null }]`;
@@ -8532,37 +8474,24 @@ Return a JSON array of objects: [{ "questionText": string, "options": string[] |
         (payload) => {
           const arr = Array.isArray(payload) ? payload : null;
           if (!arr || !arr.length) throw new Error('Expected JSON array of questions');
-          return arr.slice(0, 12).map((item: Record<string, unknown>, index: number) => {
-            const questionType = (['scenario', 'architecture', 'mock-interview'].includes(roundType) ? 'scenario'
+          return arr.slice(0, 12).map((item: Record<string, unknown>, index: number) => ({
+            id: `ai-gen-${domain}-${Date.now()}-${index}`,
+            domain,
+            domainLabel,
+            topic,
+            type: (['scenario', 'architecture', 'mock-interview'].includes(roundType) ? 'scenario'
               : roundType === 'fill-in-the-blank' ? 'fill_blank'
               : roundType === 'coding-round' ? 'coding'
-              : 'mcq') as import('./src/lib/questionBank.js').QuestionType;
-            const explanation = String(item.explanation ?? '').trim();
-            const questionText = String(item.questionText ?? '').trim();
-            const correctAnswer = String(item.correctAnswer ?? '').trim();
-            const codeSnippet = String(item.codeSnippet ?? '').trim();
-            return {
-              id: `ai-gen-${domain}-${Date.now()}-${index}`,
-              domain,
-              domainLabel,
-              topic,
-              type: questionType,
-              difficulty: ([1, 2, 3].includes(Number(item.difficulty)) ? Number(item.difficulty) : 2) as 1 | 2 | 3,
-              questionText: questionType === 'coding'
-                ? (questionText || `Implement a ${codingLanguageLabel} solution for ${topic}. State the expected input, output, and at least one edge case.`)
-                : questionText,
-              options: Array.isArray(item.options) && item.options.length ? item.options.map(String) : undefined,
-              correctAnswer: questionType === 'coding'
-                ? normalizeCodingAnswer(correctAnswer, explanation)
-                : correctAnswer,
-              explanation,
-              codeSnippet: questionType === 'coding'
-                ? (codeSnippet || buildCodingStarterCode(topic, index))
-                : (codeSnippet || undefined),
-              tags: [`round:${roundType}`],
-              timeLimitMinutes: questionType === 'coding' ? 18 : 3,
-            };
-          });
+              : 'mcq') as import('./src/lib/questionBank.js').QuestionType,
+            difficulty: ([1, 2, 3].includes(Number(item.difficulty)) ? Number(item.difficulty) : 2) as 1 | 2 | 3,
+            questionText: String(item.questionText ?? ''),
+            options: Array.isArray(item.options) && item.options.length ? item.options.map(String) : undefined,
+            correctAnswer: String(item.correctAnswer ?? ''),
+            explanation: String(item.explanation ?? ''),
+            codeSnippet: item.codeSnippet ? String(item.codeSnippet) : undefined,
+            tags: [`round:${roundType}`, 'ai-generated'],
+            timeLimitMinutes: 3,
+          }));
         },
         { maxTokens: 3500, timeoutMs: 45000, model: DEEPSEEK_CHAT_MODEL, temperature: 0.7 },
       );

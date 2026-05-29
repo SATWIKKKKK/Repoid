@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Copyright, Heart, Mail } from 'lucide-react';
+import { ArrowLeft, Heart, Mail } from 'lucide-react';
 import { View } from '../App';
 
 interface LegalProps {
@@ -25,25 +25,17 @@ function LegalShell({ title, lastUpdated, children, onViewChange }: { title: str
           </div>
         </motion.div>
       </main>
-      <footer className="border-t border-blueprint-line bg-white px-8 py-8 relative z-10 mt-16 dark:bg-[#1c1c1c]">
-        <div className="mx-auto flex max-w-360 flex-col items-center gap-5 text-center text-xs text-blueprint-muted font-mono">
-          <div className="flex flex-col items-center gap-2">
-            <button onClick={() => onViewChange('privacy')} className="hover:text-primary transition-colors">Privacy Policy</button>
-            <button onClick={() => onViewChange('terms')} className="hover:text-primary transition-colors">Terms and Conditions</button>
-            <button onClick={() => onViewChange('security')} className="hover:text-primary transition-colors">Security</button>
-            <button onClick={() => onViewChange('contact')} className="hover:text-primary transition-colors">Contact Us</button>
+      <footer className="border-t border-blueprint-line py-8 px-8 bg-white relative z-10 mt-16 dark:bg-[#1c1c1c]">
+        <div className="max-w-[1440px] mx-auto flex flex-col items-center gap-4 text-xs text-blueprint-muted font-mono">
+          <div className="flex flex-wrap gap-6 justify-center">
+          {(['privacy', 'terms', 'security', 'contact'] as View[]).map(v => (
+            <button key={v} onClick={() => onViewChange(v)} className="hover:text-primary transition-colors uppercase">{v}</button>
+          ))}
           </div>
-          <div className="h-px w-20 bg-blueprint-line" />
-          <div className="flex flex-col items-center gap-1">
-            <p className="flex items-center gap-2">
-              <Copyright size={14} /> 2026 Repoid
-            </p>
-            <p>All rights reserved.</p>
-            <p className="flex items-center gap-2">
-              Made by <a href="https://www.linkedin.com/in/satwikchandra45/" target="_blank" rel="noreferrer" className="hover:text-primary">Satwik</a>
-              <Heart size={14} className="fill-[#6b4a2f] text-[#6b4a2f] dark:fill-white dark:text-white" />
-            </p>
-          </div>
+          <p className="flex items-center gap-2">
+            2026 Repoid. All rights reserved. Made by Satwik
+            <Heart size={14} className="fill-[#6b4a2f] text-[#6b4a2f] dark:fill-white dark:text-white" />
+          </p>
         </div>
       </footer>
     </div>
