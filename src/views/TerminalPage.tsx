@@ -26,6 +26,8 @@ import {
 import { readLocalDraft, saveLocalDraft } from '../lib/roundRuntime';
 
 import { View } from '../App';
+
+interface TerminalPageProps {
   onViewChange: (view: View) => void;
 }
 
