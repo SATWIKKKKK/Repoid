@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, CalendarDays, ChartPie, CheckCircle2, Github, Heart, LoaderCircle, Play, Search, TrendingUp, X } from 'lucide-react';
+import { ArrowRight, ChartPie, CheckCircle2, Copyright, Github, Heart, LoaderCircle, Play, Search, TrendingUp, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { getGithubScanJob, listGithubRepos } from '../lib/githubRepos';
@@ -195,11 +195,10 @@ export default function Dashboard() {
   const [consistencyOpen, setConsistencyOpen] = useState(false);
   const [readinessOpen, setReadinessOpen] = useState(false);
   const [domainStatsOpen, setDomainStatsOpen] = useState(false);
-  const [heatmapRange, setHeatmapRange] = useState(30);
+  const [heatmapRange, setHeatmapRange] = useState(60);
   const [heatmapMonth, setHeatmapMonth] = useState('');
   const [activityRows, setActivityRows] = useState<ActivityRow[]>([]);
   const [domainStats, setDomainStats] = useState<DomainStatsPayload | null>(null);
-  const [hoveredActivity, setHoveredActivity] = useState<{ key: string; date: Date; count: number } | null>(null);
   const [activePracticeId, setActivePracticeId] = useState<string | null>(null);
   const [quickRoute, setQuickRoute] = useState('/scenario-round');
   const [loadingRepos, setLoadingRepos] = useState(true);
@@ -318,6 +317,19 @@ export default function Dashboard() {
   const domainActivityChartData = useMemo(() => {
     return (domainStats?.domains ?? []).filter((item) => item.attempted > 0);
   }, [domainStats]);
+  const selectedDomainStats = useMemo(() => {
+    return domainStats?.domains.find((item) => item.domain === domain) ?? null;
+  }, [domain, domainStats]);
+  const readinessLegendItems = useMemo(() => {
+    return readinessChartData.map((entry) => ({
+      ...entry,
+      description: entry.name === 'Timed rounds'
+        ? 'Latest scored coding, scenario, and mock rounds.'
+        : entry.name === 'Practice sessions'
+          ? 'Saved scored practice sessions in your current domain.'
+          : 'How regularly you complete scored work across the latest 30-day window.',
+    }));
+  }, [readinessChartData]);
   const insights = useMemo(() => {
     const practiceInsights = currentDomainPracticeSessions.map(insightFromPracticeSession).filter(Boolean) as Array<{ title: string; body: string; timestamp: string }>;
     const roundInsights = attempts.map(insightFromAttempt).filter(Boolean) as Array<{ title: string; body: string; timestamp: string }>;
@@ -428,7 +440,7 @@ export default function Dashboard() {
       <div className="pointer-events-none fixed inset-0 opacity-20">
         <BackgroundRippleEffect rows={10} cols={28} cellSize={66} />
       </div>
-      <main className="relative z-10 mx-auto flex w-full max-w-[1320px] flex-col gap-6 px-4 pb-14 pt-6 sm:px-6 lg:px-10">
+      <main className="relative z-10 mx-auto flex w-full max-w-360 flex-col gap-6 px-4 pb-14 pt-6 sm:px-6 lg:px-8 xl:px-10">
         <section className="border-b border-blueprint-line/80 pb-6">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="max-w-3xl">
@@ -501,7 +513,7 @@ export default function Dashboard() {
                 <TrendingUp size={13} /> {scoreDelta >= 0 ? '+' : ''}{scoreDelta}% from last week
               </span>
             </div>
-            <div className="surface-inset min-h-[260px]">
+            <div className="surface-inset min-h-65">
               <ResponsiveContainer width="100%" height={240}>
                 <BarChart data={readinessChartData} margin={{ top: 12, right: 12, left: -24, bottom: 0 }}>
                   <XAxis dataKey="name" tick={{ fill: 'var(--color-primary)', fontSize: 12 }} />
@@ -514,81 +526,61 @@ export default function Dashboard() {
               </ResponsiveContainer>
             </div>
           </div>
-          <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_220px]">
-            <div className="surface-inset">
-              <p className="text-body-md text-primary">
-                Formula: the latest five scored signals are averaged with descending weights of 100%, 86%, 72%, 58%, and 44%. Timed rounds and completed practice sessions both count, then weak tags and activity explain what to work on next.
-              </p>
+          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_280px]">
+            <div className="grid gap-3">
+              {readinessLegendItems.map((item) => (
+                <div key={item.name} className="surface-inset flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-body-md font-medium text-primary">
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.fill }} />
+                      {item.name}
+                    </div>
+                    <p className="mt-1 text-body-md text-blueprint-muted">{item.description}</p>
+                  </div>
+                  <span className="shrink-0 text-headline-md text-primary not-italic">{item.value}%</span>
+                </div>
+              ))}
             </div>
-            <div className="surface-inset h-[180px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={readinessChartData} dataKey="value" innerRadius={42} outerRadius={70} paddingAngle={3}>
-                    {readinessChartData.map((entry) => <Cell key={entry.name} fill={entry.fill} />)}
-                  </Pie>
-                  <Tooltip content={<ReadinessTooltip />} />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
+            <button type="button" onClick={() => setReadinessOpen(true)} className="surface-inset h-55 text-left transition-colors hover:bg-white/90 dark:hover:bg-white/5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-ui-label text-blueprint-muted">Score Mix</p>
+                  <p className="mt-1 text-body-md text-primary">Tap to open the full readiness breakdown.</p>
+                </div>
+                <ArrowRight size={16} className="text-primary" />
+              </div>
+              <div className="mt-2 h-40">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={readinessChartData} dataKey="value" innerRadius={42} outerRadius={70} paddingAngle={3}>
+                      {readinessChartData.map((entry) => <Cell key={entry.name} fill={entry.fill} />)}
+                    </Pie>
+                    <Tooltip content={<ReadinessTooltip />} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </button>
           </div>
         </section>
 
         <section className="surface-card">
-          <div className="flex flex-col gap-4 border-b border-blueprint-line pb-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="border-b border-blueprint-line pb-4">
             <div>
               <p className="text-ui-label text-blueprint-muted">Consistency</p>
               <h2 className="mt-1 text-headline-md text-primary not-italic">Activity heatmap</h2>
-              <p className="mt-2 text-body-md text-blueprint-muted">Brighter green squares mean more completed practice activity on that date.</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {[
-                [7, '7 days'],
-                [15, '15 days'],
-                [30, '30 days'],
-                [60, '2 months'],
-              ].map(([days, label]) => (
-                <button
-                  key={String(days)}
-                  type="button"
-                  onClick={() => { setHeatmapMonth(''); setHeatmapRange(Number(days)); }}
-                  className={`rounded-full border px-3 py-2 text-ui-label ${!heatmapMonth && heatmapRange === days ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-primary'}`}
-                >
-                  {label}
-                </button>
-              ))}
-              <select
-                value={heatmapMonth}
-                onChange={(event) => setHeatmapMonth(event.target.value)}
-                className="rounded-full border border-blueprint-line bg-card px-3 py-2 text-ui-label text-primary outline-none"
-                aria-label="Filter activity heatmap by month"
-              >
-                <option value="">Month</option>
-                {heatmapMonthOptions.map((month) => (
-                  <option key={month.value} value={month.value}>{month.label}</option>
-                ))}
-              </select>
+              <p className="mt-2 text-body-md text-blueprint-muted">Last 60 days of completed activity. Brighter green squares mean more completed work on that date.</p>
             </div>
           </div>
-          <div className="relative mt-5 grid gap-1" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(18px, 1fr))' }}>
+          <div className="mt-5 grid gap-1" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(18px, 1fr))' }}>
             {displayedHeatmapDays.map((day) => (
               <span
                 key={day.key}
-                onMouseEnter={() => setHoveredActivity(day)}
-                onMouseLeave={() => setHoveredActivity(null)}
-                onFocus={() => setHoveredActivity(day)}
-                onBlur={() => setHoveredActivity(null)}
                 tabIndex={0}
                 title={`${day.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}: ${day.count} session${day.count === 1 ? '' : 's'}`}
                 className="aspect-square rounded-sm border border-blueprint-line bg-transparent outline-none"
                 style={activityFillStyle(day.count)}
               />
             ))}
-            {hoveredActivity ? (
-              <div className="pointer-events-none absolute left-1/2 top-0 z-10 -translate-x-1/2 -translate-y-[calc(100%+8px)] rounded-xl border border-blueprint-line bg-card px-3 py-2 text-xs text-primary shadow-xl">
-                <p className="font-semibold">{hoveredActivity.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
-                <p className="text-blueprint-muted">{hoveredActivity.count === 0 ? 'No activity' : `${hoveredActivity.count} session${hoveredActivity.count === 1 ? '' : 's'}`}</p>
-              </div>
-            ) : null}
           </div>
         </section>
 
@@ -598,7 +590,7 @@ export default function Dashboard() {
             <h2 className="mt-1 text-headline-md text-primary not-italic">Recent sessions</h2>
             <p className="mt-2 text-body-md text-blueprint-muted">Updated from practice tracks, coding rounds, scenario rounds, and mock interviews.</p>
           </div>
-          <div className="mt-5 h-[250px]">
+          <div className="mt-5 h-64">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={activityTrendData} margin={{ top: 8, right: 12, left: -24, bottom: 0 }}>
                 <XAxis dataKey="shortLabel" tick={{ fill: 'var(--color-primary)', fontSize: 12 }} />
@@ -614,8 +606,8 @@ export default function Dashboard() {
           </div>
         </section>
 
-        <section className="grid gap-5 lg:grid-cols-4">
-          <button type="button" onClick={() => setGoalOpen(true)} className="surface-card aspect-square text-left transition-colors hover:bg-white/85">
+        <section className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+          <button type="button" onClick={() => setGoalOpen(true)} className="surface-card min-h-64 text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
             <p className="text-ui-label text-blueprint-muted">Daily Goal</p>
             <div className="mt-4 flex items-start gap-3">
               <CheckCircle2 size={24} className={hasAnyActivity ? 'text-emerald-600' : 'text-blueprint-muted'} />
@@ -625,7 +617,7 @@ export default function Dashboard() {
               </div>
             </div>
           </button>
-          <button type="button" onClick={() => navigate('/practice-tracks')} className="surface-card aspect-square text-left transition-colors hover:bg-white/85">
+          <button type="button" onClick={() => navigate('/practice-tracks')} className="surface-card min-h-64 text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
             <p className="text-ui-label text-blueprint-muted">Gap Review</p>
             <p className="mt-4 text-headline-md text-primary not-italic">Current weak areas</p>
             {gapTopics.length ? (
@@ -641,27 +633,30 @@ export default function Dashboard() {
               <p className="mt-4 text-body-md text-blueprint-muted">Complete your first round to see your weak areas.</p>
             )}
           </button>
-          <button type="button" onClick={() => setDomainStatsOpen(true)} className="surface-card aspect-square text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
+          <button type="button" onClick={() => setDomainStatsOpen(true)} className="surface-card min-h-64 text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
             <p className="text-ui-label text-blueprint-muted">Domain Stats</p>
-            <div className="mt-3 flex items-start gap-3">
+            <div className="mt-4 flex items-start gap-3">
               <ChartPie size={22} className="mt-0.5 text-emerald-600 dark:text-emerald-300" />
-              <div>
-                <span className="inline-flex items-center gap-2 text-body-md font-medium text-primary">
-                  {domainLabel} <ArrowRight size={14} />
-                </span>
-                <p className="mt-1 text-body-md text-blueprint-muted">
-                  {domainStats?.totalAttempts ? `${domainStats.totalAttempts} total attempts tracked.` : 'Open stats after completing sessions.'}
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2 text-body-md font-medium text-primary">
+                  <span>{selectedDomainStats?.label ?? domainLabel}</span>
+                  <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-ui-label text-emerald-700 dark:text-emerald-300">
+                    {selectedDomainStats?.correctRate ?? domainStats?.overallReadiness ?? 0}%
+                  </span>
+                </div>
+                <p className="mt-2 text-body-md text-blueprint-muted">
+                  {selectedDomainStats
+                    ? `${selectedDomainStats.attempted} attempted questions across ${selectedDomainStats.sessions} session${selectedDomainStats.sessions === 1 ? '' : 's'}.`
+                    : domainStats?.totalAttempts
+                      ? `${domainStats.totalAttempts} total attempts tracked across your live analytics.`
+                      : 'Complete scored work to unlock live domain analytics.'}
                 </p>
+                {domainStats?.strongestDomain ? (
+                  <p className="mt-2 text-body-md text-primary">Strongest overall: {domainStats.strongestDomain.label} at {domainStats.strongestDomain.correctRate}%.</p>
+                ) : null}
               </div>
             </div>
           </button>
-          <article className="surface-card aspect-square">
-            <p className="text-ui-label text-blueprint-muted">Mock Interview</p>
-            <div className="mt-4 flex gap-3">
-              <CalendarDays size={22} className="text-blueprint-muted" />
-              <p className="text-body-md text-primary">Add your interview date later; for now, focus on one scenario and one review round this week.</p>
-            </div>
-          </article>
         </section>
 
         <section className="surface-card">
@@ -694,7 +689,7 @@ export default function Dashboard() {
           </div>
           <div className="grid gap-3 lg:grid-cols-3">
             {recommendations.map((item) => (
-              <button key={item.title} type="button" onClick={() => navigate(item.route)} className="flex items-center gap-4 rounded-xl border border-blueprint-line bg-[#fbf9f9] p-4 text-left transition-colors hover:bg-white">
+              <button key={item.title} type="button" onClick={() => navigate(item.route)} className="flex items-center gap-4 rounded-xl border border-blueprint-line bg-blueprint-bg p-4 text-left transition-colors hover:bg-white">
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#efeded] text-ui-label text-primary">
                   {item.initials}
                 </div>
@@ -708,16 +703,25 @@ export default function Dashboard() {
           </div>
         </section>
 
-        <footer className="flex flex-col items-center justify-between gap-4 border-t border-blueprint-line py-6 text-sm text-blueprint-muted sm:flex-row">
-          <div className="flex flex-wrap justify-center gap-4">
-            <button type="button" onClick={() => navigate('/privacy')} className="hover:text-primary">Privacy Policy</button>
-            <button type="button" onClick={() => navigate('/terms')} className="hover:text-primary">Terms</button>
-            <button type="button" onClick={() => navigate('/contact')} className="hover:text-primary">Contact Us</button>
+        <footer className="border-t border-blueprint-line py-6 text-sm text-blueprint-muted">
+          <div className="flex flex-col items-center gap-5 text-center">
+            <div className="flex flex-col items-center gap-2">
+              <button type="button" onClick={() => navigate('/privacy')} className="hover:text-primary">Privacy Policy</button>
+              <button type="button" onClick={() => navigate('/terms')} className="hover:text-primary">Terms and Conditions</button>
+              <button type="button" onClick={() => navigate('/contact')} className="hover:text-primary">Contact Us</button>
+            </div>
+            <div className="h-px w-20 bg-blueprint-line" />
+            <div className="flex flex-col items-center gap-1">
+              <p className="flex items-center gap-2">
+                <Copyright size={14} /> 2026 Repoid
+              </p>
+              <p>All rights reserved.</p>
+              <p className="flex items-center gap-2">
+                Made by <a href="https://www.linkedin.com/in/satwikchandra45/" target="_blank" rel="noreferrer" className="hover:text-primary">Satwik</a>
+                <Heart size={14} className="fill-[#6b4a2f] text-[#6b4a2f] dark:fill-white dark:text-white" />
+              </p>
+            </div>
           </div>
-          <p className="flex items-center gap-2">
-            2026 Repoid. All rights reserved. Made by Satwik
-            <Heart size={14} className="fill-[#6b4a2f] text-[#6b4a2f] dark:fill-white dark:text-white" />
-          </p>
         </footer>
       </main>
 
@@ -738,7 +742,7 @@ export default function Dashboard() {
                 ['/mock-interview', 'Mock Interview'],
                 ['/practice-tracks', 'Practice Session'],
               ].map(([route, label]) => (
-                <button key={route} type="button" onClick={() => setQuickRoute(route)} className={`rounded-xl border px-4 py-3 text-left text-body-md ${quickRoute === route ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-[#fbf9f9] text-primary'}`}>
+                <button key={route} type="button" onClick={() => setQuickRoute(route)} className={`rounded-xl border px-4 py-3 text-left text-body-md ${quickRoute === route ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-blueprint-bg text-primary'}`}>
                   {label}
                 </button>
               ))}
@@ -805,43 +809,17 @@ export default function Dashboard() {
               </div>
               <button type="button" aria-label="Close" onClick={() => setConsistencyOpen(false)} className="text-blueprint-muted hover:text-primary"><X size={18} /></button>
             </div>
-            <div className="mt-5 flex flex-wrap gap-2">
-              {[
-                [7, 'Last 7 Days'],
-                [15, 'Last 15 Days'],
-                [30, 'Last 30 Days'],
-                [45, 'Last 45 Days'],
-                [60, 'Last 2 Months'],
-              ].map(([days, label]) => (
-                <button
-                  key={String(days)}
-                  type="button"
-                  onClick={() => setHeatmapRange(Number(days))}
-                  className={`rounded-full border px-3 py-2 text-ui-label ${heatmapRange === days ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-primary'}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="relative mt-5 grid gap-1" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(14px, 1fr))' }}>
+            <p className="mt-5 text-body-md text-blueprint-muted">Last 60 days of completed activity.</p>
+            <div className="mt-5 grid gap-1" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(14px, 1fr))' }}>
               {heatmapDays.map((day) => (
                 <span
                   key={day.key}
-                  onMouseEnter={() => setHoveredActivity(day)}
-                  onMouseLeave={() => setHoveredActivity(null)}
-                  onFocus={() => setHoveredActivity(day)}
-                  onBlur={() => setHoveredActivity(null)}
                   tabIndex={0}
+                  title={`${day.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}: ${day.count} session${day.count === 1 ? '' : 's'}`}
                   className="aspect-square rounded-sm border border-blueprint-line bg-transparent outline-none"
                   style={activityFillStyle(day.count)}
                 />
               ))}
-              {hoveredActivity ? (
-                <div className="pointer-events-none absolute left-1/2 top-0 z-10 -translate-x-1/2 -translate-y-[calc(100%+8px)] rounded-xl border border-blueprint-line bg-card px-3 py-2 text-xs text-primary shadow-xl">
-                  <p className="font-semibold">{hoveredActivity.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
-                  <p className="text-blueprint-muted">{hoveredActivity.count === 0 ? 'No activity' : `${hoveredActivity.count} session${hoveredActivity.count === 1 ? '' : 's'}`}</p>
-                </div>
-              ) : null}
             </div>
             <p className="mt-4 text-body-md text-blueprint-muted">Brighter green squares mean more completed practice activity on that day.</p>
           </div>
@@ -871,9 +849,9 @@ export default function Dashboard() {
                 </p>
               </div>
 
-              <div className="surface-inset min-h-[300px]">
+              <div className="surface-inset min-h-75">
                 <div className="flex h-full flex-col gap-4 lg:flex-row lg:items-center">
-                  <div className="h-[260px] min-w-0 flex-1">
+                  <div className="h-65 min-w-0 flex-1">
                     {domainActivityChartData.length ? (
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
@@ -977,7 +955,7 @@ export default function Dashboard() {
                   Recent scored work is weighted most heavily. Empty accounts start at 0 until rounds or practice sessions create signal.
                 </p>
               </div>
-              <div className="surface-inset min-h-[260px]">
+              <div className="surface-inset min-h-65">
                 <ResponsiveContainer width="100%" height={240}>
                   <BarChart data={readinessChartData} margin={{ top: 12, right: 12, left: -24, bottom: 0 }}>
                     <XAxis dataKey="name" tick={{ fill: 'var(--color-primary)', fontSize: 12 }} />
@@ -990,13 +968,22 @@ export default function Dashboard() {
                 </ResponsiveContainer>
               </div>
             </div>
-            <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_220px]">
-              <div className="surface-inset">
-                <p className="text-body-md text-primary">
-                  Formula: the latest five scored signals are averaged with descending weights of 100%, 86%, 72%, 58%, and 44%. Timed rounds and completed practice sessions both count, then weak tags and activity help explain what to work on next.
-                </p>
+            <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_280px]">
+              <div className="grid gap-3">
+                {readinessLegendItems.map((item) => (
+                  <div key={item.name} className="surface-inset flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-body-md font-medium text-primary">
+                        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.fill }} />
+                        {item.name}
+                      </div>
+                      <p className="mt-1 text-body-md text-blueprint-muted">{item.description}</p>
+                    </div>
+                    <span className="shrink-0 text-headline-md text-primary not-italic">{item.value}%</span>
+                  </div>
+                ))}
               </div>
-              <div className="surface-inset h-[180px]">
+              <div className="surface-inset h-55">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie data={readinessChartData} dataKey="value" innerRadius={42} outerRadius={70} paddingAngle={3}>
