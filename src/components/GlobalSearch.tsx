@@ -92,7 +92,7 @@ export default function GlobalSearch({ compact = false }: { compact?: boolean })
           event.preventDefault();
           choose(suggestions[activeIndex]);
         }}
-        className="relative flex h-12 items-center overflow-hidden rounded-full border border-blueprint-line bg-card shadow-[inset_0_0_0_1px_rgba(0,0,0,0.03),0_12px_28px_rgba(0,0,0,0.08)]"
+        className="relative flex h-12 items-center rounded-full border border-blueprint-line bg-card shadow-[inset_0_0_0_1px_rgba(0,0,0,0.03),0_12px_28px_rgba(0,0,0,0.08)]"
       >
         <Search size={16} className="pointer-events-none absolute left-4 text-blueprint-muted" />
         <input
