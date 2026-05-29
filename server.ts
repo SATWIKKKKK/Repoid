@@ -10268,8 +10268,9 @@ export async function createApp(options: { listen?: boolean } = {}) {
       `).run(user.id, repoUrl);
     }
 
-    const entitlement = await getEntitlement(user.id, 'github-scan');
-    if (!entitlement.hasAccess) {
+    const isSavedRepoRescan = Boolean(force && existing?.status === 'complete');
+    const entitlement = isSavedRepoRescan ? null : await getEntitlement(user.id, 'github-scan');
+    if (entitlement && !entitlement.hasAccess) {
       releaseSingleFlight();
       response.status(403).json({ status: 'upgrade_required', message: entitlement.upgradeMessage ?? entitlement.reason ?? 'Upgrade required.', error: entitlement.upgradeMessage ?? entitlement.reason ?? 'Upgrade required.', ...entitlement });
       return;

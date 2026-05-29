@@ -164,6 +164,28 @@ export function GithubScanOverlay({ repoUrl, force = false, onClose, onError, on
     setRestartCount((count) => count + 1);
   };
 
+  if (force) {
+    return (
+      <div className="fixed inset-0 z-80 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
+        <div className="w-full max-w-md rounded-[28px] border border-blueprint-line bg-card p-6 shadow-[0_28px_80px_rgba(0,0,0,0.18)] sm:p-7">
+          <div className="flex items-center gap-3 text-blueprint-muted">
+            <Github size={18} />
+            <span className="text-ui-label uppercase tracking-[0.08em]">GitHub repo scan</span>
+          </div>
+          <h1 className="mt-3 text-headline-lg text-primary">{repoLabel}</h1>
+          <div className="mt-6 rounded-2xl border border-blueprint-line bg-blueprint-bg p-5 dark:bg-[#242424]">
+            <div className="flex items-start gap-3">
+              {errorMessage ? <AlertCircle size={20} className="mt-1 shrink-0 text-red-600 dark:text-red-300" /> : <Loader2 size={20} className="mt-1 shrink-0 animate-spin text-primary" />}
+              <p className="text-body-lg text-primary">
+                {errorMessage ?? 'Rescanning this repository for better questions, please wait...'}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-80 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
       {onClose ? (

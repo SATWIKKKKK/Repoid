@@ -171,6 +171,18 @@ function weightedAverage(scores: number[]) {
   return Math.round(weighted / totalWeight);
 }
 
+function daysForMonth(monthKey: string, activityByDate: Map<string, number>) {
+  const [year, month] = monthKey.split('-').map(Number);
+  if (!year || !month) return [];
+  const first = new Date(year, month - 1, 1);
+  const last = new Date(year, month, 0);
+  return Array.from({ length: last.getDate() }, (_item, index) => {
+    const date = new Date(year, month - 1, index + 1);
+    const key = date.toISOString().slice(0, 10);
+    return { key, date, count: activityByDate.get(key) ?? 0 };
+  });
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -184,6 +196,7 @@ export default function Dashboard() {
   const [readinessOpen, setReadinessOpen] = useState(false);
   const [domainStatsOpen, setDomainStatsOpen] = useState(false);
   const [heatmapRange, setHeatmapRange] = useState(30);
+  const [heatmapMonth, setHeatmapMonth] = useState('recent');
   const [activityRows, setActivityRows] = useState<ActivityRow[]>([]);
   const [domainStats, setDomainStats] = useState<DomainStatsPayload | null>(null);
   const [hoveredActivity, setHoveredActivity] = useState<{ key: string; date: Date; count: number } | null>(null);
@@ -227,6 +240,21 @@ export default function Dashboard() {
       return { key, date, count: activityByDate.get(key) ?? 0 };
     });
   }, [activityByDate, heatmapRange]);
+  const heatmapMonthOptions = useMemo(() => {
+    const today = new Date();
+    return Array.from({ length: 6 }, (_item, index) => {
+      const date = new Date(today.getFullYear(), today.getMonth() - index, 1);
+      const value = date.toISOString().slice(0, 7);
+      return {
+        value,
+        label: date.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }),
+      };
+    });
+  }, []);
+  const displayedHeatmapDays = useMemo(() => {
+    if (heatmapMonth === 'recent') return heatmapDays;
+    return daysForMonth(heatmapMonth, activityByDate);
+  }, [activityByDate, heatmapDays, heatmapMonth]);
   const activityTrendData = useMemo(() => {
     return heatmapDays.slice(-14).map((day) => ({
       label: day.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
@@ -452,62 +480,116 @@ export default function Dashboard() {
           </div>
         ) : null}
 
-        <section className="grid gap-5">
-          <button type="button" onClick={() => setReadinessOpen(true)} className="surface-card min-h-0 text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
-            <div className="flex items-start justify-between gap-4">
-              <span className="text-ui-label text-blueprint-muted">Prep Readiness</span>
-            </div>
-            <div className="mt-6 border-t border-blueprint-line pt-6">
-              <p className="font-serif text-[clamp(2.7rem,7vw,64px)] leading-none text-primary">
-                {prepScore}<span className="ml-1 align-super text-[clamp(1rem,2vw,1.45rem)] font-sans text-blueprint-muted">%</span>
+        <section className="surface-card">
+          <div className="border-b border-blueprint-line pb-4">
+            <p className="text-ui-label text-blueprint-muted">Prep Readiness</p>
+            <h2 className="mt-1 text-headline-md text-primary not-italic">How your score is calculated</h2>
+            <p className="mt-2 text-body-md text-blueprint-muted">Updated from your latest scored rounds, saved practice sessions, weak tags, and activity.</p>
+          </div>
+          <div className="mt-5 grid gap-5 lg:grid-cols-[240px_minmax(0,1fr)]">
+            <div className="surface-inset">
+              <p className="text-ui-label text-blueprint-muted">Overall</p>
+              <p className="mt-3 font-serif text-[56px] leading-none text-primary">
+                {prepScore}<span className="align-super text-lg font-sans text-blueprint-muted">%</span>
               </p>
-              <div className="mt-4 flex items-center gap-3">
-                <div className="flex h-10 items-end gap-1" aria-label="Last 7 days readiness trend">
-                  {sparkline.map((score, index) => (
-                    <span key={`${score}-${index}`} className="prep-readiness-bar w-2 rounded-full" style={{ height: `${Math.max(10, score / 2.4)}px` }} />
-                  ))}
-                </div>
-                <span className="inline-flex items-center gap-1 rounded-full border border-blueprint-line bg-[#f5f3f3] px-3 py-1.5 text-ui-label text-primary">
-                  <TrendingUp size={13} /> {scoreDelta >= 0 ? '+' : ''}{scoreDelta}% from last week
-                </span>
-              </div>
-              <p className="mt-4 text-body-md text-blueprint-muted">
-                {hasAnyActivity
-                  ? `Based on your latest ${domainLabel.toLowerCase()} round scores, saved practice sessions, weak tags, and recent activity.`
-                  : 'Complete rounds to build your readiness profile.'}
-              </p>
-            </div>
-          </button>
-
-          <article id="gap-review" className="surface-card min-h-0">
-            <div className="flex flex-col gap-2 border-b border-blueprint-line pb-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-ui-label text-blueprint-muted">Gap Review</p>
-                <h2 className="mt-1 text-headline-md text-primary not-italic">Current weak areas</h2>
-              </div>
-              <button type="button" onClick={() => navigate('/practice-tracks')} className="w-fit rounded-full border border-blueprint-line bg-white px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3]">
-                Drill Gaps
-              </button>
-            </div>
-            {gapTopics.length ? (
-              <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                {gapTopics.map((topic, index) => (
-                  <div key={topic} className="surface-inset">
-                    <p className="text-ui-label text-blueprint-muted">Priority {index + 1}</p>
-                    <p className="mt-1 text-body-md font-medium text-primary">{topic}</p>
-                  </div>
+              <div className="mt-4 flex h-10 items-end gap-1" aria-label="Last 7 days readiness trend">
+                {sparkline.map((score, index) => (
+                  <span key={`${score}-${index}`} className="prep-readiness-bar w-2 rounded-full" style={{ height: `${Math.max(10, score / 2.4)}px` }} />
                 ))}
               </div>
-            ) : (
-              <div className="mt-5 rounded-xl border border-dashed border-blueprint-line bg-[#fbf9f9] p-5">
-                <p className="text-body-md font-medium text-primary">Complete your first round to see your weak areas.</p>
-                <p className="mt-2 text-body-md text-blueprint-muted">Gap review starts tracking missed topics after one submitted round.</p>
-                <button type="button" onClick={() => navigate('/scenario-round')} className="mt-4 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-ui-label text-white">
-                  <Play size={14} /> Start a Round
+              <span className="mt-4 inline-flex items-center gap-1 rounded-full border border-blueprint-line bg-[#f5f3f3] px-3 py-1.5 text-ui-label text-primary">
+                <TrendingUp size={13} /> {scoreDelta >= 0 ? '+' : ''}{scoreDelta}% from last week
+              </span>
+            </div>
+            <div className="surface-inset min-h-[260px]">
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={readinessChartData} margin={{ top: 12, right: 12, left: -24, bottom: 0 }}>
+                  <XAxis dataKey="name" tick={{ fill: 'var(--color-primary)', fontSize: 12 }} />
+                  <YAxis domain={[0, 100]} tick={{ fill: 'var(--color-primary)', fontSize: 12 }} />
+                  <Tooltip cursor={{ fill: 'rgba(16,185,129,0.08)' }} content={<ReadinessTooltip />} />
+                  <Bar dataKey="value" minPointSize={4} radius={[8, 8, 0, 0]}>
+                    {readinessChartData.map((entry) => <Cell key={entry.name} fill={entry.fill} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_220px]">
+            <div className="surface-inset">
+              <p className="text-body-md text-primary">
+                Formula: the latest five scored signals are averaged with descending weights of 100%, 86%, 72%, 58%, and 44%. Timed rounds and completed practice sessions both count, then weak tags and activity explain what to work on next.
+              </p>
+            </div>
+            <div className="surface-inset h-[180px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={readinessChartData} dataKey="value" innerRadius={42} outerRadius={70} paddingAngle={3}>
+                    {readinessChartData.map((entry) => <Cell key={entry.name} fill={entry.fill} />)}
+                  </Pie>
+                  <Tooltip content={<ReadinessTooltip />} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </section>
+
+        <section className="surface-card">
+          <div className="flex flex-col gap-4 border-b border-blueprint-line pb-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <p className="text-ui-label text-blueprint-muted">Consistency</p>
+              <h2 className="mt-1 text-headline-md text-primary not-italic">Activity heatmap</h2>
+              <p className="mt-2 text-body-md text-blueprint-muted">Brighter green squares mean more completed practice activity on that date.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[
+                [7, '7 days'],
+                [15, '15 days'],
+                [30, '30 days'],
+                [60, '2 months'],
+              ].map(([days, label]) => (
+                <button
+                  key={String(days)}
+                  type="button"
+                  onClick={() => { setHeatmapMonth('recent'); setHeatmapRange(Number(days)); }}
+                  className={`rounded-full border px-3 py-2 text-ui-label ${heatmapMonth === 'recent' && heatmapRange === days ? 'border-primary bg-primary text-white' : 'border-blueprint-line bg-card text-primary'}`}
+                >
+                  {label}
                 </button>
+              ))}
+              <select
+                value={heatmapMonth}
+                onChange={(event) => setHeatmapMonth(event.target.value)}
+                className="rounded-full border border-blueprint-line bg-card px-3 py-2 text-ui-label text-primary outline-none"
+                aria-label="Filter activity heatmap by month"
+              >
+                <option value="recent">Recent</option>
+                {heatmapMonthOptions.map((month) => (
+                  <option key={month.value} value={month.value}>{month.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="relative mt-5 grid gap-1" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(18px, 1fr))' }}>
+            {displayedHeatmapDays.map((day) => (
+              <span
+                key={day.key}
+                onMouseEnter={() => setHoveredActivity(day)}
+                onMouseLeave={() => setHoveredActivity(null)}
+                onFocus={() => setHoveredActivity(day)}
+                onBlur={() => setHoveredActivity(null)}
+                tabIndex={0}
+                title={`${day.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}: ${day.count} session${day.count === 1 ? '' : 's'}`}
+                className="aspect-square rounded-sm border border-blueprint-line bg-transparent outline-none"
+                style={activityFillStyle(day.count)}
+              />
+            ))}
+            {hoveredActivity ? (
+              <div className="pointer-events-none absolute left-1/2 top-0 z-10 -translate-x-1/2 -translate-y-[calc(100%+8px)] rounded-xl border border-blueprint-line bg-card px-3 py-2 text-xs text-primary shadow-xl">
+                <p className="font-semibold">{hoveredActivity.date.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
+                <p className="text-blueprint-muted">{hoveredActivity.count === 0 ? 'No activity' : `${hoveredActivity.count} session${hoveredActivity.count === 1 ? '' : 's'}`}</p>
               </div>
-            )}
-          </article>
+            ) : null}
+          </div>
         </section>
 
         <section className="grid gap-5 lg:grid-cols-4">
@@ -521,19 +603,26 @@ export default function Dashboard() {
               </div>
             </div>
           </button>
-          <button type="button" onClick={() => setConsistencyOpen(true)} className="surface-card text-left transition-colors hover:bg-white/85">
-            <p className="text-ui-label text-blueprint-muted">Consistency</p>
-            <p className="mt-4 text-headline-md text-primary not-italic">{hasAnyActivity ? '1-day streak' : '0-day streak'}</p>
-            <div className="mt-4 grid grid-cols-7 gap-1">
-              {heatmapDays.slice(-7).map((day) => (
-                <span key={day.key} className="h-7 rounded border border-blueprint-line" style={activityFillStyle(day.count)} />
-              ))}
-            </div>
+          <button type="button" onClick={() => navigate('/practice-tracks')} className="surface-card text-left transition-colors hover:bg-white/85">
+            <p className="text-ui-label text-blueprint-muted">Gap Review</p>
+            <p className="mt-4 text-headline-md text-primary not-italic">Current weak areas</p>
+            {gapTopics.length ? (
+              <div className="mt-4 grid gap-2">
+                {gapTopics.slice(0, 3).map((topic, index) => (
+                  <div key={topic} className="rounded-lg border border-blueprint-line bg-blueprint-bg px-3 py-2">
+                    <p className="text-ui-label text-blueprint-muted">Priority {index + 1}</p>
+                    <p className="mt-1 truncate text-body-md text-primary">{topic}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-4 text-body-md text-blueprint-muted">Complete your first round to see your weak areas.</p>
+            )}
           </button>
           <button type="button" onClick={() => setDomainStatsOpen(true)} className="surface-card text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
             <p className="text-ui-label text-blueprint-muted">Domain Stats</p>
-            <div className="mt-4 flex items-start gap-3">
-              <ChartPie size={22} className="mt-1 text-emerald-600 dark:text-emerald-300" />
+            <div className="mt-3 flex items-start gap-3">
+              <ChartPie size={22} className="mt-0.5 text-emerald-600 dark:text-emerald-300" />
               <div>
                 <span className="inline-flex items-center gap-2 text-body-md font-medium text-primary">
                   {domainLabel} <ArrowRight size={14} />
