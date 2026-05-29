@@ -465,13 +465,7 @@ export default function Dashboard() {
             {loadingRepos ? (
               <span className="loading-state"><LoaderCircle size={15} className="animate-spin" /> Loading...</span>
             ) : (
-              <>
-                <Search size={16} className="mt-0.5 shrink-0" />
-                <div>
-                  <p className="text-ui-label">{repoCount} repos scanned yet</p>
-                  {repoCount === 0 ? <p className="mt-1 text-sm">Open the scanner to get started</p> : null}
-                </div>
-              </>
+              <p className="text-ui-label">{repoCount} repos scanned yet</p>
             )}
           </div>
         </button>

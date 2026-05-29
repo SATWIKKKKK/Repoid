@@ -112,10 +112,10 @@ export default function Builder(_props: BuilderProps) {
                         key={option.id}
                         type="button"
                         onClick={() => setDomain(option.id)}
-                        className={`min-h-[150px] rounded-xl border p-5 text-left transition-all ${domain === option.id ? 'border-primary bg-card shadow-[0_8px_28px_rgba(0,0,0,0.05)] dark:shadow-[0_8px_28px_rgba(0,0,0,0.2)]' : 'border-blueprint-line bg-card hover:border-[#747878] hover:bg-[#f5f3f3] dark:hover:bg-white/5'}`}
+                        className={`rounded-xl border p-4 text-left transition-all ${domain === option.id ? 'border-primary bg-card shadow-[0_8px_28px_rgba(0,0,0,0.05)] dark:shadow-[0_8px_28px_rgba(0,0,0,0.2)]' : 'border-blueprint-line bg-card hover:border-[#747878] hover:bg-[#f5f3f3] dark:hover:bg-white/5'}`}
                       >
                         <div className="flex items-start justify-between gap-4">
-                          <span className="text-body-lg font-semibold text-primary">{option.label}</span>
+                          <span className="text-body-md font-semibold text-primary">{option.label}</span>
                           <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${domain === option.id ? 'border-primary bg-primary/10' : 'border-blueprint-line bg-transparent'}`}>
                             {domain === option.id ? <span className="h-2.5 w-2.5 rounded-full bg-primary" /> : null}
                           </span>

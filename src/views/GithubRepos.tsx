@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { CheckCircle2, Github, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import { Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { GithubScanOverlay } from '../components/GithubRepoScanner';
 import { deleteGithubRepo, GithubRepo, isValidGithubRepoUrl, listGithubRepos, normalizeGithubRepoInput } from '../lib/githubRepos';
@@ -102,24 +102,6 @@ export default function GithubRepos() {
         </header>
 
         {error ? <p className="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-body-md text-red-700">{error}</p> : null}
-
-        <section className="surface-card-compact mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <p className="text-ui-label text-blueprint-muted">Private repositories</p>
-            <p className="mt-2 text-body-md text-primary">
-              {githubConnected ? 'GitHub is connected. Paste any repository URL your GitHub account can access.' : 'Enable access once, then paste any repository URL your GitHub account can access.'}
-            </p>
-          </div>
-          {githubConnected ? (
-            <span className="inline-flex w-fit items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label font-bold text-primary">
-              <CheckCircle2 size={15} /> GitHub connected
-            </span>
-          ) : (
-            <button type="button" onClick={() => window.location.replace(githubConnectUrl)} className="inline-flex w-fit items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-ui-label font-bold text-white transition-colors hover:bg-[#303031]">
-              <Github size={16} /> Enable private repo access
-            </button>
-          )}
-        </section>
 
         {repos.length ? (
           <section className="grid gap-4 lg:grid-cols-2">

@@ -10139,6 +10139,22 @@ Return a JSON array of objects: [{ "questionText": string, "options": string[] |
       const email = profile.email || emails.find((item) => item.primary && item.verified)?.email || emails.find((item) => item.verified)?.email;
       if (!email) throw new Error('GitHub did not return a verified email address.');
       if (!profile.id) throw new Error('GitHub did not return a stable account id.');
+
+      // If a user is already logged in, link the GitHub token to their existing account
+      // instead of switching sessions to whoever owns this GitHub email.
+      const sessionUser = await getUserFromRequest(request);
+      if (sessionUser) {
+        const existingOAuth = await db.prepare('SELECT id FROM oauth_accounts WHERE user_id = ? AND provider = ?').get<{ id: string }>(sessionUser.id, 'github');
+        if (existingOAuth) {
+          await saveGithubAccessToken(sessionUser.id, tokenData.access_token);
+        } else {
+          await db.prepare('INSERT INTO oauth_accounts (id, user_id, provider, provider_account_id, email, access_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())')
+            .run(crypto.randomUUID(), sessionUser.id, 'github', String(profile.id), email, tokenData.access_token);
+        }
+        response.redirect(oauthState.nextPath || '/github-repos');
+        return;
+      }
+
       const { user, isNew } = await findOrCreateOAuthUser('github', String(profile.id), email, profile.name ?? profile.login ?? '');
       await saveGithubAccessToken(user.id, tokenData.access_token);
       setSessionCookie(response, user.id);
