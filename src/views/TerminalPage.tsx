@@ -23,9 +23,9 @@ import {
   type MockPersona,
   type MockQuestionType,
 } from '../lib/mockInterview';
-import { View } from '../App';
+import { readLocalDraft, saveLocalDraft } from '../lib/roundRuntime';
 
-interface TerminalPageProps {
+import { View } from '../App';
   onViewChange: (view: View) => void;
 }
 
@@ -502,8 +502,13 @@ export default function TerminalPage(_props: TerminalPageProps) {
 
   useEffect(() => {
     if (!question) return;
-    setDraft(currentResponse?.answer ?? '');
-    draftRef.current = currentResponse?.answer ?? '';
+    const serverAnswer = currentResponse?.answer ?? '';
+    const localDraft = interviewId
+      ? (readLocalDraft('mock-draft', `${interviewId}-${question.id}`) as { answer?: string } | null)?.answer ?? ''
+      : '';
+    const restoredAnswer = serverAnswer || localDraft;
+    setDraft(restoredAnswer);
+    draftRef.current = restoredAnswer;
     setFollowUpDraft(currentResponse?.followUpAnswer ?? '');
   }, [currentResponse?.answer, currentResponse?.followUpAnswer, question?.id]);
 
@@ -686,8 +691,7 @@ export default function TerminalPage(_props: TerminalPageProps) {
           <div className="fixed inset-0 z-80 flex items-center justify-center bg-background/90 px-4">
             <div className="rounded-2xl border border-blueprint-line bg-card p-7 text-center shadow-2xl">
               <LoaderCircle size={24} className="mx-auto animate-spin text-primary" />
-              <h2 className="mt-4 text-headline-md text-primary">Preparing your interviewer...</h2>
-              <p className="mt-2 text-body-md text-blueprint-muted">Elapsed: {elapsedLoading}s · estimated 12s</p>
+              <h2 className="mt-4 text-headline-md text-primary">Preparing your interview...</h2>
             </div>
           </div>
         ) : null}
@@ -781,7 +785,6 @@ export default function TerminalPage(_props: TerminalPageProps) {
                 <>
                   <LoaderCircle size={24} className="mx-auto animate-spin text-primary" />
                   <h2 className="mt-4 text-headline-md text-primary">Generating your assessment...</h2>
-                  <p className="mt-2 text-body-md text-blueprint-muted">Elapsed: {elapsedLoading}s</p>
                 </>
               )}
             </div>
@@ -845,6 +848,9 @@ export default function TerminalPage(_props: TerminalPageProps) {
                 onChange={(event) => {
                   draftRef.current = event.target.value;
                   setDraft(event.target.value);
+                  if (interviewId && question) {
+                    saveLocalDraft('mock-draft', `${interviewId}-${question.id}`, { answer: event.target.value });
+                  }
                 }}
                 disabled={!question || phase !== 'answering' || submitting}
                 className="min-h-72 w-full resize-none rounded-xl border border-blueprint-line bg-blueprint-bg p-4 text-body-md text-primary outline-none transition-opacity focus:border-primary disabled:opacity-60"
@@ -905,9 +911,6 @@ export default function TerminalPage(_props: TerminalPageProps) {
                     </button>
                   )}
                 </div>
-                {interimTranscript && (
-                  <p className="max-w-sm text-sm italic text-blueprint-muted">{interimTranscript}</p>
-                )}
               </div>
               <button
                 type="button"

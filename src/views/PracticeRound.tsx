@@ -415,18 +415,17 @@ export default function PracticeRound() {
             )}
 
             {isConfirmed ? (
-              <div className="mt-6 rounded-2xl border border-blueprint-line bg-card px-4 py-4">
+              <div className={`mt-6 rounded-2xl border px-4 py-4 ${currentIsCorrect ? 'border-emerald-300 bg-emerald-50/50 dark:bg-emerald-950/20' : 'border-red-300 bg-red-50/50 dark:bg-red-950/20'}`}>
                 <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
                   <div className="space-y-2">
-                    <p className={`inline-flex rounded-full px-3 py-1 text-ui-label ${currentIsCorrect ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'}`}>
-                      {currentIsCorrect ? 'Correct answer' : 'Incorrect answer'}
-                    </p>
-                    <p className={`w-fit rounded-xl border px-3 py-2 text-body-md ${currentIsCorrect ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-red-300 bg-red-50 text-red-800'}`}>
+                    <p className={`w-fit rounded-xl border px-3 py-2 text-body-md ${currentIsCorrect ? 'border-emerald-300 bg-emerald-100 text-emerald-900 dark:border-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200' : 'border-red-300 bg-red-100 text-red-900 dark:border-red-700 dark:bg-red-900/40 dark:text-red-200'}`}>
                       Your answer: {confirmedAnswer}
                     </p>
-                    <p className="w-fit rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-body-md text-emerald-800">
-                      Correct answer: {currentQuestion.correctAnswer}
-                    </p>
+                    {!currentIsCorrect ? (
+                      <p className="w-fit rounded-xl border border-emerald-300 bg-emerald-100 px-3 py-2 text-body-md text-emerald-900 dark:border-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">
+                        Correct answer: {currentQuestion.correctAnswer}
+                      </p>
+                    ) : null}
                     {currentQuestion.type === 'code-reading' ? (
                       <p className="text-body-md text-primary">{currentQuestion.explanation || 'Explanation unavailable for this coding question.'}</p>
                     ) : null}

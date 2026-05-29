@@ -459,7 +459,11 @@ export default function CodingRoundPage() {
 
       const runtimeMs = Math.max(1, Math.round(performance.now() - startedAt));
       const actualOutput = normalizeRunCodeOutput(result.stdout);
-      const matchingExample = attempt.problem.examples.find((example) => example.output.trim() === actualOutput);
+      const matchingExample = attempt.problem.examples.find((example) => {
+        const expected = example.output.trim().replace(/\r\n/g, '\n');
+        const actual = actualOutput.replace(/\r\n/g, '\n');
+        return expected === actual || expected.toLowerCase() === actual.toLowerCase();
+      });
       if (matchingExample) {
         setRunResult({ status: 'accepted', output: actualOutput, runtimeMs });
         return;
@@ -636,7 +640,7 @@ export default function CodingRoundPage() {
     generationStartedAtRef.current = Date.now();
     const writeCountdown = () => {
       const elapsed = Math.max(0, Math.floor((Date.now() - (generationStartedAtRef.current ?? Date.now())) / 1000));
-      if (generationPhaseRef.current) generationPhaseRef.current.textContent = 'Generating your problem... (1/1)';
+      if (generationPhaseRef.current) generationPhaseRef.current.textContent = 'Loading questions...';
       if (elapsedRef.current) elapsedRef.current.textContent = `${elapsed}s`;
       if (remainingRef.current) remainingRef.current.textContent = `${Math.max(0, CODING_GENERATION_ESTIMATED_TOTAL_SECONDS - elapsed)}s`;
     };
@@ -669,10 +673,7 @@ export default function CodingRoundPage() {
           <div className="fixed inset-0 z-120 flex items-center justify-center bg-[#0f0f10] text-[#f7f2e8]">
             <div className="rounded-2xl border border-[#2b2b2d] bg-[#151516] px-6 py-5 text-center shadow-2xl">
               <LoaderCircle size={24} className="mx-auto animate-spin text-[#f7f2e8]" />
-              <p ref={generationPhaseRef} className="mt-4 text-body-lg text-[#f7f2e8]">Generating your problem... (1/1)</p>
-              <p className="mt-2 text-body-md text-[#a7a19a]">Elapsed: <span ref={elapsedRef}>0s</span></p>
-              <p className="mt-1 text-body-md text-[#a7a19a]">Estimated total: ~{CODING_GENERATION_ESTIMATED_TOTAL_SECONDS}s</p>
-              <p className="mt-1 text-body-md text-[#a7a19a]">Estimated time remaining: <span ref={remainingRef}>{CODING_GENERATION_ESTIMATED_TOTAL_SECONDS}s</span></p>
+              <p ref={generationPhaseRef} className="mt-4 text-body-lg text-[#f7f2e8]">Loading questions...</p>
             </div>
           </div>
         ) : null}
@@ -990,7 +991,7 @@ export default function CodingRoundPage() {
                           type="button"
                           disabled={submitting || expiring}
                           onClick={() => { void finalizeRound(); }}
-                          className="rounded-full bg-sky-600 px-5 py-2.5 text-ui-label text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="rounded-full bg-blue-700 px-5 py-2.5 text-ui-label text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {submitting ? 'Submitting...' : 'Submit'}
                         </button>

@@ -271,7 +271,7 @@ export default function Landing({ isAuthenticated, onStart, onViewDocs, onViewCh
                 <ul className="mt-5 grid gap-3">
                   {item.points.map((point) => (
                     <li key={point} className="flex gap-3 text-body-md text-primary">
-                      <Check size={16} className="mt-1 shrink-0 text-emerald-600 dark:text-emerald-300" />
+                      <Check size={16} className="pricing-check-icon mt-1 shrink-0" />
                       <span>{point}</span>
                     </li>
                   ))}

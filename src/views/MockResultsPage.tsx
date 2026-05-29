@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { BookmarkCheck, ChevronDown } from 'lucide-react';
+import { Bookmark, BookmarkCheck, ChevronDown } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { MOCK_INTERVIEW_QUESTION_COUNT, fetchMockInterview, saveMockInterview, type MockInterviewState, type MockQuestionType } from '../lib/mockInterview';
 
@@ -43,6 +43,7 @@ export default function MockResultsPage() {
   const [interview, setInterview] = useState<MockInterviewState | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openReplayId, setOpenReplayId] = useState<string | null>(null);
 
@@ -61,6 +62,7 @@ export default function MockResultsPage() {
         return;
       }
       setInterview(result.data);
+      setSaved(Boolean(result.data.savedAt));
       setOpenReplayId(result.data.questions[0]?.id ?? null);
     });
     return () => {
@@ -243,8 +245,8 @@ export default function MockResultsPage() {
             </section>
 
             <div className="flex flex-wrap gap-3">
-              <button type="button" disabled={saving} onClick={async () => { setSaving(true); await saveMockInterview(interview.id, true); setSaving(false); }} className="inline-flex items-center gap-2 rounded-full border border-blueprint-line px-6 py-3 text-ui-label text-primary hover:bg-[#f5f3f3] disabled:opacity-60">
-                <BookmarkCheck size={16} /> {saving ? 'Saving...' : 'Save'}
+              <button type="button" disabled={saving || saved} onClick={async () => { setSaving(true); const result = await saveMockInterview(interview.id, true); setSaving(false); if (result.ok !== false) setSaved(true); }} className="inline-flex items-center gap-2 rounded-full border border-blueprint-line px-6 py-3 text-ui-label text-primary hover:bg-[#f5f3f3] disabled:opacity-60">
+                {saved ? <BookmarkCheck size={16} /> : <Bookmark size={16} />} {saving ? 'Saving...' : saved ? 'Saved' : 'Save'}
               </button>
               <button type="button" onClick={() => navigate('/mock-interview')} className="rounded-full bg-primary px-6 py-3 text-ui-label text-white hover:bg-[#303031]">{zeroAnswerState ? 'Start New Interview' : 'Try Another Interview'}</button>
               <button type="button" onClick={() => navigate('/dashboard')} className="rounded-full border border-blueprint-line px-6 py-3 text-ui-label text-primary hover:bg-[#f5f3f3]">View Dashboard</button>

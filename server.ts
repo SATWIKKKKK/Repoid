@@ -2370,7 +2370,7 @@ async function generateScenarioForTopic(params: {
       scenarioType,
     });
     try {
-      const systemPrompt = `You are a senior ${SCENARIO_DOMAIN_LABELS[params.domain]} engineer creating a realistic workplace scenario for interview preparation. The scenario must be grounded in real-world engineering situations that any engineer in this domain could encounter — NOT limited to any specific repository or codebase. Every question must be a workplace situation in second person. Format: 'You are a [ROLE] at [COMPANY_TYPE]. [SITUATION]. What do you do?' The situation must be a specific crisis or decision point. Never ask 'Tell me about a time' — always present a specific scenario the candidate is currently inside. Vary the company type (startup, scale-up, enterprise, fintech, healthcare, e-commerce, SaaS, etc.) and the nature of the crisis across sessions. Return only valid JSON. Start with { and end with }. No markdown fences. No preamble.`;
+      const systemPrompt = `You are a senior ${SCENARIO_DOMAIN_LABELS[params.domain]} engineer creating a realistic workplace scenario for interview preparation. The scenario must be grounded in real-world engineering situations that any engineer in this domain could encounter — NOT limited to any specific repository or codebase. Every question must be a workplace situation in second person. Format: 'You are a [ROLE] at [COMPANY_TYPE]. [SITUATION]. What do you do?' The situation must be a specific crisis or decision point. Never ask 'Tell me about a time' — always present a specific scenario the candidate is currently inside. Vary the company type (startup, scale-up, enterprise, fintech, healthcare, e-commerce, SaaS, etc.) and the nature of the crisis across sessions. Do not ask any questions about RepoID, this platform, or the tool the user is currently using. Do not reference the interview prep app itself in any question or scenario context. All questions must be real-world engineering scenarios a candidate would face in an actual job interview — based on the selected domain and topic only. Never repeat a scenario or question the candidate has already seen; if seen hashes are provided, generate a completely different angle. Return only valid JSON. Start with { and end with }. No markdown fences. No preamble.`;
       const seenHashList = JSON.stringify([...seenHashes, ...additionalAvoidHashes]);
       const repoHint = repoContext && repoContext !== 'none' ? ` Optional background (do NOT anchor the scenario to this specific repo — use it only as inspiration for realistic tech-stack colour): ${repoContext}.` : '';
       const userPrompt = `Domain: ${SCENARIO_DOMAIN_LABELS[params.domain]}. Topic: ${params.topic}. Level: ${params.level}. Session seed: ${seed}. Preferred scenario angle: ${scenarioType}.${repoHint} Avoid hashes: ${seenHashList}. Generate a scenario with exactly 5 steps. Return JSON: { id: string, title: string, domain: string, topic: string, level: string, context: string, role: string, steps: [ { stepNumber: number, question: string, type: 'decision' | 'technical' | 'tradeoff' | 'communication', hint: string } ] }. Rules: the context must be specific to ${params.topic} — create a fresh, realistic workplace situation that does not reference any particular open-source project by name. Steps must escalate in complexity — step 1 is situational awareness, step 5 is a hard tradeoff or architectural decision. Use this step-type pattern unless the scenario strongly requires a different one: step 1 communication, step 2 technical, step 3 decision, step 4 technical, step 5 tradeoff. Never repeat the same step type consecutively. The scenario must feel like a real conversation with a senior engineer, not a quiz. If a similar scenario hash appears in Avoid hashes, generate a completely different angle on the same topic.`;
@@ -2973,7 +2973,7 @@ async function generateSingleScenarioForTopic(params: {
     const seed = hashText(`${params.userId}:${params.topic}:${Date.now()}:single-scenario:${attempt}`).slice(0, 20);
     try {
       const generated = await callStructuredModel(
-        `You are a senior ${SCENARIO_DOMAIN_LABELS[params.domain]} engineer creating one realistic interview scenario question. Return only valid JSON starting with { and ending with }. No markdown fences. No preamble.`,
+        `You are a senior ${SCENARIO_DOMAIN_LABELS[params.domain]} engineer creating one realistic interview scenario question. Do not ask any questions about RepoID, this platform, or the tool the user is currently using. Do not reference the interview prep app itself in any question or scenario context. All questions must be real-world engineering scenarios a candidate would face in an actual job interview — based on the selected domain and topic only. Never repeat a scenario or question the candidate has already seen; if seen hashes are provided, generate a completely different angle. Return only valid JSON starting with { and ending with }. No markdown fences. No preamble.`,
         `Domain: ${SCENARIO_DOMAIN_LABELS[params.domain]}. Topic: ${params.topic}. Difficulty level: ${params.level}. Repo context: ${repoContext || 'none'}. Session seed: ${seed}. Scenario angle: ${scenarioType}. Previously seen scenario hashes: ${JSON.stringify([...seenHashes, ...extraAvoidHashes])}. Generate one interview-realistic scenario. Return JSON: { id: string, title: string, domain: string, topic: string, level: string, context: string, role: string, question: string, type: 'decision' | 'technical' | 'tradeoff' | 'communication', hint: string }. Rules: context must be specific to ${params.topic}. The question must be one substantive open-ended prompt that requires at least 150 words to answer well. Do not return steps. Do not split the prompt into parts. The hint must be brief and useful, not the full answer. If a similar hash appears in the seen list, generate a clearly different angle on the same topic.`,
         (payload) => normalizeGeneratedSingleScenarioPayload(payload, params.domain, params.topic, params.level, scenarioType),
         {
@@ -4178,7 +4178,7 @@ async function generateMockInterviewForUser(params: { userId: string; domain: st
   const secondaryType = requiredTypes[1];
   await checkAiRateLimit(params.userId, 'mock-question-generation', 3);
   const generated = await callStructuredModel(
-    `You are a technical hiring manager at a tier-1 tech company preparing a mock interview for a ${domainLabel} ${mockLevelLabel(params.level)} engineer. Generate exactly 3 realistic interview questions. Never generate DSA or competitive programming questions. Questions must reflect real engineering work in ${domainLabel}. Questions must be directly addressed to the candidate. Technical questions probe knowledge directly: 'How does X work?', 'What is the difference between X and Y?'. Design questions are open-ended architecture challenges: 'How would you design X?'. Behavioral questions require past experience: 'Tell me about a time you...'. Situational questions present a dilemma: 'You have X constraint and Y deadline — how do you approach this?'. Never create a fictional company scenario — always address the candidate directly. Return only valid JSON.`,
+    `You are a technical hiring manager at a tier-1 tech company preparing a mock interview for a ${domainLabel} ${mockLevelLabel(params.level)} engineer. Generate exactly 3 realistic interview questions. Never generate DSA or competitive programming questions. Questions must reflect real engineering work in ${domainLabel}. Questions must be directly addressed to the candidate. Technical questions probe knowledge directly: 'How does X work?', 'What is the difference between X and Y?'. Design questions are open-ended architecture challenges: 'How would you design X?'. Behavioral questions require past experience: 'Tell me about a time you...'. Situational questions present a dilemma: 'You have X constraint and Y deadline — how do you approach this?'. Never create a fictional company scenario — always address the candidate directly. Do not ask any questions about RepoID, this platform, or the tool the user is currently using. Do not reference the interview prep app itself in any question. All questions must be real-world engineering questions a candidate would face in an actual job interview. Never repeat any question the candidate has already seen — if previously seen hashes are provided, all new questions must cover clearly different angles. Return only valid JSON.`,
     `Domain: ${domainLabel}. Level: ${mockLevelLabel(params.level)}. Interview type: ${mockInterviewTypeLabel(params.interviewType)}. Previously seen question hashes for this user+domain: ${JSON.stringify(seenRows.map((row) => row.question_hash))}. These question angles have been used: ${JSON.stringify(usedAngles)}. Draw your 3 questions from this relevant pool: ${JSON.stringify(seeds)}. Generate exactly 3 questions in this exact type mix: 1 technical, 1 ${secondaryType}, 1 behavioral. Never repeat a type. Never return two questions of the same type. For behavioral questions, ask for a real past example. For situational questions, present a concrete tradeoff scenario. For design questions, present a realistic system or architecture prompt. Return JSON: { interviewTitle: string, questions: [ { id, question, type: 'technical'|'design'|'behavioral'|'situational', whatWeAreLookingFor: string, followUpIfStrong: string, followUpIfWeak: string } ] }`,
     (payload) => normalizeMockQuestions(payload, params.interviewType),
     {
@@ -4324,7 +4324,7 @@ async function generatePracticeSessionQuestions(params: {
           timeoutMs,
           maxTokens,
         });
-        const systemPrompt = `You are a senior ${PRACTICE_DOMAIN_LABELS[params.domain]} engineer. Questions must test real engineering judgment. No trivia. No memorization-only questions. Return only valid JSON. Your entire response must be a single JSON array. Start your response with [ and end with ]. Do not include any text before or after the JSON array. Do not use markdown code fences.`;
+        const systemPrompt = `You are a senior ${PRACTICE_DOMAIN_LABELS[params.domain]} engineer. Questions must test real engineering judgment. No trivia. No memorization-only questions. Do not ask any questions about RepoID, this platform, or the tool the user is currently using. Do not reference the interview prep app itself in any question. All questions must be real interview-style questions based on the selected domain and topic only. Never repeat any question the candidate has already seen — if previously seen hashes are provided, every question in this batch must be on a completely different angle, content, and answer options. Return only valid JSON. Your entire response must be a single JSON array. Start your response with [ and end with ]. Do not include any text before or after the JSON array. Do not use markdown code fences.`;
         const userPrompt = `Generate exactly 10 interview questions for ${params.topic} at ${params.level || 'intermediate'}. Domain: ${PRACTICE_DOMAIN_LABELS[params.domain]}. Repo context: ${repoContext || 'none'}. Session seed: ${sessionSeed}:${phaseSeed}. Previously seen question hashes: ${promptSeenHashes}.${isComprehensionPhase ? '' : ` Code-reading batch: ${codeReadingBatch}.`} Return a JSON array with exactly 10 items using this shape: [{ id: string, type: 'mcq' | 'fill-blank' | 'code-reading', question: string, codeBlock: string | null, blank: string | null, options: string[] | null, correctAnswer: string, explanation: string, difficulty: 'easy' | 'medium' | 'hard', tags: string[] }]. ${batch.promptRules} Return ONLY a raw JSON array. No markdown, no code fences, no explanation before or after. Start your response with [ and end with ].`;
 
         const phaseStartedAt = Date.now();
@@ -9230,18 +9230,31 @@ Return a JSON array of objects: [{ "questionText": string, "options": string[] |
       }
       await checkAiRateLimit(user.id, 'coding-starter-code', 1);
       const domainLabel = PRACTICE_DOMAIN_LABELS[toPracticeDomain(domain) || 'frontend'] ?? domain;
-      const ai = await callStructuredModel(
-        'Return one JSON object only. No markdown fences. No explanation.',
-        `Given this coding problem: ${problem.title}. ${problem.description}. Generate starter code in ${formatCodingLanguageLabel(language)} with TODO comments marking what to implement. 15-25 lines. Return only JSON: { "starterCode": string }. The starterCode value must contain only code, no markdown fences, no explanation. Domain: ${domainLabel}.`,
-        (payload) => {
-          const source = parseJsonRecord(payload);
-          const starterCode = String(source.starterCode ?? source.code ?? '').trim();
-          if (!starterCode) throw new Error('starter_code_empty');
-          return starterCode.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
-        },
-        { maxTokens: 500, timeoutMs: 10_000, model: CODING_PROBLEM_GENERATION_MODEL, temperature: 0.6 },
-      );
-      response.json({ starterCode: ai.result });
+      let starterCodeResult: string | null = null;
+      try {
+        const ai = await callStructuredModel(
+          'Return one JSON object only. No markdown fences. No explanation.',
+          `Given this coding problem: ${problem.title}. ${problem.description}. Generate starter code in ${formatCodingLanguageLabel(language)} with TODO comments marking what to implement. 15-25 lines. Return only JSON: { "starterCode": string }. The starterCode value must contain only code, no markdown fences, no explanation. Domain: ${domainLabel}.`,
+          (payload) => {
+            const source = parseJsonRecord(payload);
+            const starterCode = String(source.starterCode ?? source.code ?? '').trim();
+            if (!starterCode) throw new Error('starter_code_empty');
+            return starterCode.replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
+          },
+          { maxTokens: 500, timeoutMs: 10_000, model: CODING_PROBLEM_GENERATION_MODEL, temperature: 0.6 },
+        );
+        starterCodeResult = ai.result;
+      } catch (aiError) {
+        // If model returned raw code instead of JSON, extract from rawResponse
+        const errMsg = aiError instanceof Error ? aiError.message : '';
+        const rawResponse = (aiError as Record<string, unknown>)?.rawResponse;
+        if ((errMsg === 'model_json_parse_failed' || errMsg === 'starter_code_empty') && typeof rawResponse === 'string' && rawResponse.trim().length > 10) {
+          starterCodeResult = rawResponse.trim().replace(/^```[a-z]*\s*/i, '').replace(/```$/i, '').trim();
+        } else {
+          throw aiError;
+        }
+      }
+      response.json({ starterCode: starterCodeResult });
     } catch (error) {
       response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to generate starter code.' });
     }
