@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, Check, ChevronDown, LoaderCircle, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { View } from '../App';
-import { createBillingOrder, fetchSubscription, verifyBillingPayment, type BillingPlan, type SubscriptionState } from '../lib/billing';
+import { createBillingOrder, cancelSubscription, fetchSubscription, verifyBillingPayment, type BillingPlan, type SubscriptionState } from '../lib/billing';
 import { PRICING_FAQS, PRICING_PLANS } from '../lib/pricingContent';
 import { getStoredUser } from '../lib/session';
 import { cn } from '../lib/utils';
@@ -69,6 +69,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
   const user = getStoredUser();
   const [subscription, setSubscription] = useState<SubscriptionState | null>(null);
   const [processingPlan, setProcessingPlan] = useState<BillingPlan | null>(null);
+  const [cancellingPlan, setCancellingPlan] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState<BillingPlan>('pro');
   const [currentPlanModal, setCurrentPlanModal] = useState<BillingPlan | null>(null);
   const [openFaq, setOpenFaq] = useState(-1);
@@ -172,6 +173,19 @@ export default function Pricing({ onViewChange }: PricingProps) {
   const currentPlan = PRICING_PLANS.find((plan) => plan.id === currentPlanModal);
   const upgradePlans = PRICING_PLANS.filter((plan) => plan.id !== 'free' && plan.id !== currentPlanModal);
 
+  const handleCancelPlan = async () => {
+    setCancellingPlan(true);
+    setError(null);
+    const result = await cancelSubscription();
+    setCancellingPlan(false);
+    if (result.ok === false) {
+      setError(result.error);
+      return;
+    }
+    setSubscription(result.data);
+    setMessage('Your plan has been cancelled. You are now on the Free tier.');
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <div className="pointer-events-none fixed inset-0 blueprint-grid opacity-40" />
@@ -201,11 +215,12 @@ export default function Pricing({ onViewChange }: PricingProps) {
                 className={cn(
                   'surface-card group relative flex min-h-107.5 cursor-pointer flex-col transition-all hover:border-primary hover:shadow-[0_18px_42px_rgba(0,0,0,0.12)]',
                   selected && 'border-primary',
+                  isCurrent && 'border-emerald-500 dark:border-emerald-400',
                 )}
               >
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-ui-label text-blueprint-muted">{plan.name}</p>
-                  {isCurrent ? <span className="pricing-current-badge rounded-full border border-blueprint-line bg-card px-3 py-1 text-ui-label text-primary">Current</span> : null}
+                  {isCurrent ? <span className="pricing-current-badge rounded-full border border-emerald-300 bg-emerald-50 px-3 py-1 text-ui-label text-emerald-700 dark:border-emerald-400/40 dark:bg-emerald-500/15 dark:text-emerald-300">Current</span> : null}
                 </div>
                 <h2 className="mt-3 text-headline-lg text-primary not-italic">
                   {plan.price}
@@ -241,6 +256,17 @@ export default function Pricing({ onViewChange }: PricingProps) {
                   {isCurrent ? 'Current plan' : processingPlan === plan.id ? <><LoaderCircle size={15} className="animate-spin" /> Loading...</> : plan.id === 'free' ? 'Use Free' : `Choose ${plan.name}`}
                   {processingPlan !== plan.id ? <ArrowRight size={15} /> : null}
                 </button>
+                {isCurrent && plan.id !== 'free' ? (
+                  <button
+                    type="button"
+                    onClick={(event) => { event.stopPropagation(); void handleCancelPlan(); }}
+                    disabled={cancellingPlan || processingPlan !== null}
+                    className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-full border border-red-200 bg-transparent px-5 py-3 text-ui-label text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-400/30 dark:text-red-400 dark:hover:bg-red-500/10"
+                  >
+                    {cancellingPlan ? <LoaderCircle size={15} className="animate-spin" /> : null}
+                    Cancel plan
+                  </button>
+                ) : null}
               </article>
             );
           })}

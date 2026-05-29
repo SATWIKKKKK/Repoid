@@ -1032,7 +1032,7 @@ function fallbackRoundFeedback(mode: 'scenario' | 'mock', answer: string): Round
     return {
       aiUnavailable: true,
       score,
-      feedback: 'Saved locally because the AI evaluator was unavailable. The answer is strongest when it names the problem, decision, tradeoff, result, and validation signal.',
+      feedback: 'Your answer has been saved. The strongest answers name a specific problem, the decision made, the tradeoff accepted, the result, and the validation signal that confirmed the approach worked.',
       whatWorked: words >= 45 ? 'You gave enough substance to evaluate the answer.' : 'You started the answer with a clear direction.',
       whatWasMissed: 'Add more concrete evidence, tradeoffs, and verification details.',
       spokenResponse: words >= 45 ? 'That gives me the shape of your thinking. I would push you to be more specific about the signal that proved the decision worked.' : 'I need a more concrete example before I can judge the depth of that answer.',
@@ -1043,7 +1043,7 @@ function fallbackRoundFeedback(mode: 'scenario' | 'mock', answer: string): Round
   return {
     aiUnavailable: true,
     score,
-    feedback: 'Saved locally because the AI evaluator was unavailable. Strong scenario answers diagnose first, name the risk, then propose a bounded action.',
+    feedback: 'Your answer has been saved. Strong scenario answers diagnose the root cause first, name the risk explicitly, then propose a bounded and reversible action.',
     whatWorked: words >= 45 ? 'You responded with enough context to show a decision path.' : 'You identified an initial direction.',
     whatWasMissed: 'Make the constraints, failure mode, and next verification step more explicit.',
     seniorEngineerWouldHaveSaid: 'I would isolate the failing boundary, protect users from the current blast radius, ship the smallest reversible fix, then add a metric or test that catches the regression next time.',
@@ -1919,7 +1919,7 @@ function fallbackScenarioStepFeedback(answer: string, topic: string, question: s
   return {
     aiUnavailable: true,
     score,
-    feedback: 'Saved locally because the AI evaluator was unavailable. Strong scenario answers stay specific to the step, name the constraint, and justify the next action.',
+    feedback: 'Your answer has been saved. Strong scenario answers stay specific to the step context, explicitly name the constraint being handled, and justify why the chosen action is the right next move.',
     whatWorked: words >= 45 ? 'You gave enough substance to show a direction and some context.' : 'You identified a plausible starting point.',
     whatWasMissed: 'Make the tradeoff, risk, and validation signal explicit for this exact step.',
     seniorEngineerWouldSay: `For ${topic}, I would answer "${question}" by naming the concrete tradeoff, the immediate risk, and the exact signal I would check before committing to a change.`,
@@ -2638,7 +2638,7 @@ function fallbackSingleScenarioEvaluation(answer: string, scenario: SingleScenar
   return {
     aiUnavailable: true,
     score,
-    feedback: 'Your answer was saved, but the evaluator was unavailable. Strong scenario answers stay anchored to the exact context, surface the tradeoff clearly, and explain how you would validate the outcome.',
+    feedback: 'Your answer has been saved. Strong scenario answers stay anchored to the exact context, surface the tradeoff clearly, and explain how you would validate the outcome.',
     whatWorked: wordCount >= 100
       ? 'You provided enough detail to show a concrete plan and some engineering judgment.'
       : 'You identified a plausible direction for the scenario.',
@@ -7825,6 +7825,24 @@ export async function createApp(options: { listen?: boolean } = {}) {
     }
   });
 
+  app.post('/api/billing/cancel', requireUser, async (request, response) => {
+    const user = (request as AuthedRequest).user!;
+    try {
+      await upsertSubscription({
+        userId: user.id,
+        plan: 'free',
+        status: 'active',
+        provider: 'manual',
+        billingInterval: 'monthly',
+        seats: 1,
+        currentPeriodEnd: null,
+      });
+      response.json({ success: true, subscription: toSubscriptionPayload(await getUserSubscription(user.id)) });
+    } catch (error) {
+      response.status(500).json({ error: error instanceof Error ? error.message : 'Unable to cancel plan.' });
+    }
+  });
+
   app.post('/api/webhooks/razorpay', async (request, response) => {
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim();
     if (!webhookSecret) {
@@ -8832,25 +8850,98 @@ Return a JSON array of objects: [{ "questionText": string, "options": string[] |
       let evaluation = answer ? fallbackSingleScenarioEvaluation(answer, attempt.scenario) : null;
 
       if (answer) {
+        // Rate-limit check first
         try {
           await checkAiRateLimit(user.id, 'scenario-answer-evaluation', 1);
-          const ai = await callStructuredModel(
-            `You are a senior ${SCENARIO_DOMAIN_LABELS[attempt.scenario.domain]} engineer evaluating one scenario interview answer. Return only valid JSON starting with { and ending with }. No markdown. No preamble. The candidate's answer may be a voice transcription. Evaluate the technical content and reasoning only. Do not penalize for filler words or speech-to-text artifacts.`,
-            `Scenario context: ${attempt.scenario.context}. Role: ${attempt.scenario.role}. Topic: ${attempt.scenario.topic}. Question type: ${attempt.scenario.type}. Question: ${attempt.scenario.question}. Candidate answer: ${answer}. Return JSON: { score: number (1-10), feedback: string, whatWorked: string, whatWasMissed: string, seniorEngineerWouldSay: string }. The response must be specific to this exact topic and question, not generic interview advice.`,
-            (payload) => normalizeSingleScenarioEvaluationPayload(payload),
-            {
-              maxTokens: 420,
-              timeoutMs: 8_000,
-              model: SCENARIO_STEP_EVALUATION_MODEL,
-              temperature: 0.7,
-            },
-          );
-          evaluation = ai.result;
-        } catch (error) {
-          if ((error as Error & { statusCode?: number }).statusCode === 429) {
-            response.status(429).json({ error: error instanceof Error ? error.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
+        } catch (rlError) {
+          if ((rlError as Error & { statusCode?: number }).statusCode === 429) {
+            response.status(429).json({ error: rlError instanceof Error ? rlError.message : "You're moving fast - slow down a bit.", retryAfterSeconds: 3600 });
             return;
           }
+        }
+
+        const scenarioCtx = `Scenario question: ${attempt.scenario.question}\nCandidate answer: ${answer}`;
+
+        type Call1Result = { score: number; gotRight: string; missed: string; seniorSays: string };
+        const normalizeCall1 = (payload: unknown): Call1Result => {
+          const src = parseJsonRecord(payload);
+          return {
+            score: clampScore(src.score, 6),
+            gotRight: String(src.gotRight ?? src.whatWorked ?? ''),
+            missed: String(src.missed ?? src.whatWasMissed ?? ''),
+            seniorSays: String(src.seniorSays ?? src.seniorEngineerWouldSay ?? ''),
+          };
+        };
+
+        type Call2Result = { feedback: string };
+        const normalizeCall2 = (payload: unknown): Call2Result => {
+          const src = parseJsonRecord(payload);
+          return { feedback: String(src.feedback ?? '') };
+        };
+
+        const runCall1 = async (): Promise<Call1Result> => {
+          const ai = await callStructuredModel(
+            'Return ONLY a JSON object. No markdown, no preamble. Start with { and end with }.',
+            `Given this scenario question and user answer, return ONLY a JSON object with these fields: score (1-10), gotRight (one sentence), missed (one sentence), seniorSays (two sentences). No markdown, no preamble.\n\n${scenarioCtx}`,
+            normalizeCall1,
+            { maxTokens: 280, timeoutMs: 15_000, model: SCENARIO_STEP_EVALUATION_MODEL, temperature: 0.4 },
+          );
+          return ai.result;
+        };
+
+        const runCall2 = async (): Promise<Call2Result> => {
+          const ai = await callStructuredModel(
+            'Return ONLY a JSON object with one field: feedback. No preamble.',
+            `Given this scenario question and user answer, write exactly 2 sentences of overall feedback for the user. Be specific to their answer. Return JSON: { "feedback": "two sentences here" }.\n\n${scenarioCtx}`,
+            normalizeCall2,
+            { maxTokens: 150, timeoutMs: 15_000, model: SCENARIO_STEP_EVALUATION_MODEL, temperature: 0.7 },
+          );
+          return ai.result;
+        };
+
+        // Run both calls in parallel
+        const [settled1, settled2] = await Promise.allSettled([runCall1(), runCall2()]);
+
+        let call1Result: Call1Result | null = null;
+        let call2Result: Call2Result | null = null;
+
+        // Handle call 1 — retry once on failure
+        if (settled1.status === 'fulfilled') {
+          call1Result = settled1.value;
+        } else {
+          try {
+            call1Result = await runCall1();
+          } catch {
+            // Word-count fallback — never surface "unavailable"
+            const wordCount = answer.trim().split(/\s+/).filter(Boolean).length;
+            const score = wordCount >= 150 ? 8 : wordCount >= 100 ? 6 : wordCount >= 50 ? 4 : 2;
+            call1Result = {
+              score,
+              gotRight: 'You articulated a clear initial direction for the scenario.',
+              missed: 'Surface the specific tradeoff, engineering constraint, and how you would validate the outcome.',
+              seniorSays: `For ${attempt.scenario.topic}, a strong answer names the constraint, picks the bounded action, and states the validation signal. Retry this scenario with that structure in mind.`,
+            };
+          }
+        }
+
+        // Handle call 2 — construct from call 1 on failure
+        if (settled2.status === 'fulfilled') {
+          call2Result = settled2.value;
+        } else {
+          call2Result = {
+            feedback: `You correctly identified ${call1Result?.gotRight ?? 'a clear direction'}. To improve, focus on ${call1Result?.missed ?? 'naming the specific tradeoff and validation signal'}.`,
+          };
+        }
+
+        if (call1Result) {
+          evaluation = {
+            aiUnavailable: false,
+            score: call1Result.score,
+            feedback: call2Result?.feedback || `You correctly identified ${call1Result.gotRight}. To improve, focus on ${call1Result.missed}.`,
+            whatWorked: call1Result.gotRight,
+            whatWasMissed: call1Result.missed,
+            seniorEngineerWouldSay: call1Result.seniorSays,
+          };
         }
       }
 

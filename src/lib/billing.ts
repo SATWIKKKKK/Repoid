@@ -114,3 +114,11 @@ export async function verifyBillingPayment(payload: {
   if (result.ok === false) return result;
   return { ok: true as const, data: result.data.subscription };
 }
+
+export async function cancelSubscription(): Promise<ApiResult<SubscriptionState>> {
+  const result = await requestJson<{ success: boolean; subscription: SubscriptionState }>('/api/billing/cancel', {
+    method: 'POST',
+  });
+  if (result.ok === false) return result;
+  return { ok: true as const, data: result.data.subscription };
+}

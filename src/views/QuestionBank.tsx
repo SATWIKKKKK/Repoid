@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Download, LoaderCircle, RefreshCw, Search, Sparkles } from 'lucide-react';
+import { Download, LoaderCircle, Search, Wand2 } from 'lucide-react';
 import { fetchQuestions, fetchQuestionStats, generateBankQuestions } from '../lib/questionBankApi';
 import DomainPickerDialog from '../components/DomainPickerDialog';
 import { QUESTION_TYPES, type BankQuestion, type QuestionType } from '../lib/questionBank';
@@ -11,6 +11,29 @@ import { exportQuestionsPdf } from '../lib/pdfExport';
 
 const ALL_QUESTION_TYPES = QUESTION_TYPES.map((item) => item.id);
 const PAGE_SIZE = 12;
+
+const QB_STATE_KEY = 'qb-persist-v1';
+type QBPersistedState = {
+  domain?: string;
+  topicDropdownValue?: string;
+  roundDropdownValue?: string;
+  selectedBackendTopics?: string[];
+  selectedBackendRounds?: string[];
+  aiGeneratedQuestions?: BankQuestion[];
+  aiPage?: number;
+  aiHistoryData?: BankQuestion[][];
+  faangOnly?: boolean;
+  selectedTypes?: QuestionType[];
+};
+function loadQBPersistedState(): QBPersistedState {
+  try {
+    const raw = sessionStorage.getItem(QB_STATE_KEY);
+    return raw ? (JSON.parse(raw) as QBPersistedState) : {};
+  } catch {
+    return {};
+  }
+}
+
 const FRONTEND_TOPICS = [
   'HTML Fundamentals',
   'CSS Fundamentals',
@@ -261,14 +284,26 @@ export default function QuestionBank() {
   const initialSearch = useInitialSearch();
   const navigate = useNavigate();
   const workspace = usePrepWorkspace();
+  const [persistedState] = useState(loadQBPersistedState);
+  const sameDomain = persistedState.domain === workspace.selections.domain;
   const [domain, setDomain] = useState(workspace.selections.domain);
-  const [selectedTypes, setSelectedTypes] = useState<QuestionType[]>(() => ALL_QUESTION_TYPES);
-  const [selectedBackendTopics, setSelectedBackendTopics] = useState<string[]>([]);
-  const [selectedBackendRounds, setSelectedBackendRounds] = useState<string[]>([]);
-  const [topicDropdownValue, setTopicDropdownValue] = useState('');
-  const [roundDropdownValue, setRoundDropdownValue] = useState('');
+  const [selectedTypes, setSelectedTypes] = useState<QuestionType[]>(() =>
+    sameDomain && persistedState.selectedTypes?.length ? persistedState.selectedTypes : ALL_QUESTION_TYPES
+  );
+  const [selectedBackendTopics, setSelectedBackendTopics] = useState<string[]>(() =>
+    sameDomain ? (persistedState.selectedBackendTopics ?? []) : []
+  );
+  const [selectedBackendRounds, setSelectedBackendRounds] = useState<string[]>(() =>
+    sameDomain ? (persistedState.selectedBackendRounds ?? []) : []
+  );
+  const [topicDropdownValue, setTopicDropdownValue] = useState(() =>
+    sameDomain ? (persistedState.topicDropdownValue ?? '') : ''
+  );
+  const [roundDropdownValue, setRoundDropdownValue] = useState(() =>
+    sameDomain ? (persistedState.roundDropdownValue ?? '') : ''
+  );
   const [search, setSearch] = useState(initialSearch);
-  const [faangOnly, setFaangOnly] = useState(false);
+  const [faangOnly, setFaangOnly] = useState(() => sameDomain ? (persistedState.faangOnly ?? false) : false);
   const [stats, setStats] = useState<Array<{ id: string; label: string; total: number }>>([]);
   const [questions, setQuestions] = useState<BankQuestion[]>([]);
   const [openAnswers, setOpenAnswers] = useState<Record<string, boolean>>({});
@@ -283,9 +318,18 @@ export default function QuestionBank() {
   const [exportingPdf, setExportingPdf] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [aiGenerating, setAiGenerating] = useState(false);
-  const [aiGeneratedQuestions, setAiGeneratedQuestions] = useState<BankQuestion[]>([]);
+  const [aiGeneratedQuestions, setAiGeneratedQuestions] = useState<BankQuestion[]>(() =>
+    sameDomain ? (persistedState.aiGeneratedQuestions ?? []) : []
+  );
   const [aiGenerateError, setAiGenerateError] = useState<string | null>(null);
-  const lastAutoGenerateKey = useRef<string | null>(null);
+  const [aiPage, setAiPage] = useState(() => sameDomain ? (persistedState.aiPage ?? 1) : 1);
+  const aiHistory = useRef<BankQuestion[][]>(sameDomain ? (persistedState.aiHistoryData ?? []) : []);
+  const isInitialMount = useRef(true);
+  const lastAutoGenerateKey = useRef<string | null>(
+    sameDomain && persistedState.selectedBackendTopics?.length && persistedState.aiGeneratedQuestions?.length
+      ? `${persistedState.selectedBackendTopics[0]}::${persistedState.selectedBackendRounds?.[0] ?? ''}`
+      : null
+  );
 
   const allTypesSelected = selectedTypes.length === ALL_QUESTION_TYPES.length;
   const hasCuratedFilters = ['frontend', 'backend', 'ai-ml', 'cybersecurity', 'data-science', 'data-analytics'].includes(domain);
@@ -341,6 +385,10 @@ export default function QuestionBank() {
   }, [domain, faangOnly, search, selectedBackendRoundsKey, selectedBackendTopicsKey, selectedTypesKey]);
 
   useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
     setSelectedBackendTopics([]);
     setSelectedBackendRounds([]);
     setTopicDropdownValue('');
@@ -349,13 +397,36 @@ export default function QuestionBank() {
     setAiGeneratedQuestions([]);
     setAiGenerateError(null);
     lastAutoGenerateKey.current = null;
+    aiHistory.current = [];
+    setAiPage(1);
   }, [domain]);
+
+  // Persist QB state to sessionStorage so filters + AI questions survive refresh
+  useEffect(() => {
+    try {
+      const state: QBPersistedState = {
+        domain,
+        topicDropdownValue,
+        roundDropdownValue,
+        selectedBackendTopics,
+        selectedBackendRounds,
+        aiGeneratedQuestions,
+        aiPage,
+        aiHistoryData: aiHistory.current,
+        faangOnly,
+        selectedTypes,
+      };
+      sessionStorage.setItem(QB_STATE_KEY, JSON.stringify(state));
+    } catch {
+      // ignore storage errors
+    }
+  }, [domain, topicDropdownValue, roundDropdownValue, selectedBackendTopics, selectedBackendRounds, aiGeneratedQuestions, aiPage, faangOnly, selectedTypes]);
 
   useEffect(() => {
     let ignore = false;
     void fetchQuestionStats().then((result) => {
       if (!result.ok || ignore) return;
-      setStats(result.data);
+      if (result.data) setStats(result.data);
     });
     return () => {
       ignore = true;
@@ -421,6 +492,8 @@ export default function QuestionBank() {
     setAiGeneratedQuestions([]);
     setAiGenerateError(null);
     lastAutoGenerateKey.current = null;
+    aiHistory.current = [];
+    setAiPage(1);
   };
 
   const handleExportPdf = async () => {
@@ -464,8 +537,32 @@ export default function QuestionBank() {
       setAiGenerateError(result.error);
       return;
     }
+    const newHistory = [...aiHistory.current, result.data];
+    aiHistory.current = newHistory;
+    setAiPage(newHistory.length);
     setAiGeneratedQuestions(result.data);
   }, [domain, selectedBackendTopics, selectedBackendRounds]);
+
+  const handleAiNext = useCallback(async () => {
+    const nextIdx = aiPage; // aiPage is 1-indexed, nextIdx is 0-indexed next slot
+    if (aiHistory.current[nextIdx]) {
+      setAiGeneratedQuestions(aiHistory.current[nextIdx]);
+      setAiPage(nextIdx + 1);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      await handleGenerateWithAI();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [aiPage, handleGenerateWithAI]);
+
+  const handleAiPrev = useCallback(() => {
+    const prevIdx = aiPage - 2; // aiPage is 1-indexed
+    if (prevIdx >= 0 && aiHistory.current[prevIdx]) {
+      setAiPage(aiPage - 1);
+      setAiGeneratedQuestions(aiHistory.current[prevIdx]);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [aiPage]);
 
   // Auto-trigger AI generation when DB returns empty for a curated filter combo.
   useEffect(() => {
@@ -500,7 +597,14 @@ export default function QuestionBank() {
         <section className="border-b border-blueprint-line pb-8">
           <div>
             <p className="text-ui-label text-blueprint-muted">Question Bank</p>
-            <h1 className="mt-2 page-title">{selectedStats?.label ?? 'Domain'} interview questions</h1>
+            <div className="mt-2 flex flex-wrap items-center gap-4">
+              <h1 className="page-title">{selectedStats?.label ?? 'Domain'} interview questions</h1>
+              {!loading && questions.length > 0 ? (
+                <button type="button" onClick={handleExportPdf} disabled={exportingPdf} className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5">
+                  {exportingPdf ? <LoaderCircle size={15} className="animate-spin" /> : <Download size={15} />} Export PDF
+                </button>
+              ) : null}
+            </div>
             <p className="mt-3 max-w-3xl text-body-lg text-blueprint-muted">
               Questions stay aligned with your selected domain, round types, and search terms. You can switch domains directly from this page.
             </p>
@@ -530,12 +634,11 @@ export default function QuestionBank() {
         <section className="space-y-4">
           {/* ── Compact horizontal filter bar ── */}
           <div className="surface-card-compact">
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
-              {/* Domain indicator */}
-              <div className="flex shrink-0 items-center gap-2 text-ui-label">
-                <span className="font-semibold text-primary">{selectedStats?.label ?? DOMAIN_LABELS[domain] ?? 'Domain'}</span>
-                <button type="button" onClick={() => setDomainDialogOpen(true)} className="text-blueprint-muted underline underline-offset-4 hover:text-primary">Change</button>
-              </div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+              {/* Change domain button */}
+              <button type="button" onClick={() => setDomainDialogOpen(true)} className="shrink-0 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3] dark:hover:bg-white/5">
+                Change domain
+              </button>
 
               {hasCuratedFilters ? (
                 <div className="flex flex-1 flex-wrap items-center gap-2">
@@ -564,20 +667,6 @@ export default function QuestionBank() {
                   <button type="button" onClick={() => { setFaangOnly((value) => !value); setSelectedTypes(ALL_QUESTION_TYPES); setPage(1); }} className={`rounded-full border px-4 py-2 text-ui-label font-semibold transition-colors ${faangOnly ? 'border-amber-400 bg-amber-400/10 text-amber-600 dark:border-amber-400 dark:bg-amber-400/15 dark:text-amber-300' : 'border-blueprint-line bg-card text-blueprint-muted hover:border-amber-400 hover:bg-amber-400/10 hover:text-amber-600 dark:hover:border-amber-400 dark:hover:bg-amber-400/15 dark:hover:text-amber-300'}`}>✦ FAANG</button>
                 </div>
               )}
-
-              {/* Right-side controls: regenerate + export */}
-              <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
-                {!aiGenerating && aiGeneratedQuestions.length > 0 ? (
-                  <button type="button" onClick={() => { void handleGenerateWithAI(); }} className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3] dark:hover:bg-white/5">
-                    <RefreshCw size={14} /> Regenerate
-                  </button>
-                ) : null}
-                {!loading && questions.length > 0 ? (
-                  <button type="button" onClick={handleExportPdf} disabled={exportingPdf} className="inline-flex items-center gap-2 rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary hover:bg-[#f5f3f3] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5">
-                    {exportingPdf ? <LoaderCircle size={15} className="animate-spin" /> : <Download size={15} />} Export PDF
-                  </button>
-                ) : null}
-              </div>
             </div>
           </div>
 
@@ -610,10 +699,10 @@ export default function QuestionBank() {
               <div className="surface-card space-y-4">
                 <div className="flex items-center gap-3">
                   <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10">
-                    <Sparkles size={18} className="text-primary animate-pulse" />
+                    <Wand2 size={18} className="text-primary animate-pulse" />
                   </span>
                   <div>
-                    <p className="text-ui-label text-primary">Generating with DeepSeek AI</p>
+                    <p className="text-ui-label text-primary">Loading...</p>
                     <p className="mt-0.5 text-body-md text-blueprint-muted">Building questions for <strong>{selectedBackendTopics[0]}</strong> — {CURATED_ROUND_FILTERS.find((r) => r.id === selectedBackendRounds[0])?.label ?? selectedBackendRounds[0]}...</p>
                   </div>
                 </div>
@@ -837,6 +926,25 @@ export default function QuestionBank() {
                   <div className="hidden min-w-0 xl:flex xl:gap-4">
                     <div className="flex min-w-0 flex-1 flex-col gap-4">{aiLeft.map((q, i) => aiCard(q, i * 2))}</div>
                     <div className="flex min-w-0 flex-1 flex-col gap-4">{aiRight.map((q, i) => aiCard(q, i * 2 + 1))}</div>
+                  </div>
+                  {/* AI pagination */}
+                  <div className="flex items-center justify-center gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={handleAiPrev}
+                      disabled={aiPage <= 1}
+                      className="rounded-full border border-blueprint-line bg-card px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-white/5"
+                    >
+                      Previous
+                    </button>
+                    <span className="text-ui-label text-blueprint-muted">Page {aiPage}</span>
+                    <button
+                      type="button"
+                      onClick={() => { void handleAiNext(); }}
+                      className="rounded-full border border-blueprint-line bg-card px-5 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5"
+                    >
+                      Next
+                    </button>
                   </div>
                 </div>
               );

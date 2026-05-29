@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, ChevronLeft, ChevronRight, Circle, LoaderCircle, XCircle } from 'lucide-react';
+import { Bookmark, BookmarkCheck, CheckCircle2, ChevronLeft, ChevronRight, Circle, LoaderCircle, XCircle } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import RoundShell from '../components/RoundShell';
 import {
@@ -7,6 +7,7 @@ import {
   fetchPracticeSession,
   isPracticeAnswerCorrect,
   savePracticeSessionAnswers,
+  togglePracticeSessionSaved,
   type PracticeSession,
   type PracticeSessionAnswer,
 } from '../lib/practiceSessions';
@@ -100,6 +101,7 @@ export default function PracticeRound() {
   const [draftAnswer, setDraftAnswer] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [bookmarking, setBookmarking] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [timerAlertOpen, setTimerAlertOpen] = useState(false);
@@ -299,9 +301,28 @@ export default function PracticeRound() {
                 Confirm each answer when ready, move freely between questions, and submit whenever you want your score.
               </p>
             </div>
-            <div className="rounded-2xl border border-blueprint-line bg-blueprint-bg px-4 py-3 text-right">
-              <p className="text-ui-label text-blueprint-muted">Answered</p>
-              <p className="mt-1 text-headline-md text-primary not-italic">{answeredCount}/{session.totalQuestions}</p>
+            <div className="flex items-start gap-3">
+              <div className="rounded-2xl border border-blueprint-line bg-blueprint-bg px-4 py-3 text-right">
+                <p className="text-ui-label text-blueprint-muted">Answered</p>
+                <p className="mt-1 text-headline-md text-primary not-italic">{answeredCount}/{session.totalQuestions}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (bookmarking) return;
+                  setBookmarking(true);
+                  void togglePracticeSessionSaved(session.id, !session.savedAt).then((result) => {
+                    setBookmarking(false);
+                    if (result.ok) setSession((current) => current ? { ...current, savedAt: result.data } : current);
+                  });
+                }}
+                disabled={bookmarking}
+                aria-label={session.savedAt ? 'Remove from saved' : 'Save session'}
+                className="flex items-center gap-1.5 rounded-2xl border border-blueprint-line bg-blueprint-bg px-4 py-3 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5"
+              >
+                {bookmarking ? <LoaderCircle size={15} className="animate-spin" /> : session.savedAt ? <BookmarkCheck size={15} className="text-emerald-500" /> : <Bookmark size={15} />}
+                <span className="hidden sm:inline">{session.savedAt ? 'Saved' : 'Save'}</span>
+              </button>
             </div>
           </div>
 
