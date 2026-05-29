@@ -148,7 +148,7 @@ export default function Header({ view, title, onViewChange, onMenuToggle }: Head
               {user?.email ? <p className="px-4 pb-1 text-xs text-blueprint-muted">{user.email}</p> : null}
               <div className="border-b border-blueprint-line px-4 pb-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-blue-700 px-2.5 py-1 text-xs font-semibold leading-none text-white dark:bg-blue-600">{roleLabel}</span>
+                  <span className="profile-domain-pill rounded-full bg-blue-700 px-2.5 py-1 text-xs font-semibold leading-none text-white dark:bg-blue-600">{roleLabel}</span>
                   <span className="rounded-full border border-blueprint-line bg-card px-2.5 py-1 text-xs font-semibold leading-none text-primary dark:border-emerald-500/40 dark:bg-emerald-600 dark:text-white">{planLabel(currentPlan)}</span>
                 </div>
               </div>

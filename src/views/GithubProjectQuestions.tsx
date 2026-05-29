@@ -93,9 +93,40 @@ export default function GithubProjectQuestions() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    void getGithubQuestionSet(repoId).then(setData).catch((err) => setError(err instanceof Error ? err.message : 'Unable to load questions.'));
+    let ignore = false;
+    let timer: number | undefined;
+    let attempts = 0;
+
+    const load = () => {
+      void getGithubQuestionSet(repoId)
+        .then((questionSet) => {
+          if (ignore) return;
+          setData(questionSet);
+          setError(null);
+        })
+        .catch((err) => {
+          if (ignore) return;
+          attempts += 1;
+          const message = err instanceof Error ? err.message : 'Unable to load questions.';
+          if (attempts < 6 && /not ready|not saved|unable to load repo questions|questions/i.test(message)) {
+            timer = window.setTimeout(load, 1500);
+            return;
+          }
+          setError(message);
+        });
+    };
+
+    setData(null);
+    setError(null);
+    load();
+
+    return () => {
+      ignore = true;
+      if (timer) window.clearTimeout(timer);
+    };
   }, [repoId]);
 
   const rescan = () => {
@@ -149,6 +180,7 @@ export default function GithubProjectQuestions() {
   const exportPdf = async () => {
     setExportingPdf(true);
     setExportError(null);
+    setExportNotice('Your PDF is exporting...');
     try {
       await exportQuestionsPdf({
         title: `${data.repo.repoName} repo questions`,
@@ -159,8 +191,10 @@ export default function GithubProjectQuestions() {
           correctAnswer: question.correctAnswer,
         })),
       });
+      setExportNotice('Your PDF export is ready.');
     } catch (err) {
       setExportError(err instanceof Error ? err.message : 'Unable to export PDF.');
+      setExportNotice(null);
     } finally {
       setExportingPdf(false);
     }
@@ -190,17 +224,15 @@ export default function GithubProjectQuestions() {
               <p className="mt-3 text-ui-label text-blueprint-muted">Brief summary</p>
               <p className="mt-2 max-w-4xl text-body-lg leading-8 text-blueprint-muted">{data.projectSummary}</p>
             </div>
-            <div className="mt-6 flex flex-col gap-3 rounded-xl border border-blueprint-line bg-card p-3 shadow-[0_8px_24px_rgba(0,0,0,0.03)] sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex flex-col gap-3">
-                <p className="text-ui-label text-blueprint-muted">Question set actions</p>
-                {(data.versions?.length ?? 0) > 1 ? (
-                  <div>
-                    <label htmlFor="repo-version" className="text-ui-label text-blueprint-muted">Saved scan version</label>
+            <div className="mt-6 flex flex-col gap-4 rounded-xl border border-blueprint-line bg-card p-4 shadow-[0_8px_24px_rgba(0,0,0,0.03)] lg:flex-row lg:items-center lg:justify-between">
+              {(data.versions?.length ?? 0) > 1 ? (
+                <div className="min-w-0">
+                  <div className="w-full lg:w-[360px]">
                     <select
                       id="repo-version"
                       value={data.repo.id}
                       onChange={(event) => navigate(`/github-project-qs/${event.target.value}`)}
-                      className="mt-2 w-full rounded-xl border border-blueprint-line bg-card px-3 py-2.5 text-body-md text-primary outline-none transition-colors focus:border-primary sm:min-w-[260px]"
+                      className="w-full rounded-xl border border-blueprint-line bg-card px-4 py-3 text-body-md text-primary outline-none transition-colors focus:border-primary"
                     >
                       {(data.versions ?? []).map((version) => (
                         <option key={version.id} value={version.id}>
@@ -209,9 +241,9 @@ export default function GithubProjectQuestions() {
                       ))}
                     </select>
                   </div>
-                ) : null}
-              </div>
-              <div className="grid gap-2 sm:grid-cols-4">
+                </div>
+              ) : null}
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                 <button type="button" onClick={() => setAllAnswersVisible(!allAnswersVisible)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-blueprint-line bg-card px-4 py-2.5 text-ui-label text-primary transition-colors hover:bg-[#f5f3f3] dark:hover:bg-white/5">
                   <Check size={14} /> {allAnswersVisible ? 'Hide Answers' : 'Show Answers'}
                 </button>
@@ -226,6 +258,7 @@ export default function GithubProjectQuestions() {
                 </button>
               </div>
             </div>
+            {exportNotice ? <div className="mt-4 rounded-xl border border-blueprint-line bg-card px-4 py-3 text-body-md text-primary">{exportNotice}</div> : null}
             {exportError ? <div className="mt-4 rounded-xl border border-red-300/40 bg-red-500/10 px-4 py-3 text-body-md text-red-700 dark:text-red-200">{exportError.split(/\b(Upgrade)\b/i).map((part, i) => /^upgrade$/i.test(part) ? <button key={i} type="button" onClick={() => navigate('/pricing')} className="font-bold underline hover:opacity-80">{part}</button> : part)}</div> : null}
           </div>
 
@@ -307,6 +340,7 @@ export default function GithubProjectQuestions() {
           force
           onClose={() => setScanRequest(null)}
           onError={setError}
+          onComplete={(nextRepoId) => navigate(`/github-project-qs/${nextRepoId}`, { replace: true })}
         />
       ) : null}
 

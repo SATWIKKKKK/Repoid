@@ -1,6 +1,4 @@
 import { jsPDF } from 'jspdf';
-import { apiUrl } from './apiBase';
-
 export type PdfQuestion = {
   question?: string;
   questionText?: string;
@@ -16,7 +14,10 @@ export async function exportQuestionsPdf(params: {
   exportType: string;
   questions: PdfQuestion[];
 }) {
-  const entitlementResponse = await fetch(apiUrl('/api/billing/entitlement?feature=pdf-export'), { credentials: 'include' });
+  const entitlementResponse = await fetch('/api/billing/entitlement?feature=pdf-export', { credentials: 'include' }).catch(() => null);
+  if (!entitlementResponse) {
+    throw new Error('Could not verify PDF export access. Please refresh and try again.');
+  }
   const entitlementPayload = await entitlementResponse.json().catch(() => ({}));
   if (!entitlementResponse.ok || entitlementPayload.entitlement?.hasAccess === false) {
     throw new Error(entitlementPayload.entitlement?.reason || 'PDF exports are available on the Yearly plan. Upgrade to unlock.');
@@ -62,13 +63,13 @@ export async function exportQuestionsPdf(params: {
     y += 10;
   });
 
-  await fetch(apiUrl('/api/pdf-export-events'), {
+  const safeName = params.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'repoid-questions';
+  doc.save(`${safeName}-${new Date().toISOString().slice(0, 10)}.pdf`);
+
+  await fetch('/api/pdf-export-events', {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ exportType: params.exportType, sourceId: params.sourceId, title: params.title }),
   }).catch(() => undefined);
-
-  const safeName = params.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'repoid-questions';
-  doc.save(`${safeName}-${new Date().toISOString().slice(0, 10)}.pdf`);
 }

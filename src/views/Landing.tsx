@@ -160,8 +160,8 @@ export default function Landing({ isAuthenticated, onStart, onViewDocs, onViewCh
               <Logo
                 className="h-8 w-auto sm:h-10 md:h-12 lg:h-14"
                 alt="Repoid navbar logo"
-                lightSrc="/assets/landing-navbar-light.png"
-                darkSrc="/assets/landing-navbar-dark.png"
+                lightSrc="/assets/repoid-logo-black.svg"
+                darkSrc="/assets/repoid-logo-white.svg"
               />
             </button>
             <div className="hidden items-center gap-1 lg:flex">
@@ -389,7 +389,7 @@ export default function Landing({ isAuthenticated, onStart, onViewDocs, onViewCh
                 <ul className="flex flex-1 flex-col gap-3">
                   {plan.features.map((feature) => (
                     <li key={feature} className="flex gap-3 text-body-md text-primary">
-                      <Check size={17} className="mt-1 shrink-0 text-emerald-600 dark:text-emerald-300" />
+                      <Check size={17} className="pricing-check-icon mt-1 shrink-0" />
                       <span>{feature}</span>
                     </li>
                   ))}

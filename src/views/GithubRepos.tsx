@@ -185,13 +185,16 @@ export default function GithubRepos() {
             {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
             {duplicate ? (
               <div className="mt-4 rounded-xl border border-blueprint-line bg-[#f5f3f3] p-4 text-body-md text-primary">
-                <p>You have already scanned this repository.</p>
+                <p>You have already scanned this repo earlier. Re-scan it to get new questions.</p>
                 <div className="mt-4 flex flex-wrap gap-3">
                   <Link className="rounded-full bg-primary px-4 py-2 text-ui-label text-white transition-colors hover:bg-[#303031]" to={`/github-project-qs/${duplicate.id}`}>
                     View Existing Questions
                   </Link>
                   <button type="button" onClick={() => submit(true)} className="rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#fbfafa]">
                     Re-scan
+                  </button>
+                  <button type="button" onClick={() => setDuplicate(null)} className="rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#fbfafa]">
+                    Cancel
                   </button>
                 </div>
               </div>

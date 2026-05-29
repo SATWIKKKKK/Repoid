@@ -705,6 +705,26 @@ nav {
   color: #6ee7b7 !important;
 }
 
+.prep-readiness-bar {
+  background-color: #16a34a !important;
+}
+
+.dark .prep-readiness-bar {
+  background-color: #22c55e !important;
+}
+
+.pricing-check-icon {
+  color: #16a34a !important;
+}
+
+.dark .pricing-check-icon {
+  color: #4ade80 !important;
+}
+
+.dark .profile-domain-pill {
+  color: #ffffff !important;
+}
+
 /* Keep dashboard surface cards dark on hover (prevent hover:bg-white/85 from turning them white) */
 .dark .hover\:bg-white\/85:hover {
   background-color: rgba(255, 255, 255, 0.04) !important;

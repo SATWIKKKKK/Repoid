@@ -216,7 +216,7 @@ export default function Pricing({ onViewChange }: PricingProps) {
                 <ul className="flex flex-1 flex-col gap-3">
                   {plan.features.map((feature) => (
                     <li key={feature} className="flex gap-3 text-body-md text-primary">
-                      <Check size={17} className="mt-1 shrink-0 text-emerald-600" />
+                      <Check size={17} className="pricing-check-icon mt-1 shrink-0" />
                       <span>{feature}</span>
                     </li>
                   ))}

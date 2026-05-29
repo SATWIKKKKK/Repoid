@@ -8,7 +8,7 @@ type ScannerProps = {
   force?: boolean;
   onClose?: () => void;
   onError?: (message: string) => void;
-  onComplete?: () => void;
+  onComplete?: (repoId: string) => void;
 };
 
 export function GithubScanOverlay({ repoUrl, force = false, onClose, onError, onComplete }: ScannerProps) {
@@ -138,7 +138,7 @@ export function GithubScanOverlay({ repoUrl, force = false, onClose, onError, on
 
   useEffect(() => {
     if (result?.status === 'complete' && result.repoId) {
-      onComplete?.();
+      onComplete?.(result.repoId);
       navigate(`/github-project-qs/${result.repoId}`);
     }
   }, [navigate, onComplete, result]);

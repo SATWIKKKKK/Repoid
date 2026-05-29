@@ -452,7 +452,7 @@ export default function Dashboard() {
           </div>
         ) : null}
 
-        <section className="grid gap-5 lg:grid-cols-[minmax(16rem,0.85fr)_minmax(0,1.15fr)]">
+        <section className="grid gap-5">
           <button type="button" onClick={() => setReadinessOpen(true)} className="surface-card min-h-0 text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
             <div className="flex items-start justify-between gap-4">
               <span className="text-ui-label text-blueprint-muted">Prep Readiness</span>
@@ -464,7 +464,7 @@ export default function Dashboard() {
               <div className="mt-4 flex items-center gap-3">
                 <div className="flex h-10 items-end gap-1" aria-label="Last 7 days readiness trend">
                   {sparkline.map((score, index) => (
-                    <span key={`${score}-${index}`} className="w-2 rounded-full bg-primary/80" style={{ height: `${Math.max(10, score / 2.4)}px` }} />
+                    <span key={`${score}-${index}`} className="prep-readiness-bar w-2 rounded-full" style={{ height: `${Math.max(10, score / 2.4)}px` }} />
                   ))}
                 </div>
                 <span className="inline-flex items-center gap-1 rounded-full border border-blueprint-line bg-[#f5f3f3] px-3 py-1.5 text-ui-label text-primary">
