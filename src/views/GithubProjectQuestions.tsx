@@ -356,8 +356,8 @@ export default function GithubProjectQuestions() {
                   {(data.versions?.length ?? 0) > 1 ? ` The remaining versions for this repo will stay available in the version selector.` : ''}
                 </p>
               </div>
-              <button type="button" onClick={() => setDeleteDialogOpen(false)} aria-label="Close" className="rounded-full border border-blueprint-line p-2 text-blueprint-muted transition-colors hover:border-primary hover:text-primary">
-                <X size={16} />
+              <button type="button" onClick={() => setDeleteDialogOpen(false)} aria-label="Close" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-blueprint-line text-blueprint-muted transition-colors hover:border-primary hover:text-primary">
+                <X size={18} />
               </button>
             </div>
             <div className="mt-6 flex flex-wrap justify-end gap-3">

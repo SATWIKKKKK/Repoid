@@ -642,14 +642,14 @@ export default function QuestionBank() {
 
               {hasCuratedFilters ? (
                 <div className="flex flex-1 flex-wrap items-center gap-2">
-                  <select value={topicDropdownValue} onChange={(event) => setTopicDropdownValue(event.target.value)} className="min-w-[170px] flex-1 rounded-xl border border-blueprint-line bg-card px-3 py-2.5 text-body-md text-primary outline-none focus:border-primary">
-                    <option value="">Select {curatedDomainLabel} topic</option>
+                  <select value={topicDropdownValue} onChange={(event) => setTopicDropdownValue(event.target.value)} className="min-w-0 flex-1 rounded-xl border border-blueprint-line bg-card px-3 py-2.5 text-body-md text-primary outline-none focus:border-primary">
+                    <option value="">Select topic</option>
                     {curatedTopicOptions.map((item) => (
                       <option key={`${item.domain}-${item.topic}`} value={item.value}>{item.topic}</option>
                     ))}
                   </select>
-                  <select value={roundDropdownValue} onChange={(event) => setRoundDropdownValue(event.target.value)} className="min-w-[150px] flex-1 rounded-xl border border-blueprint-line bg-card px-3 py-2.5 text-body-md text-primary outline-none focus:border-primary">
-                    <option value="">Select round type</option>
+                  <select value={roundDropdownValue} onChange={(event) => setRoundDropdownValue(event.target.value)} className="min-w-0 flex-1 rounded-xl border border-blueprint-line bg-card px-3 py-2.5 text-body-md text-primary outline-none focus:border-primary">
+                    <option value="">Select round</option>
                     {CURATED_ROUND_FILTERS.map((item) => (
                       <option key={item.id} value={item.id}>{item.label}</option>
                     ))}

@@ -42,8 +42,8 @@ export default function DomainPickerDialog({
             <h2 className="mt-2 text-headline-md text-primary not-italic">{title}</h2>
             <p className="mt-2 text-body-md text-blueprint-muted">{description}</p>
           </div>
-          <button type="button" onClick={onClose} className="rounded-full border border-blueprint-line p-2 text-blueprint-muted transition-colors hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5" aria-label="Close domain picker">
-            <X size={16} />
+          <button type="button" onClick={onClose} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-blueprint-line text-blueprint-muted transition-colors hover:bg-[#f5f3f3] hover:text-primary dark:hover:bg-white/5" aria-label="Close domain picker">
+            <X size={18} />
           </button>
         </div>
 
@@ -65,7 +65,7 @@ export default function DomainPickerDialog({
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-body-md font-semibold">{option.label}</p>
-                    <p className={cn('mt-2 text-sm leading-6', selected ? 'text-white/85 dark:text-neutral-800' : 'text-gray-800 dark:text-gray-300')}>
+                    <p className={cn('mt-2 hidden text-sm leading-6 sm:block', selected ? 'text-white/85 dark:text-neutral-800' : 'text-gray-800 dark:text-gray-300')}>
                       {option.description}
                     </p>
                   </div>

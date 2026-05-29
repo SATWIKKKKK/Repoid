@@ -623,7 +623,7 @@ export default function Dashboard() {
         </section>
 
         <section className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-          <button type="button" onClick={() => setGoalOpen(true)} className="surface-card aspect-square text-left transition-colors hover:bg-white/85">
+          <button type="button" onClick={() => setGoalOpen(true)} className="surface-card sm:aspect-square text-left transition-colors hover:bg-white/85">
             <p className="text-ui-label text-blueprint-muted">Daily Goal</p>
             <div className="mt-4 flex items-start gap-3">
               <CheckCircle2 size={24} className={hasAnyActivity ? 'text-emerald-600' : 'text-blueprint-muted'} />
@@ -633,7 +633,7 @@ export default function Dashboard() {
               </div>
             </div>
           </button>
-          <button type="button" onClick={() => navigate('/practice-tracks')} className="surface-card aspect-square text-left transition-colors hover:bg-white/85">
+          <button type="button" onClick={() => navigate('/practice-tracks')} className="surface-card sm:aspect-square text-left transition-colors hover:bg-white/85">
             <p className="text-ui-label text-blueprint-muted">Gap Review</p>
             <p className="mt-4 text-headline-md text-primary not-italic">Current weak areas</p>
             {gapTopics.length ? (
@@ -649,7 +649,7 @@ export default function Dashboard() {
               <p className="mt-4 text-body-md text-blueprint-muted">Complete your first round to see your weak areas.</p>
             )}
           </button>
-          <button type="button" onClick={() => setDomainStatsOpen(true)} className="surface-card aspect-square text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
+          <button type="button" onClick={() => setDomainStatsOpen(true)} className="surface-card sm:aspect-square text-left transition-colors hover:bg-white/85 dark:hover:bg-white/5">
             <p className="text-ui-label text-blueprint-muted">Domain Stats</p>
             <div className="mt-3 flex items-start gap-3">
               <ChartPie size={22} className="mt-0.5 text-emerald-600 dark:text-emerald-300" />
@@ -745,7 +745,7 @@ export default function Dashboard() {
                 <p className="text-ui-label text-blueprint-muted">Quick Start</p>
                 <h2 className="mt-2 text-headline-md text-primary not-italic">Pick a round type</h2>
               </div>
-              <button type="button" aria-label="Close" onClick={() => setQuickStartOpen(false)} className="text-blueprint-muted hover:text-primary"><X size={18} /></button>
+              <button type="button" aria-label="Close" onClick={() => setQuickStartOpen(false)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-blueprint-line text-blueprint-muted hover:text-primary"><X size={18} /></button>
             </div>
             <div className="mt-5 grid gap-2">
               {[
@@ -865,14 +865,14 @@ export default function Dashboard() {
       ) : null}
 
       {domainStatsOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
-          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-blueprint-line bg-card p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 px-0 py-0 sm:items-center sm:px-4 sm:py-6">
+          <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-t-2xl border border-blueprint-line bg-card p-5 shadow-2xl sm:rounded-2xl sm:p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-ui-label text-blueprint-muted">Domain Stats</p>
                 <h2 className="mt-2 text-headline-md text-primary not-italic">{domainLabel} readiness</h2>
               </div>
-              <button type="button" aria-label="Close" onClick={() => setDomainStatsOpen(false)} className="text-blueprint-muted hover:text-primary"><X size={18} /></button>
+              <button type="button" aria-label="Close" onClick={() => setDomainStatsOpen(false)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-blueprint-line text-blueprint-muted hover:text-primary"><X size={18} /></button>
             </div>
 
             <div className="mt-5 grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)]">

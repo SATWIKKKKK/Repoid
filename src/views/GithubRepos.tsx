@@ -178,7 +178,7 @@ export default function GithubRepos() {
           <div className="w-full max-w-md rounded-2xl border border-blueprint-line bg-card p-5 shadow-2xl sm:p-6">
             <div className="mb-5 flex items-center justify-between">
               <h2 className="text-headline-sm text-primary">Scan a new repository</h2>
-              <button type="button" onClick={() => setModalOpen(false)} aria-label="Close" className="text-blueprint-muted hover:text-primary"><X size={18} /></button>
+              <button type="button" onClick={() => setModalOpen(false)} aria-label="Close" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-blueprint-line text-blueprint-muted hover:text-primary"><X size={18} /></button>
             </div>
             <input value={repoUrl} onChange={(event) => { setRepoUrl(event.target.value); setError(null); setDuplicate(null); }} placeholder="Paste your GitHub repo URL" className="w-full border-0 border-b border-blueprint-line bg-transparent px-0 py-3 text-body-md text-primary outline-none focus:border-primary" />
             <p className="mt-3 text-sm text-blueprint-muted">For private repos, connect GitHub first and then paste the repo URL.</p>
@@ -186,8 +186,8 @@ export default function GithubRepos() {
             {duplicate ? (
               <div className="mt-4 rounded-xl border border-blueprint-line bg-[#f5f3f3] p-4 text-body-md text-primary">
                 <p>You have already scanned this repo earlier. Re-scan it to get new questions.</p>
-                <div className="mt-4 flex flex-wrap gap-3">
-                  <Link className="rounded-full bg-primary px-4 py-2 text-ui-label text-white transition-colors hover:bg-[#303031]" to={`/github-project-qs/${duplicate.id}`}>
+                <div className="mt-4 flex flex-wrap justify-center gap-3 sm:justify-start">
+                  <Link className="rounded-full bg-primary px-4 py-2 text-center text-ui-label text-white transition-colors hover:bg-[#303031]" to={`/github-project-qs/${duplicate.id}`}>
                     View Existing Questions
                   </Link>
                   <button type="button" onClick={() => submit(true)} className="rounded-full border border-blueprint-line bg-card px-4 py-2 text-ui-label text-primary transition-colors hover:bg-[#fbfafa]">
@@ -227,8 +227,8 @@ export default function GithubRepos() {
                   {repoPendingDelete.versionNumber && (repoPendingDelete.scanCount ?? 1) > 1 ? ` Version ${repoPendingDelete.versionNumber} will be deleted and the other saved versions will stay available.` : ''}
                 </p>
               </div>
-              <button type="button" onClick={() => setRepoPendingDelete(null)} aria-label="Close" className="rounded-full border border-blueprint-line p-2 text-blueprint-muted transition-colors hover:border-primary hover:text-primary">
-                <X size={16} />
+              <button type="button" onClick={() => setRepoPendingDelete(null)} aria-label="Close" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-blueprint-line text-blueprint-muted transition-colors hover:border-primary hover:text-primary">
+                <X size={18} />
               </button>
             </div>
             <div className="mt-6 flex flex-wrap justify-end gap-3">

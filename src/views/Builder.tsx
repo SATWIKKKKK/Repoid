@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { LogOut } from 'lucide-react';
 import { View } from '../App';
 import {
   DEFAULT_PREP_SELECTIONS,
@@ -9,6 +10,7 @@ import {
   markOnboardingComplete,
   updatePrepWorkspace,
 } from '../lib/prep';
+import { clearSessionState } from '../lib/session';
 
 interface BuilderProps {
   onViewChange: (view: View) => void;
@@ -64,6 +66,8 @@ export default function Builder(_props: BuilderProps) {
       body: JSON.stringify({ domain }),
     }).catch(() => undefined);
     markOnboardingComplete();
+    // Notify App.tsx so it sets onboardingComplete = true before we navigate
+    window.dispatchEvent(new CustomEvent('repoid-preferences-updated', { detail: { domain } }));
     navigate('/dashboard');
   };
 
@@ -81,10 +85,19 @@ export default function Builder(_props: BuilderProps) {
             <button type="button" onClick={() => navigate('/')} className="font-serif text-3xl leading-none text-primary">
               Repoid
             </button>
-            <div className="flex gap-2">
-              {progress.map((item) => (
-                <span key={item} className={`h-2.5 w-2.5 rounded-full ${item <= step ? 'bg-primary' : 'bg-blueprint-line'}`} />
-              ))}
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={async () => { await clearSessionState(); window.location.replace('/'); }}
+                className="inline-flex items-center gap-1.5 rounded-full border border-blueprint-line px-3 py-1.5 text-ui-label text-blueprint-muted transition-colors hover:text-primary hover:bg-[#f5f3f3] dark:hover:bg-white/5"
+              >
+                <LogOut size={13} /> Sign out
+              </button>
+              <div className="flex gap-2">
+                {progress.map((item) => (
+                  <span key={item} className={`h-2.5 w-2.5 rounded-full ${item <= step ? 'bg-primary' : 'bg-blueprint-line'}`} />
+                ))}
+              </div>
             </div>
           </div>
 
@@ -107,7 +120,7 @@ export default function Builder(_props: BuilderProps) {
                             {domain === option.id ? <span className="h-2.5 w-2.5 rounded-full bg-primary" /> : null}
                           </span>
                         </div>
-                        <p className="mt-4 text-body-md text-blueprint-muted">{option.description}</p>
+                        <p className="mt-4 hidden text-body-md text-blueprint-muted sm:block">{option.description}</p>
                       </button>
                     ))}
                   </div>
